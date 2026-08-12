@@ -5,6 +5,9 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
+import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
+import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
+import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
@@ -15,6 +18,7 @@ import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../src/JBStickyHook.sol";
 import {JBStickyToken} from "../src/JBStickyToken.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
@@ -28,6 +32,15 @@ contract MockArt is ERC20 {
     function decimals() public pure override returns (uint8) {
         return 6;
     }
+
+    function mint(address to, uint256 amount) external {
+        _mint({account: to, value: amount});
+    }
+}
+
+/// @notice An 18-decimal reward token routed through a payout split in the criteria-pot integration test.
+contract MockRwd is ERC20 {
+    constructor() ERC20("Reward", "RWD") {}
 
     function mint(address to, uint256 amount) external {
         _mint({account: to, value: amount});
@@ -716,5 +729,177 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // The soulbound tokens can still be unstaked.
         uint256 reclaimed = _unstake(user, 10e18);
         assertEq(reclaimed, 10e6);
+    }
+
+    //*********************************************************************//
+    // --------------------- criteria pot integration --------------------- //
+    //*********************************************************************//
+
+    /// @notice Mint, approve, and stake `amount` of ART for a fresh holder.
+    function _stakeArt(address holder, uint256 amount) internal {
+        art.mint({to: holder, amount: amount});
+        vm.prank(holder);
+        art.approve({spender: address(jbMultiTerminal()), value: amount});
+        _stake(holder, holder, amount);
+    }
+
+    /// @notice Directly fund a criteria group's ART pot for `hookAddr`, matching `JBStickyDistributor.fund`.
+    function _fundArtGroup(JBStickyDistributor distributor_, address hookAddr, uint256 amount, uint256 groupId) internal {
+        address funder = makeAddr("criteria-funder");
+        art.mint({to: funder, amount: amount});
+        vm.startPrank(funder);
+        art.approve({spender: address(distributor_), value: amount});
+        distributor_.fund({hook: hookAddr, token: IERC20(address(art)), amount: amount, groupId: groupId});
+        vm.stopPrank();
+    }
+
+    /// @notice Fund a criteria group's pot for `hookAddr` through a payout split, pranking the registered terminal
+    /// as the caller — the same pattern the unit tests use for `processSplitWith`.
+    function _fundGroupViaSplit(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        MockRwd token_,
+        uint256 amount,
+        uint48 lockedUntil
+    )
+        internal
+    {
+        address terminal = address(jbMultiTerminal());
+        token_.mint({to: terminal, amount: amount});
+        vm.startPrank(terminal);
+        token_.approve({spender: address(distributor_), value: amount});
+        distributor_.processSplitWith(
+            JBSplitHookContext({
+                token: address(token_),
+                amount: amount,
+                decimals: 18,
+                projectId: projectId,
+                groupId: uint256(uint160(address(token_))),
+                split: JBSplit({
+                    percent: 0,
+                    projectId: 0,
+                    beneficiary: payable(hookAddr),
+                    preferAddToBalance: false,
+                    lockedUntil: lockedUntil,
+                    hook: IJBSplitHook(address(distributor_))
+                })
+            })
+        );
+        vm.stopPrank();
+    }
+
+    /// @notice Begin vesting `holder`'s unclaimed rewards in a specific criteria group and reward token.
+    function _beginVestingGroupFor(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        address holder,
+        uint256 groupId,
+        IERC20 token_
+    )
+        internal
+    {
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = uint256(uint160(holder));
+        IERC20[] memory tokens = new IERC20[](1);
+        tokens[0] = token_;
+        distributor_.beginVesting({hook: hookAddr, groupId: groupId, tokenIds: tokenIds, tokens: tokens});
+    }
+
+    /// @notice Collect everything unlocked for `holder` in a specific criteria group and reward token.
+    function _collectGroupFor(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        address holder,
+        uint256 groupId,
+        IERC20 token_
+    )
+        internal
+        returns (uint256 collected)
+    {
+        uint256 balanceBefore = token_.balanceOf(holder);
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = uint256(uint160(holder));
+        IERC20[] memory tokens = new IERC20[](1);
+        tokens[0] = token_;
+        distributor_.collectVestedRewards({
+            hook: hookAddr, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: holder
+        });
+        collected = token_.balanceOf(holder) - balanceBefore;
+    }
+
+    function test_integration_criteriaPotEndToEnd() public {
+        address alice = makeAddr("criteria-alice");
+        address bob = makeAddr("criteria-bob");
+        address carol = makeAddr("criteria-carol");
+
+        // Deploy the distributor the way the deploy scripts do: directory + the project's sticky hook, no
+        // controller/revLoans/revOwner wiring.
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+        MockRwd reward2 = new MockRwd();
+
+        // Wiring sanity check: an out-of-range criteria group reverts through the real deploy-shaped distributor.
+        // The full boundary sweep (521 and 1 << 240) is covered at the unit level.
+        vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 521));
+        distributor.fund({hook: address(token), token: IERC20(address(art)), amount: 1e6, groupId: 521});
+
+        // Two holders stake a week apart.
+        vm.warp(10 weeks + 1);
+        _stakeArt(alice, 100e6);
+        vm.warp(13 weeks + 1);
+        _stakeArt(bob, 100e6);
+        vm.warp(14 weeks + 1);
+
+        // Fund a k = 2 ("stuck >= 2 weeks") pot through both entry paths: a direct fund in ART, and a payout split
+        // carrying lockedUntil = 2 in a second reward token.
+        _fundArtGroup(distributor, address(token), 90e6, 2);
+        _fundGroupViaSplit(distributor, address(token), reward2, 60e18, 2);
+
+        // Complete the funding round and fully vest.
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _beginVestingGroupFor(distributor, address(token), alice, 2, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), bob, 2, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), alice, 2, IERC20(address(reward2)));
+        _beginVestingGroupFor(distributor, address(token), bob, 2, IERC20(address(reward2)));
+        vm.warp(vm.getBlockTimestamp() + 2 days);
+
+        // Bob's tranche is one week too fresh for k = 2 at the funding snapshot: he carries no aged weight in
+        // either pot, and alice — the only aged staker — claims each pot in full.
+        assertEq(_collectGroupFor(distributor, address(token), alice, 2, IERC20(address(art))), 90e6);
+        assertEq(_collectGroupFor(distributor, address(token), bob, 2, IERC20(address(art))), 0);
+        assertEq(_collectGroupFor(distributor, address(token), alice, 2, IERC20(address(reward2))), 60e18);
+        assertEq(_collectGroupFor(distributor, address(token), bob, 2, IERC20(address(reward2))), 0);
+
+        // A later ART pot: bob has now aged into the criteria too, so he shares it with alice — but carol, who
+        // stakes right as this round is funded, is still too fresh to count.
+        vm.warp(60 weeks + 1);
+        _stakeArt(carol, 100e6);
+        _fundArtGroup(distributor, address(token), 200e6, 2);
+        uint256 expiredRound = distributor.currentRound();
+
+        // Complete the round so the funded round becomes claimable, then only alice claims before the round's
+        // claim window closes; bob's half is left to expire.
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _beginVestingGroupFor(distributor, address(token), alice, 2, IERC20(address(art)));
+
+        // Past the claim deadline, carol's tranche has aged into the criteria too — recycling re-walks the
+        // denominator at the CURRENT epoch and buckets rather than reusing the expired round's stale total.
+        vm.warp(vm.getBlockTimestamp() + 40 days);
+        uint256[] memory rounds = new uint256[](1);
+        rounds[0] = expiredRound;
+        uint256 recycled = distributor.recycleExpiredRewards({
+            hook: address(token), groupId: 2, token: IERC20(address(art)), rounds: rounds
+        });
+        assertEq(recycled, 100e6);
+
+        (uint208 freshAmount,,,, uint208 freshTotalStake,) =
+            distributor.rewardRoundOf(address(token), 2, IERC20(address(art)), distributor.currentRound());
+        assertEq(freshAmount, 100e6);
+        assertEq(freshTotalStake, 300e18);
     }
 }
