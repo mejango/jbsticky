@@ -1,6 +1,6 @@
 // Sticky webclient. Raw JSON-RPC, no dependencies, no build step.
-// Hash-routed: #/ is the homepage (hero + top sticks + activity), #/project/<id> is a sticky
-// token's page (header stats, start/abandon cards, activity, OVERVIEW chart tab, OWNERS tab).
+// Hash-routed: #/ is the homepage; #/project/<id> is a sticky token's overview, with
+// /tokens and /airdrops child routes for its other tabs.
 // Writes go straight to an RPC node (anvil auto-impersonation for local dev) or a browser wallet.
 "use strict";
 
@@ -1273,6 +1273,10 @@ async function renderProject(projectId) {
   ctx.currentId = projectId;
   $("view-home").classList.add("hide");
   $("view-project").classList.remove("hide");
+  const projectRoute = `#/project/${projectId}`;
+  $("tab-btn-overview").href = projectRoute;
+  $("tab-btn-owners").href = `${projectRoute}/tokens`;
+  $("tab-btn-rewards").href = `${projectRoute}/airdrops`;
 
   const info = await projectInfo(projectId);
   $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
@@ -1296,6 +1300,7 @@ async function renderProject(projectId) {
   ]);
   ctx.pool = pool;
   renderUnstickQuote();
+  renderStickQuote();
   $("p-bonus-card").classList.toggle("hide", info.reward === 0n);
   if (info.reward > 0n) {
     const rho0 = pool.supply > 0n ? Number((pool.sigma * 10n ** 18n) / pool.supply) / 10 ** info.decimals : 1;
@@ -1307,7 +1312,6 @@ async function renderProject(projectId) {
       rho0,
       sym: info.symbol,
       stSym: info.stSymbol,
-      total: Number(formatUnits(pool.supply, 18)),
     });
   }
   const active = rows.filter((row) => row.staked > 0n).sort((a, b) => (b.staked > a.staked ? 1 : -1));
@@ -2327,7 +2331,11 @@ async function stake() {
         [ctx.currentId, info.stakedToken, amount, account(), 0n, "", "0x"],
       ),
   });
-  if (!(await confirmAndRun(`Stick — ${pretty}`, txs, [["Stick", pretty], ["You get", `${formatUnits(amount, info.decimals)} ${info.stSymbol}`]]))) return;
+  const mintPool = await poolBacking(ctx.currentId, info).catch(() => null);
+  const receipt = mintPool && mintPool.reward > 0n
+    ? `≈ ${parseFloat(Number(formatUnits(stickMintOf(mintPool, amount), 18)).toFixed(4))} ${info.stSymbol} — ${pretty} worth of the pool, at today's backing`
+    : `${formatUnits(amount, info.decimals)} ${info.stSymbol}`;
+  if (!(await confirmAndRun(`Stick — ${pretty}`, txs, [["Stick", pretty], ["You get", receipt]]))) return;
   txStatus("Stick confirmed", "ok");
   await renderProject(ctx.currentId);
 }
@@ -2350,7 +2358,34 @@ async function poolBacking(projectId, info) {
     view(ctx.store, SEL.storeBalanceOf, args).then(decUint),
     view(info.stToken, SEL.totalSupply).then(decUint),
   ]);
-  return { sigma, supply, reward: info.reward, decimals: info.decimals, symbol: info.symbol };
+  return {
+    sigma, supply, reward: info.reward, decimals: info.decimals, symbol: info.symbol, stSymbol: info.stSymbol,
+  };
+}
+
+// Sticks mint at the current backing, so 1 token in = exactly 1 token's worth of the pool —
+// fewer sticky tokens per token as the bonus grows.
+function stickMintOf(pool, amount) {
+  return pool.supply > 0n && pool.sigma > 0n
+    ? (amount * pool.supply) / pool.sigma
+    : amount * 10n ** BigInt(18 - pool.decimals);
+}
+
+function renderStickQuote() {
+  const el = $("stake-quote");
+  const pool = ctx.pool;
+  if (!el) return;
+  el.textContent = "";
+  if (!pool || pool.reward === 0n) return;
+  const field = $("stake-amount");
+  let amount = 0n;
+  try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
+  if (amount <= 0n) return;
+  const r = Number(pool.reward) / 10000;
+  const st = parseFloat(Number(formatUnits(stickMintOf(pool, amount), 18)).toFixed(4));
+  const back = parseFloat((Number(formatUnits(amount, pool.decimals)) * (1 - r) * 0.975).toFixed(4));
+  el.textContent = `${formatUnits(amount, pool.decimals)} ${pool.symbol} sticks for ≈ ${st} ${pool.stSymbol}. `
+    + `Get ${back} ${pool.symbol} back right away, and more as you stick around.`;
 }
 
 function renderUnstickQuote() {
@@ -2853,8 +2888,13 @@ function route() {
     return;
   }
   $("view-account").classList.add("hide");
-  const match = location.hash.match(/^#\/project\/(\d+)$/);
-  if (match) renderProject(BigInt(match[1])).catch((e) => status(e.message, "err"));
+  const match = location.hash.match(/^#\/project\/(\d+)(?:\/(overview|tokens|airdrops))?\/?$/);
+  if (match) {
+    const projectId = BigInt(match[1]);
+    const tab = { overview: "overview", tokens: "owners", airdrops: "rewards" }[match[2] || "overview"];
+    setTab(tab);
+    renderProject(projectId).catch((e) => status(e.message, "err"));
+  }
   else {
     ctx.currentId = null;
     renderHome().catch((e) => status(e.message, "err"));
@@ -2906,7 +2946,7 @@ $("r-add").onclick = guard(async () => {
   (rewardTokens[ctx.currentId.toString()] ??= new Set()).add(addr.toLowerCase());
   await renderRewards();
 });
-const fillStakeMax = () => { if (ctx.walletMax) $("stake-amount").value = ctx.walletMax; };
+const fillStakeMax = () => { if (ctx.walletMax) { $("stake-amount").value = ctx.walletMax; renderStickQuote(); } };
 $("stake-balance").onclick = fillStakeMax;
 $("stake-balance").onkeydown = (event) => {
   if (event.key === "Enter" || event.key === " ") {
@@ -2916,6 +2956,7 @@ $("stake-balance").onkeydown = (event) => {
 };
 $("unstake-max").onclick = () => { if (ctx.stakedMax) { $("unstake-amount").value = ctx.stakedMax; renderUnstickQuote(); } };
 $("unstake-amount").oninput = renderUnstickQuote;
+$("stake-amount").oninput = renderStickQuote;
 $("deploy").onclick = guard(deployStreaks);
 // Cash out curve: y = x((1-r) + rx) — proportional at r=0, bonding-curved as the reward grows.
 let rewardChoice = "10";
@@ -3024,19 +3065,19 @@ function renderCurve() {
   const r = Math.min(1, Math.max(0, effectiveRewardPct() / 100));
   const note = $("d-curve-note");
   if (note) {
+    const sym = lockedSymbol ? ` ${lockedSymbol}` : "";
     note.textContent = r > 0
-      ? `A lone unstick gets ≈ ${(100 * (1 - r) * 0.975).toFixed(1)}%; the rest stays and raises the backing of every sticky token still out there.`
-      : "No bonus: unsticks return exactly what was stuck, fee-free.";
+      ? `Stick 100${sym}: get ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym} back right away, and more as you stick around.`
+      : "No bonus: unsticks return exactly what was stuck.";
   }
+  $("d-fee-details")?.classList.toggle("hide", r === 0);
   renderBonusSplit(r);
 }
 
-// One unstick event in a pool, split into where the value goes — then what it does to every
-// sticky token left behind. Uses the cash-out curve exactly: unsticking n of total reclaims
-// pro-rata·((1−bonus) + bonus·n/total); the withheld bonus lifts the remaining tokens' backing.
+// One marginal unstick, split into where the value goes: (1−bonus) to the leaver less the 2.5%
+// protocol fee; the bonus stays in the pool and lifts every remaining sticky token's backing.
 // Options: el (target, default create-flow), rho0 (today's backing per sticky, default 1),
-// total (pool size in sticky tokens, default 200), sym / stSym (symbols; default from the
-// create form's locked token).
+// sym / stSym (symbols; default from the create form's locked token).
 function renderBonusSplit(r, o = {}) {
   const el = o.el || $("d-ratchet");
   if (!el) return;
@@ -3045,36 +3086,28 @@ function renderBonusSplit(r, o = {}) {
   const sym = o.sym ?? (lockedSymbol || "");
   const stSym = o.stSym
     ?? (($("d-custom-name")?.checked && $("d-symbol").value.trim()) || (sym ? `st${sym}` : ""));
-  const total = o.total && o.total > 1 ? o.total : 200;
-  const n = total > 100 ? 100 : Math.max(1, Math.floor(total / 2));
-  const share = n / total;
-  const value = n * rho0;
-  const reclaim = value * ((1 - r) + r * share);
-  const stays = value - reclaim;
-  const fee = reclaim * 0.025;
-  const toLeaver = reclaim - fee;
-  const backingAfter = (total * rho0 - reclaim) / (total - n);
-  const exitAfter = backingAfter * (1 - r) * 0.975;
+  const value = 100 * rho0;
+  const stays = value * r;
+  const fee = (value - stays) * 0.025;
+  const toLeaver = value - stays - fee;
   const unit = sym ? ` ${sym}` : "";
   const qty = (v) => (v >= 1000 ? Math.round(v).toLocaleString() : parseFloat(v.toFixed(1)).toString());
-  const val = (v) => parseFloat(v.toFixed(v < 2 ? 3 : 1)).toString();
   const W = 460;
   const BH = 26;
   const wLeaver = (toLeaver / value) * W;
   const wStays = (stays / value) * W;
   el.innerHTML = `
-    <div class="mut" style="font-size:13px;letter-spacing:1px;margin:10px 0 6px">WHEN ${qty(n)} OF ${qty(total)}${stSym ? ` ${esc(stSym)}` : ""} UNSTICK…</div>
+    <div class="mut" style="font-size:13px;margin:10px 0 6px">When 100 ${esc(stSym) || "sticky tokens"} unstick…</div>
     <svg viewBox="0 0 ${W} ${BH}" style="width:100%;max-width:${W}px;border-radius:4px" preserveAspectRatio="none">
       <rect x="0" y="0" width="${wLeaver.toFixed(1)}" height="${BH}" fill="#2fb3c7"/>
       <rect x="${wLeaver.toFixed(1)}" y="0" width="${wStays.toFixed(1)}" height="${BH}" fill="#0e7c91"/>
       <rect x="${(wLeaver + wStays).toFixed(1)}" y="0" width="${(W - wLeaver - wStays).toFixed(1)}" height="${BH}" fill="#e2d7bd"/>
     </svg>
-    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px" class="kv">
-      <span class="chip"><i style="background:#2fb3c7"></i>${qty(toLeaver)}${unit} to the unstickers</span>
-      <span class="chip"><i style="background:#0e7c91"></i>${qty(stays)}${unit} stays with stickers</span>
-      <span class="chip"><i style="background:#e2d7bd"></i>${qty(fee)}${unit} protocol fee</span>
-    </div>
-    <p style="margin:10px 0 0">Each ${esc(stSym) || "sticky token"} still stuck is now backed by <b>${val(backingAfter)}${unit}</b> (was ${rho0.toFixed(2)}) — and would unstick for ${val(exitAfter)}${unit}.</p>`;
+    <div style="display:flex;gap:16px;white-space:nowrap;overflow-x:auto;margin-top:6px" class="kv mut">
+      <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#2fb3c7"></i>${qty(toLeaver)}${unit} to the unstickers</span>
+      <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#0e7c91"></i>${qty(stays)} stays with stickers</span>
+      <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#e2d7bd"></i>${qty(fee)} protocol fee</span>
+    </div>`;
 }
 
 const soulboundHint = () => {
@@ -3210,13 +3243,12 @@ $("connection-close").onclick = () => $("connection-dialog").close();
 $("connection-dialog").onclick = (event) => {
   if (event.target === $("connection-dialog")) $("connection-dialog").close();
 };
-$("tab-btn-overview").onclick = () => setTab("overview");
-$("tab-btn-owners").onclick = () => setTab("owners");
-$("tab-btn-rewards").onclick = () => setTab("rewards");
 function setTab(tab) {
   for (const name of ["overview", "owners", "rewards"]) {
     $("tab-" + name).classList.toggle("hide", tab !== name);
     $("tab-btn-" + name).classList.toggle("on", tab === name);
+    if (tab === name) $("tab-btn-" + name).setAttribute("aria-current", "page");
+    else $("tab-btn-" + name).removeAttribute("aria-current");
   }
 }
 $("connect-btn").addEventListener("click", () => {

@@ -319,6 +319,7 @@
   .tab {
     padding: 6px 2px 8px; cursor: pointer; letter-spacing: 0; font-size: 15px; font-weight: 700;
     font-family: "Agrandir", "Beatrice", sans-serif; color: var(--muted); border-bottom: 2px solid transparent;
+    text-decoration: none;
   }
   .tab.on { color: var(--text); border-bottom-color: var(--amber); }
   .chip { display: inline-block; border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; font-size: 13px; margin-right: 8px; background: #fdffff; }
@@ -628,19 +629,20 @@
       <div>
         <section>
           <h2 id="stake-title">Stick</h2>
-          <div style="display:flex;gap:8px;align-items:stretch">
-            <div style="flex:1;min-width:0">
-              <div style="position:relative">
-                <input id="stake-amount" placeholder="10" style="padding-right:64px">
+          <div>
+            <div style="display:flex;gap:8px;align-items:stretch">
+              <div style="position:relative;flex:1;min-width:0">
+                <input id="stake-amount" placeholder="10" style="padding-right:64px;height:100%">
                 <span id="stake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
               </div>
-              <div class="mut" style="margin-top:3px;font-size:12px">
-                <span class="link" id="stake-balance" role="button" tabindex="0" title="Use full wallet balance"></span>
-                <span id="stake-balance-label"></span>
-              </div>
+              <button id="stake" style="margin-top:0;flex:none">Stick</button>
             </div>
-            <button id="stake" style="margin-top:0;flex:none;align-self:flex-start;padding-top:0;padding-bottom:0;height:36.5px">Stick</button>
+            <div class="mut" style="margin-top:3px;font-size:12px">
+              <span class="link" id="stake-balance" role="button" tabindex="0" title="Use full wallet balance"></span>
+              <span id="stake-balance-label"></span>
+            </div>
           </div>
+          <div class="mut" style="margin-top:8px" id="stake-quote"></div>
         </section>
         <section>
           <h2>Latest</h2>
@@ -650,9 +652,9 @@
 
       <div>
         <div class="tabs">
-          <div class="tab on" id="tab-btn-overview">Overview</div>
-          <div class="tab" id="tab-btn-owners">Tokens</div>
-          <div class="tab" id="tab-btn-rewards">Airdrops</div>
+          <a class="tab on" id="tab-btn-overview" href="#/">Overview</a>
+          <a class="tab" id="tab-btn-owners" href="#/">Tokens</a>
+          <a class="tab" id="tab-btn-rewards" href="#/">Airdrops</a>
         </div>
 
         <div id="tab-overview">
@@ -798,9 +800,10 @@
       <div><label>SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
     </div>
     <label class="check"><input type="checkbox" id="d-add-reward"> Add stickiness bonus</label>
-    <p class="mut hint hide option-detail" id="d-reward-hint">Every unstick leaves some behind for those still sticking with it.<span class="hint-subtle">Nonzero rewards add the $JBP6 2.5% protocol fee to unsticks.</span></p>
+    <p class="mut hint hide option-detail" id="d-reward-hint">Every unstick leaves some behind for those still sticking with it.</p>
     <div class="hide option-detail" id="d-reward-wrap">
       <div class="preset-row">
+        <div class="preset" data-v="0">0%</div>
         <div class="preset" data-v="5">5%</div>
         <div class="preset on" data-v="10">10%</div>
         <div class="preset" data-v="25">25%</div>
@@ -810,8 +813,8 @@
         <div><label>CUSTOM (%)</label><input id="d-reward" placeholder="10" value="10"></div>
       </div>
       <div id="d-ratchet"></div>
-      <p class="mut hint" id="d-curve-note"></p>
-      <details class="hint" id="d-fee-details">
+      <p class="mut hint" id="d-curve-note" style="margin-top:14px"></p>
+      <details class="hint" id="d-fee-details" style="margin-top:14px">
         <summary style="cursor:pointer;color:var(--accent)">Read about fees</summary>
         <p class="mut" style="margin:6px 0 0">
           Sticking is always free. With a stickiness bonus on, each unstick pays a 2.5% fee to the Juicebox
