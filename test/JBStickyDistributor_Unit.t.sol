@@ -174,6 +174,15 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         vm.stopPrank();
     }
 
+    /// @notice Fund `amount` of the reward token into a specific criteria group's pot for the sticky token.
+    function _fundGroup(uint256 amount, uint256 groupId) internal {
+        reward.mint({to: funder, amount: amount});
+        vm.startPrank(funder);
+        reward.approve({spender: address(distributor), value: amount});
+        distributor.fund({hook: address(stickyToken), token: IERC20(address(reward)), amount: amount, groupId: groupId});
+        vm.stopPrank();
+    }
+
     function _beginVestingFor(address holder) internal {
         distributor.beginVesting({hook: address(stickyToken), tokenIds: _tokenIds(holder), tokens: _rewardTokens()});
     }
@@ -443,5 +452,40 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(amount, 10e18);
         assertEq(totalStake, 100e18);
         assertEq(snapshotEpoch, 14);
+    }
+
+    function test_denominatorSumsOnlyAgedBuckets() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(13 weeks + 1);
+        _stake(bob, 300e18); // too fresh for k=2 at epoch 14
+        vm.warp(14 weeks + 1);
+
+        _fundGroup(10e18, 2);
+        (,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 2, reward, distributor.currentRound());
+        assertEq(totalStake, 100e18); // only alice's epoch-10 bucket is <= 14 - 2
+    }
+
+    function test_denominatorZeroWhenNothingAged() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        _fundGroup(10e18, 52); // nothing is a year old
+        (,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 52, reward, distributor.currentRound());
+        assertEq(totalStake, 0);
+    }
+
+    function test_secondFundingSameRoundKeepsPinnedDenominator() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(12 weeks + 1);
+        _fundGroup(10e18, 1);
+        _stake(bob, 900e18); // same round, after the pin
+        _fundGroup(5e18, 1); // must not re-walk
+        (uint208 amount,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 1, reward, distributor.currentRound());
+        assertEq(amount, 15e18);
+        assertEq(totalStake, 100e18);
     }
 }
