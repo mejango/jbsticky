@@ -411,4 +411,37 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
         assertEq(_collectFor(alice), 100e18);
     }
+
+    function test_fundRejectsInvalidCriteria() public {
+        reward.mint(funder, 10e18);
+        vm.startPrank(funder);
+        reward.approve(address(distributor), 10e18);
+
+        vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 521));
+        distributor.fund(address(stickyToken), reward, 10e18, 521);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, uint256(1) << 240)
+        );
+        distributor.fund(address(stickyToken), reward, 10e18, uint256(1) << 240);
+        vm.stopPrank();
+    }
+
+    function test_fundWithCriteriaCreatesGroupPot() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
+
+        reward.mint(funder, 10e18);
+        vm.startPrank(funder);
+        reward.approve(address(distributor), 10e18);
+        distributor.fund(address(stickyToken), reward, 10e18, 2); // stuck >= 2 weeks
+        vm.stopPrank();
+
+        (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) =
+            distributor.rewardRoundOf(address(stickyToken), 2, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18);
+        assertEq(snapshotEpoch, 14);
+    }
 }

@@ -155,6 +155,22 @@ interface IJBStickyDistributor is IJBSplitHook {
     /// @param tokens The tokens to claim.
     function beginVesting(address hook, uint256[] calldata tokenIds, IERC20[] calldata tokens) external;
 
+    /// @notice Claims tokens and begins vesting from a specific reward group.
+    /// @dev Permissionless. No reward tokens leave the distributor. Group 0 is the default group; groups
+    /// `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots that require the staker's tranche to be at least that
+    /// many weeks old.
+    /// @param hook The sticky token whose stakers are vesting.
+    /// @param groupId The reward group to vest from (0 = the default group).
+    /// @param tokenIds The IDs to claim rewards for.
+    /// @param tokens The tokens to claim.
+    function beginVesting(
+        address hook,
+        uint256 groupId,
+        uint256[] calldata tokenIds,
+        IERC20[] calldata tokens
+    )
+        external;
+
     /// @notice Collect vested tokens from the default group.
     /// @dev Authorized holders can collect to any beneficiary. Helpers can collect only to the canonical beneficiary
     /// of every token ID they do not control.
@@ -170,12 +186,38 @@ interface IJBStickyDistributor is IJBSplitHook {
     )
         external;
 
+    /// @notice Collect vested tokens from a specific reward group.
+    /// @dev Authorized holders can collect to any beneficiary. Helpers can collect only to the canonical beneficiary
+    /// of every token ID they do not control.
+    /// @param hook The sticky token whose stakers are collecting.
+    /// @param groupId The reward group to collect from (0 = the default group).
+    /// @param tokenIds The IDs of the tokens to collect for.
+    /// @param tokens The addresses of the tokens to collect.
+    /// @param beneficiary The recipient of the collected tokens.
+    function collectVestedRewards(
+        address hook,
+        uint256 groupId,
+        uint256[] calldata tokenIds,
+        IERC20[] calldata tokens,
+        address beneficiary
+    )
+        external;
+
     /// @notice Fund the distributor's default group for a specific sticky token.
     /// @dev For native ETH, send `msg.value` and pass `IERC20(NATIVE_TOKEN)` as the token.
     /// @param hook The sticky token to fund.
     /// @param token The token to fund with.
     /// @param amount The amount to fund.
     function fund(address hook, IERC20 token, uint256 amount) external payable;
+
+    /// @notice Fund the distributor for a specific sticky token and reward group.
+    /// @dev For native ETH, send `msg.value` and pass `IERC20(NATIVE_TOKEN)` as the token. Group 0 is the default
+    /// (votes-weighted) group; groups `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots.
+    /// @param hook The sticky token to fund.
+    /// @param token The token to fund with.
+    /// @param amount The amount to fund.
+    /// @param groupId The reward group to fund (0 = the default group).
+    function fund(address hook, IERC20 token, uint256 amount, uint256 groupId) external payable;
 
     /// @notice Record the snapshot block for the current round. Callable by anyone (keepers, frontends).
     function poke() external;
@@ -189,6 +231,23 @@ interface IJBStickyDistributor is IJBSplitHook {
     /// @return amount The total amount recycled.
     function recycleExpiredRewards(
         address hook,
+        IERC20 token,
+        uint256[] calldata rounds
+    )
+        external
+        returns (uint256 amount);
+
+    /// @notice Recycle unclaimed rewards from eligible prior reward rounds in a specific group into the current
+    /// reward round.
+    /// @dev Passing the current round is a no-op, including for zero-stake rounds.
+    /// @param hook The sticky token whose expired reward rounds should be recycled.
+    /// @param groupId The reward group to recycle (0 = the default group).
+    /// @param token The reward token to recycle.
+    /// @param rounds The reward rounds to recycle.
+    /// @return amount The total amount recycled.
+    function recycleExpiredRewards(
+        address hook,
+        uint256 groupId,
         IERC20 token,
         uint256[] calldata rounds
     )

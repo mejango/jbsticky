@@ -18,6 +18,7 @@ import {mulDiv} from "@prb/math/src/Common.sol";
 
 import {IJBStickyDistributor} from "./interfaces/IJBStickyDistributor.sol";
 import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
+import {IJBStickyToken} from "./interfaces/IJBStickyToken.sol";
 import {JBStickyRewardRoundData} from "./structs/JBStickyRewardRoundData.sol";
 
 /// @notice A singleton distributor that hands ERC-20 rewards (or native ETH) to the stakers of a sticky project with
@@ -39,6 +40,10 @@ contract JBStickyDistributor is IJBStickyDistributor {
 
     /// @notice Thrown when an empty tokenIds array is passed.
     error JBStickyDistributor_EmptyTokenIds(uint256 tokenIdCount);
+
+    /// @notice Thrown when a reward group ID is not the default group (0) or a supported stick-time-weeks criteria
+    /// in `[1, MAX_CRITERIA_WEEKS]`.
+    error JBStickyDistributor_InvalidCriteria(uint256 groupId);
 
     /// @notice Thrown when the round duration is zero.
     error JBStickyDistributor_InvalidRoundDuration(uint256 roundDuration);
@@ -77,6 +82,10 @@ contract JBStickyDistributor is IJBStickyDistributor {
     //*********************************************************************//
     // ------------------------- public constants ------------------------ //
     //*********************************************************************//
+
+    /// @notice The highest stick-time-weeks criteria group ID a reward pot can be funded under. Group IDs above this
+    /// are reserved for future curve-based criteria and are rejected until implemented.
+    uint256 public constant MAX_CRITERIA_WEEKS = 520;
 
     /// @notice The number of shares that represent 100%.
     uint256 public constant MAX_SHARE = 100_000;
@@ -224,6 +233,28 @@ contract JBStickyDistributor is IJBStickyDistributor {
         _beginVesting({hook: hook, groupId: 0, tokenIds: tokenIds, tokens: tokens});
     }
 
+    /// @notice Begin vesting all unclaimed past reward rounds for the specified token IDs in a specific reward
+    /// group.
+    /// @dev Permissionless. Materializes each token ID's pro-rata share of every past reward round into fresh
+    /// vesting entries that start now and unlock over `VESTING_ROUNDS`. Current-round funding is excluded until a
+    /// later round starts.
+    /// @param hook The sticky token whose stakers are vesting.
+    /// @param groupId The reward group to vest from (0 = the default group).
+    /// @param tokenIds The staker token IDs to claim rewards for.
+    /// @param tokens The reward tokens to begin vesting.
+    function beginVesting(
+        address hook,
+        uint256 groupId,
+        uint256[] calldata tokenIds,
+        IERC20[] calldata tokens
+    )
+        external
+        override
+    {
+        _requireValidGroup(groupId);
+        _beginVesting({hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens});
+    }
+
     /// @notice Begin vesting any unclaimed past reward rounds, then collect everything that has since unlocked and
     /// transfer it to the beneficiary — so callers don't need to separately call `beginVesting`.
     /// @dev Authorized holders can collect to any beneficiary. Helpers can collect only to the canonical beneficiary
@@ -244,6 +275,32 @@ contract JBStickyDistributor is IJBStickyDistributor {
         _collectVestedRewards({hook: hook, groupId: 0, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary});
     }
 
+    /// @notice Begin vesting any unclaimed past reward rounds in a specific reward group, then collect everything
+    /// that has since unlocked and transfer it to the beneficiary — so callers don't need to separately call
+    /// `beginVesting`.
+    /// @dev Authorized holders can collect to any beneficiary. Helpers can collect only to the canonical beneficiary
+    /// for every token ID they do not control.
+    /// @param hook The sticky token whose stakers are collecting.
+    /// @param groupId The reward group to collect from (0 = the default group).
+    /// @param tokenIds The IDs of the tokens to collect for.
+    /// @param tokens The reward tokens to collect vested amounts of.
+    /// @param beneficiary The recipient of the collected tokens.
+    function collectVestedRewards(
+        address hook,
+        uint256 groupId,
+        uint256[] calldata tokenIds,
+        IERC20[] calldata tokens,
+        address beneficiary
+    )
+        external
+        override
+    {
+        _requireValidGroup(groupId);
+        _collectVestedRewards({
+            hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary
+        });
+    }
+
     /// @notice Directly fund the distributor for a specific sticky token by pulling tokens from the caller. An
     /// alternative to split-based funding — useful for one-off deposits or external reward sources.
     /// @dev For native ETH, send `msg.value` and pass `IERC20(JBConstants.NATIVE_TOKEN)` as the token. Uses balance
@@ -253,6 +310,20 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @param amount The amount to fund (ignored for native ETH — `msg.value` is used instead).
     function fund(address hook, IERC20 token, uint256 amount) external payable override {
         _fund({hook: hook, groupId: 0, token: token, amount: amount});
+    }
+
+    /// @notice Directly fund the distributor for a specific sticky token and reward group by pulling tokens from
+    /// the caller. An alternative to split-based funding — useful for one-off deposits or external reward sources.
+    /// @dev For native ETH, send `msg.value` and pass `IERC20(JBConstants.NATIVE_TOKEN)` as the token. Uses balance
+    /// delta to handle fee-on-transfer tokens correctly. Group 0 is the default (votes-weighted) group; groups
+    /// `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots.
+    /// @param hook The sticky token to fund (determines which staker pool receives the tokens).
+    /// @param token The token to fund with.
+    /// @param amount The amount to fund (ignored for native ETH — `msg.value` is used instead).
+    /// @param groupId The reward group to fund (0 = the default group).
+    function fund(address hook, IERC20 token, uint256 amount, uint256 groupId) external payable override {
+        _requireValidGroup(groupId);
+        _fund({hook: hook, groupId: groupId, token: token, amount: amount});
     }
 
     /// @notice Record the snapshot block for the current round (and eagerly for the next round). Callable by anyone —
@@ -326,6 +397,29 @@ contract JBStickyDistributor is IJBStickyDistributor {
         returns (uint256 amount)
     {
         amount = _recycleExpiredRewards({hook: hook, groupId: 0, token: token, rounds: rounds});
+    }
+
+    /// @notice Recycle unclaimed rewards from expired reward rounds in a specific group into the current reward
+    /// round.
+    /// @dev Recycling is permissionless; any keeper or frontend can sweep an eligible prior round. Passing the
+    /// current reward round is a no-op, even when its snapshot stake is zero.
+    /// @param hook The sticky token whose expired rewards should be recycled.
+    /// @param groupId The reward group to recycle (0 = the default group).
+    /// @param token The reward token to recycle.
+    /// @param rounds The reward rounds to recycle.
+    /// @return amount The total amount recycled.
+    function recycleExpiredRewards(
+        address hook,
+        uint256 groupId,
+        IERC20 token,
+        uint256[] calldata rounds
+    )
+        external
+        override
+        returns (uint256 amount)
+    {
+        _requireValidGroup(groupId);
+        amount = _recycleExpiredRewards({hook: hook, groupId: groupId, token: token, rounds: rounds});
     }
 
     //*********************************************************************//
@@ -757,19 +851,32 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // Every reward round in this contract uses the same immutable claim duration.
         uint48 claimDeadline = _claimDeadlineFor(round);
 
-        // First value in a round locks that round's snapshot block and total stake.
+        // First value in a round locks that round's snapshot block (or epoch) and total stake.
         if (rewardRound.amount == 0) {
-            // Record the exact historical block used for all stake lookups in this round.
-            uint256 snapshotBlock = _ensureSnapshotBlockFor(round);
+            if (groupId == 0) {
+                // Record the exact historical block used for all stake lookups in this round.
+                uint256 snapshotBlock = _ensureSnapshotBlockFor(round);
 
-            // Store the snapshot block in the packed uint48 field.
-            rewardRound.snapshotBlock = _toUint48(snapshotBlock);
+                // Store the snapshot block in the packed uint48 field.
+                rewardRound.snapshotBlock = _toUint48(snapshotBlock);
+
+                // Store the packed total stake that shares this group's round reward pot.
+                rewardRound.totalStake = _toUint208(_totalStake({hook: hook, blockNumber: snapshotBlock}));
+            } else {
+                // Criteria pots snapshot at the funding block: current bucket values ARE the snapshot, because
+                // tranches are append-only with now-timestamps and k >= 1.
+                uint256 snapshotEpoch = block.timestamp / STICKY_HOOK.EPOCH_DURATION();
+
+                // Store the snapshot epoch in the packed uint48 field.
+                rewardRound.snapshotEpoch = _toUint48(snapshotEpoch);
+
+                // Store the packed total stake that shares this group's round reward pot.
+                rewardRound.totalStake =
+                    _toUint208(_agedTotalStake({hook: hook, snapshotEpoch: snapshotEpoch, weeksRequired: groupId}));
+            }
 
             // Store the packed claim deadline fixed for this distributor.
             rewardRound.claimDeadline = claimDeadline;
-
-            // Store the packed total stake that shares this group's round reward pot.
-            rewardRound.totalStake = _toUint208(_totalStake({hook: hook, blockNumber: snapshotBlock}));
         }
 
         // Multiple additions in the same round share the same snapshot and reward pot.
@@ -1002,6 +1109,36 @@ contract JBStickyDistributor is IJBStickyDistributor {
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
+    /// @notice The total still-held stake at least `weeksRequired` epochs old, read at current bucket values.
+    /// @param hook The sticky token whose project's buckets are read.
+    /// @param snapshotEpoch The epoch being snapshotted.
+    /// @param weeksRequired The criteria threshold in epochs.
+    /// @return total The aged-stake denominator.
+    function _agedTotalStake(
+        address hook,
+        uint256 snapshotEpoch,
+        uint256 weeksRequired
+    )
+        internal
+        view
+        returns (uint256 total)
+    {
+        uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
+        uint256 firstPlusOne = STICKY_HOOK.firstStakeEpochPlusOneOf(projectId);
+
+        // No stake ever, or the threshold reaches past the first stake: nothing qualifies.
+        if (firstPlusOne == 0 || snapshotEpoch < weeksRequired || firstPlusOne - 1 > snapshotEpoch - weeksRequired) {
+            return 0;
+        }
+
+        uint256[] memory amounts = STICKY_HOOK.netStakedInEpochs({
+            projectId: projectId, fromEpoch: firstPlusOne - 1, toEpoch: snapshotEpoch - weeksRequired
+        });
+        for (uint256 i; i < amounts.length; i++) {
+            total += amounts[i];
+        }
+    }
+
     /// @notice Check if the account matches the staker address encoded in the token ID.
     /// @dev The token ID encodes the staker address as `uint256(uint160(stakerAddress))`.
     /// @param hook Unused — access is determined by the tokenId encoding.
@@ -1119,6 +1256,14 @@ contract JBStickyDistributor is IJBStickyDistributor {
     function _requireNotAcceptingToken() internal view {
         address token = _acceptingToken;
         if (token != address(0)) revert JBStickyDistributor_ReentrantTokenTransfer(token);
+    }
+
+    /// @notice Revert unless a reward group ID is the default group (0) or a supported stick-time-weeks criteria.
+    /// @dev Group IDs above `MAX_CRITERIA_WEEKS` are reserved for future curve-based criteria and are rejected until
+    /// implemented.
+    /// @param groupId The reward group ID to validate.
+    function _requireValidGroup(uint256 groupId) internal pure {
+        if (groupId > MAX_CRITERIA_WEEKS) revert JBStickyDistributor_InvalidCriteria({groupId: groupId});
     }
 
     /// @notice Whether a reward round has passed its claim deadline.
