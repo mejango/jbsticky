@@ -2482,9 +2482,9 @@ async function deployStreaks() {
   }
   const reward = BigInt(Math.round(rewardPercent * 100));
   const soulbound = $("d-soulbound").value === "1";
-  const humanGranters = $("d-add-granters").checked
-    ? ($("d-granters").value || "").split(",").map((value) => value.trim()).filter(Boolean)
-    : [];
+  // The auto-stick adapter is added below; launch-time human granters are not exposed in the UI —
+  // holders trust senders individually after launch.
+  const humanGranters = [];
   for (const granter of humanGranters) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(granter)) throw new Error(`bad airdrop sender: ${granter}`);
   }
@@ -3137,13 +3137,9 @@ for (const preset of document.querySelectorAll(".preset")) {
     renderCurve();
   };
 }
-$("d-add-granters").onchange = () => {
-  $("d-granters-row").classList.toggle("hide", !$("d-add-granters").checked);
-  $("d-granters-hint").classList.toggle("hide", !$("d-add-granters").checked);
-};
 $("create-toggle").onclick = () => {
-  for (const id of ["d-custom-name", "d-add-reward", "d-add-granters"]) $(id).checked = false;
-  for (const id of ["d-name-row", "d-name-hint", "d-reward-wrap", "d-reward-hint", "d-granters-row", "d-granters-hint"]) {
+  for (const id of ["d-custom-name", "d-add-reward"]) $(id).checked = false;
+  for (const id of ["d-name-row", "d-name-hint", "d-reward-wrap", "d-reward-hint"]) {
     $(id).classList.add("hide");
   }
   rewardChoice = "10";
@@ -3345,7 +3341,7 @@ function buildDemoData() {
     ],
     logos: {
       [projects[1].staked.toLowerCase()]: "artizen.jpg",
-      [projects[2].staked.toLowerCase()]: "goo.png",
+      [projects[2].staked.toLowerCase()]: "banny.png",
       [A("41").toLowerCase()]: "juicebox.png",
       [A("42").toLowerCase()]: "donut.png",
       [A("43").toLowerCase()]: "jar.png",
