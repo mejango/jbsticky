@@ -73,8 +73,15 @@ config = {
 }
 
 # Demo mode: serve baked fixture data (no contracts) so folks can see how Sticky works.
-# The fixture dataset lives in app.js; this flag just turns it on.
-if env("STICKY_DEMO").lower() in ("1", "true", "yes", "on"):
+# The fixture dataset lives in app.js; this flag just turns it on. Defaults ON until a real
+# deployer is configured, so the site is never an empty shell. Set STICKY_DEMO=false to force
+# it off (e.g. once contracts are hardcoded into the client).
+demo = env("STICKY_DEMO").lower()
+if demo in ("1", "true", "yes", "on"):
+    config["demoMode"] = True
+elif demo in ("0", "false", "no", "off"):
+    pass
+elif not deployer:
     config["demoMode"] = True
 
 with open("config.js", "w") as f:
