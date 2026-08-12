@@ -156,6 +156,7 @@ requestAnimationFrame(setInitialTopFold);
 window.addEventListener("load", () => requestAnimationFrame(setInitialTopFold), { once: true });
 
 async function rpc(method, params) {
+  if (window.__DEMO_RPC) return window.__DEMO_RPC(method, params);
   const res = await fetch($("rpc").value, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -3261,10 +3262,206 @@ $("connect-btn").addEventListener("click", () => {
 updateConnectButton();
 walletEagerConnect().then(updateConnectButton);
 
+// ------------------------------------------------------------------- demo
+// A fixture RPC: when demoMode is on, every rpc() call is answered from baked data instead of a
+// chain, so the whole app (home, project pages, quotes, your position) runs with no contracts —
+// for showing how Sticky works before the contracts ship. Swap demoMode off + set real
+// addresses to point at live testnet/production.
+function buildDemoData() {
+  const A = (suffix) => "0x" + suffix.toLowerCase().padStart(40, "0");
+  const now = Math.floor(Date.now() / 1000);
+  const you = "0x0e3d8D06Ec3c6b9a5815a3E66B129257079615c1";
+  const day = 86_400;
+  const u = (n) => parseUnits(String(n), 18);
+  const projects = {
+    2: {
+      id: 2, reward: 1000n, decimals: 18,
+      staked: A("ba2"), sticky: A("ba57"),
+      symbol: "BAN", name: "Banana", stSymbol: "STICKYBAN", stName: "Streaking BAN", soulbound: 1,
+      supply: u(950), sigma: u(1000),
+      holders: [
+        { addr: A("1111"), staked: u(500), start: now - 74 * day, longest: 74 * day },
+        { addr: A("2222"), staked: u(250), start: now - 40 * day, longest: 40 * day },
+        { addr: you, staked: u(200), start: now - 12 * day, longest: 30 * day },
+      ],
+      tranches: { [you.toLowerCase()]: [{ amount: u(150), ts: now - 12 * day }, { amount: u(50), ts: now - 3 * day }] },
+      stakes: [
+        { holder: A("1111"), payer: A("1111"), amount: u(500), ts: now - 74 * day },
+        { holder: A("2222"), payer: A("2222"), amount: u(250), ts: now - 40 * day },
+        { holder: you, payer: A("cccc"), amount: u(120), ts: now - 12 * day },
+        { holder: you, payer: you, amount: u(80), ts: now - 3 * day },
+      ],
+    },
+    1: {
+      id: 1, reward: 0n, decimals: 18,
+      staked: A("a27"), sticky: A("a57"),
+      symbol: "ART", name: "Art", stSymbol: "STICKYART", stName: "Streaking ART", soulbound: 1,
+      supply: u(3816), sigma: u(3816),
+      holders: [
+        { addr: A("1111"), staked: u(2500), start: now - 90 * day, longest: 90 * day },
+        { addr: A("2222"), staked: u(750), start: now - 55 * day, longest: 55 * day },
+        { addr: you, staked: u(566), start: now - 2 * day, longest: 41 * day },
+      ],
+      tranches: { [you.toLowerCase()]: [{ amount: u(500), ts: now - 2 * day }, { amount: u(66), ts: now - day }] },
+      stakes: [
+        { holder: A("1111"), payer: A("1111"), amount: u(2500), ts: now - 90 * day },
+        { holder: A("2222"), payer: A("2222"), amount: u(750), ts: now - 55 * day },
+        { holder: you, payer: A("dddd"), amount: u(500), ts: now - 2 * day },
+        { holder: you, payer: you, amount: u(66), ts: now - day },
+      ],
+    },
+  };
+  const byToken = {};
+  for (const p of Object.values(projects)) {
+    byToken[p.staked.toLowerCase()] = { p, kind: "staked" };
+    byToken[p.sticky.toLowerCase()] = { p, kind: "sticky" };
+  }
+  // Flatten stakes into hook logs (Staked), newest last; synthetic block numbers map to timestamps.
+  const logs = [];
+  const blockTs = {};
+  let bn = 0x1000;
+  for (const p of Object.values(projects)) {
+    for (const s of p.stakes.sort((a, b) => a.ts - b.ts)) {
+      const block = "0x" + (bn++).toString(16);
+      blockTs[block] = s.ts;
+      logs.push({
+        topics: [TOPIC.Staked, "0x" + word(p.id), "0x" + encAddress(s.holder)],
+        data: "0x" + encAddress(s.payer) + word(s.amount),
+        blockNumber: block,
+      });
+    }
+  }
+  return {
+    chainId: 1, now, you,
+    deployer: A("de91"), hook: A("40c"), tokens: A("70c"), terminal: A("ec1"),
+    store: A("57e"), controller: A("c04"),
+    projects, byToken, logs, blockTs,
+    wallet: { [you.toLowerCase()]: { [projects[1].staked.toLowerCase()]: u(995155), [projects[2].staked.toLowerCase()]: u(4200) } },
+    prices: { [projects[1].staked.toLowerCase()]: "35", [projects[2].staked.toLowerCase()]: "5" },
+    demoCards: [
+      { id: 41, symbol: "JBX", token: A("41"), stuck: "4.9", sticks: 10, bonus: 4 },
+      { id: 42, symbol: "REV", token: A("42"), stuck: "3.7", sticks: 9, bonus: 5 },
+      { id: 43, symbol: "NANA", token: A("43"), stuck: "1.9", sticks: 5, bonus: 2 },
+    ],
+    logos: {
+      [projects[1].staked.toLowerCase()]: "artizen.jpg",
+      [projects[2].staked.toLowerCase()]: "goo.png",
+      [A("41").toLowerCase()]: "juicebox.png",
+      [A("42").toLowerCase()]: "donut.png",
+      [A("43").toLowerCase()]: "jar.png",
+    },
+  };
+}
+
+let _demo = null;
+const demoData = () => (_demo ??= buildDemoData());
+
+function demoRpc(method, params) {
+  const D = demoData();
+  const enc = {
+    uint: (n) => "0x" + word(n),
+    addr: (a) => "0x" + encAddress(a),
+    bool: (b) => "0x" + word(b ? 1 : 0),
+    str: (s) => {
+      const bytes = new TextEncoder().encode(String(s));
+      let hex = ""; for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+      return "0x" + word(32) + word(bytes.length) + hex.padEnd(Math.ceil(bytes.length / 32) * 64, "0");
+    },
+    tranches: (list) => "0x" + word(32) + word(list.length)
+      + list.map((t) => word(t.amount) + word(t.ts)).join(""),
+  };
+  if (method === "eth_chainId") return Promise.resolve("0x" + D.chainId.toString(16));
+  if (method === "eth_getCode") return Promise.resolve("0x60006000");
+  if (method === "eth_getBlockByNumber") return Promise.resolve({ timestamp: "0x" + (D.blockTs[params[0]] || D.now).toString(16) });
+  if (method === "eth_getLogs") {
+    const f = params[0];
+    const addr = String(f.address || "").toLowerCase();
+    if (addr === D.deployer.toLowerCase()) {
+      return Promise.resolve(Object.values(D.projects).map((p) => ({
+        topics: [TOPIC.DeploySticky, "0x" + word(p.id)], data: "0x", blockNumber: "0x1",
+      })));
+    }
+    if (addr === D.hook.toLowerCase()) {
+      const set = new Set([].concat(f.topics?.[0] || []));
+      const pid = f.topics?.[1] ? decUint(f.topics[1]) : null;
+      return Promise.resolve(D.logs.filter((l) =>
+        (!set.size || set.has(l.topics[0])) && (pid === null || decUint(l.topics[1]) === pid)));
+    }
+    return Promise.resolve([]);
+  }
+  if (method === "eth_call") {
+    const to = String(params[0].to || "").toLowerCase();
+    const data = params[0].data || "0x";
+    const sel = data.slice(0, 10);
+    const arg = (i) => "0x" + data.slice(10 + i * 64, 10 + i * 64 + 64);
+    const idAt = (i) => Number(decUint(arg(i)));
+    if (to === D.deployer.toLowerCase()) {
+      if (sel === SEL.HOOK) return Promise.resolve(enc.addr(D.hook));
+      if (sel === SEL.TOKENS) return Promise.resolve(enc.addr(D.tokens));
+      if (sel === SEL.TERMINAL) return Promise.resolve(enc.addr(D.terminal));
+      if (sel === SEL.CONTROLLER) return Promise.resolve(enc.addr(D.controller));
+      if (sel === SEL.stakedTokenOf) return Promise.resolve(enc.addr(D.projects[idAt(0)]?.staked || "0x" + "0".repeat(40)));
+      if (sel === SEL.cashOutTaxRateOf) return Promise.resolve(enc.uint(D.projects[idAt(0)]?.reward ?? 0n));
+      if (sel === SEL.creationFee) return Promise.resolve(enc.uint(0));
+      if (sel === SEL.uriOf) return Promise.resolve(enc.str(""));
+    }
+    if (to === D.terminal.toLowerCase() && sel === SEL.STORE) return Promise.resolve(enc.addr(D.store));
+    if (to === D.store.toLowerCase() && sel === SEL.storeBalanceOf) {
+      // storeBalanceOf(terminal, projectId, token) — projectId is the 2nd arg.
+      return Promise.resolve(enc.uint(D.projects[idAt(1)]?.sigma ?? 0n));
+    }
+    if (to === D.tokens.toLowerCase()) {
+      if (sel === SEL.tokenOf) return Promise.resolve(enc.addr(D.projects[idAt(0)]?.sticky || "0x" + "0".repeat(40)));
+      if (sel === SEL.projectIdOf) return Promise.resolve(enc.uint(0));
+    }
+    if (to === D.hook.toLowerCase()) {
+      const p = D.projects[idAt(0)];
+      const who = decAddress(arg(1)).toLowerCase();
+      const holder = p?.holders.find((h) => h.addr.toLowerCase() === who);
+      if (sel === SEL.stakedBalanceOf) return Promise.resolve(enc.uint(holder?.staked ?? 0n));
+      if (sel === SEL.streakStartOf) return Promise.resolve(enc.uint(holder?.start ?? 0));
+      if (sel === SEL.longestStreakOf) return Promise.resolve(enc.uint(holder?.longest ?? 0));
+      if (sel === SEL.tranchesOf) return Promise.resolve(enc.tranches(p?.tranches[who] || []));
+      if (sel === SEL.isGranterOf) return Promise.resolve(enc.bool(false));
+      if (sel === SEL.isTrustedSenderOf) return Promise.resolve(enc.bool(false));
+    }
+    const t = D.byToken[to];
+    if (t) {
+      const p = t.p;
+      if (sel === SEL.symbol) return Promise.resolve(enc.str(t.kind === "sticky" ? p.stSymbol : p.symbol));
+      if (sel === SEL.name) return Promise.resolve(enc.str(t.kind === "sticky" ? p.stName : p.name));
+      if (sel === SEL.decimals) return Promise.resolve(enc.uint(p.decimals));
+      if (sel === SEL.SOULBOUND) return Promise.resolve(enc.uint(p.soulbound));
+      if (sel === SEL.totalSupply) return Promise.resolve(enc.uint(t.kind === "sticky" ? p.supply : p.sigma));
+      if (sel === SEL.balanceOf) {
+        const who = decAddress(arg(0)).toLowerCase();
+        if (t.kind === "staked") return Promise.resolve(enc.uint(D.wallet[who]?.[to] ?? 0n));
+        return Promise.resolve(enc.uint(p.holders.find((h) => h.addr.toLowerCase() === who)?.staked ?? 0n));
+      }
+      if (sel === SEL.allowance) return Promise.resolve(enc.uint(2n ** 255n));
+    }
+    return Promise.resolve("0x" + word(0));
+  }
+  return Promise.resolve(null);
+}
+
 // Baked-in config from config.js; the connection card stays hidden unless toggled.
 const config = window.STICKY_CONFIG ?? {};
-$("rpc").value = config.rpcUrl ?? "http://localhost:8545";
-if (config.deployer) $("deployer").value = config.deployer;
-if (config.account) $("account").value = config.account;
-if (config.deployer) guard(loadDeployer)();
+if (config.demoMode) {
+  const D = demoData();
+  window.__DEMO_RPC = demoRpc;
+  config.usdPriceOverrides = { ...(config.usdPriceOverrides || {}), ...D.prices };
+  config.logoOverrides = { ...(config.logoOverrides || {}), ...D.logos };
+  config.demoHomeStickiest = D.demoCards;
+  window.STICKY_CONFIG = config;
+  $("rpc").value = "demo";
+  $("deployer").value = D.deployer;
+  $("account").value = D.you;
+  guard(loadDeployer)();
+} else {
+  $("rpc").value = config.rpcUrl ?? "http://localhost:8545";
+  if (config.deployer) $("deployer").value = config.deployer;
+  if (config.account) $("account").value = config.account;
+  if (config.deployer) guard(loadDeployer)();
+}
 setInterval(() => refreshPosition().catch(() => {}), 15_000);
