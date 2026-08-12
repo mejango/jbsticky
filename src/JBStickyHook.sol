@@ -414,6 +414,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param count The number of tokens joining, as a fixed point number with 18 decimals.
     /// @return stakedBalance The holder's staked balance after the addition.
     function _addTo(uint256 projectId, address holder, uint256 count) internal returns (uint256 stakedBalance) {
+        // Nothing joined the position: no tranche, no bucket credit, no streak start.
+        if (count == 0) return stakedBalanceOf[projectId][holder];
+
         // Record a new tranche with its own timestamp.
         _tranchesOf[projectId][holder].push(
             JBStickyTranche({amount: SafeCast.toUint208(count), timestamp: SafeCast.toUint48(block.timestamp)})
@@ -443,6 +446,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param count The number of tokens leaving, as a fixed point number with 18 decimals.
     /// @return stakedBalance The holder's staked balance after the consumption.
     function _consumeFrom(uint256 projectId, address holder, uint256 count) internal returns (uint256 stakedBalance) {
+        // Nothing left the position: no tranche touched, no streak ended.
+        if (count == 0) return stakedBalanceOf[projectId][holder];
+
         // Keep a reference to the number of tokens left to consume from tranches.
         uint256 remaining = count;
 

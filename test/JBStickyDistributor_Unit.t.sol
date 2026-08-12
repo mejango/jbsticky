@@ -561,4 +561,82 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _beginVestingGroupFor(carol, 1);
         assertEq(_collectableGroupFor(carol, 1), 0); // epoch 12 > snapshotEpoch(12) - 1
     }
+
+    function test_transferDoesNotInheritAgeForCriteriaClaims() public {
+        // A transferable sticky project, independent of this file's soulbound `stickyToken`.
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        uint256 openProjectId = deployer.deployStickyFor{value: fee}({
+            stakedToken: IERC20Metadata(address(staked)),
+            name: "Open Sticky",
+            symbol: "OSTICKY",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: false
+        });
+        IJBToken openToken = jbTokens().tokenOf(openProjectId);
+
+        vm.warp(10 weeks + 1);
+        staked.mint({to: alice, amount: 100e18});
+        vm.startPrank(alice);
+        staked.approve({spender: address(jbMultiTerminal()), value: 100e18});
+        jbMultiTerminal()
+            .pay({
+            projectId: openProjectId,
+            token: address(staked),
+            amount: 100e18,
+            beneficiary: alice,
+            minReturnedTokens: 0,
+            memo: "",
+            metadata: bytes("")
+        });
+        vm.stopPrank();
+
+        vm.warp(12 weeks + 1);
+        reward.mint({to: funder, amount: 100e18});
+        vm.startPrank(funder);
+        reward.approve({spender: address(distributor), value: 100e18});
+        distributor.fund({hook: address(openToken), token: IERC20(address(reward)), amount: 100e18, groupId: 1});
+        vm.stopPrank();
+
+        // Alice transfers half her position to carol AFTER the snapshot, in the same epoch it was funded. LIFO
+        // consumes her only (aged) tranche, splitting it: her remaining 50e18 keeps the aged epoch-10 timestamp,
+        // and carol's new 50e18 tranche is timestamped now — too young to age into this round's cutoff (epoch
+        // 12 - 1 = 11). The receiver never inherits the sender's age.
+        vm.prank(alice);
+        IERC20(address(openToken)).transfer({to: carol, value: 50e18});
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        distributor.beginVesting({
+            hook: address(openToken), groupId: 1, tokenIds: _tokenIds(alice), tokens: _rewardTokens()
+        });
+        distributor.beginVesting({
+            hook: address(openToken), groupId: 1, tokenIds: _tokenIds(carol), tokens: _rewardTokens()
+        });
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+
+        uint256 aliceBalanceBefore = reward.balanceOf(alice);
+        distributor.collectVestedRewards({
+            hook: address(openToken),
+            groupId: 1,
+            tokenIds: _tokenIds(alice),
+            tokens: _rewardTokens(),
+            beneficiary: alice
+        });
+        // The denominator was pinned at fund time (100e18, all alice's). Her surviving aged tranche is only half
+        // of that, so she claims half the pot; the other half is forfeit (available for recycle), matching the
+        // deep-exit forfeiture pattern — a transfer-out behaves like a partial unstake for aged weight.
+        assertEq(reward.balanceOf(alice) - aliceBalanceBefore, 50e18);
+
+        uint256 carolBalanceBefore = reward.balanceOf(carol);
+        distributor.collectVestedRewards({
+            hook: address(openToken),
+            groupId: 1,
+            tokenIds: _tokenIds(carol),
+            tokens: _rewardTokens(),
+            beneficiary: carol
+        });
+        assertEq(reward.balanceOf(carol) - carolBalanceBefore, 0);
+    }
 }

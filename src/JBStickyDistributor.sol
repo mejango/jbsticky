@@ -102,6 +102,10 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @notice The JB directory used to verify terminal/controller callers.
     IJBDirectory public immutable override DIRECTORY;
 
+    /// @notice The duration of one stick-age epoch, cached from `STICKY_HOOK.EPOCH_DURATION()` at deployment so
+    /// criteria-group accounting doesn't re-hit the hook for an immutable value on every round.
+    uint256 public immutable EPOCH_DURATION;
+
     /// @notice The duration of each round, specified in seconds.
     uint256 public immutable override ROUND_DURATION;
 
@@ -206,6 +210,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
         }
         CLAIM_DURATION = initialClaimDuration;
         DIRECTORY = directory;
+        EPOCH_DURATION = stickyHook.EPOCH_DURATION();
         ROUND_DURATION = initialRoundDuration;
         STARTING_TIMESTAMP = block.timestamp;
         STICKY_HOOK = stickyHook;
@@ -693,12 +698,14 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @param groupId The reward group being claimed (0 = the default group).
     /// @param tokenId The encoded staker address.
     /// @param rewardRound The stored reward-round data.
+    /// @param tranches The claiming account's tranches, oldest first — unused for group 0.
     /// @return tokenAmount The amount added to vesting.
     function _claimRewardRoundFor(
         address hook,
         uint256 groupId,
         uint256 tokenId,
-        JBStickyRewardRoundData storage rewardRound
+        JBStickyRewardRoundData storage rewardRound,
+        JBStickyTranche[] memory tranches
     )
         internal
         returns (uint256 tokenAmount)
@@ -710,18 +717,17 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // tranches that are old enough as of the funding round's snapshot epoch.
         uint256 tokenStakeAmount = groupId == 0
             ? _tokenStakeAt({hook: hook, tokenId: tokenId, blockNumber: rewardRound.snapshotBlock})
-            : _agedStakeOf({
-                hook: hook,
-                account: _claimBeneficiaryOf({hook: hook, tokenId: tokenId}),
-                snapshotEpoch: rewardRound.snapshotEpoch,
-                weeksRequired: groupId
-            });
+            : _agedStakeOf({tranches: tranches, snapshotEpoch: rewardRound.snapshotEpoch, weeksRequired: groupId});
 
         // Zero-vote stakers advance their cursor but do not consume reward inventory.
         if (tokenStakeAmount == 0) return 0;
 
         // The round's reward pot is split pro-rata across checkpointed voting power.
         uint256 claimAmount = mulDiv({x: rewardRound.amount, y: tokenStakeAmount, denominator: rewardRound.totalStake});
+
+        // Bound the claim by what's actually left in the pot, so claimedAmount can never exceed amount.
+        uint256 remainingPot = uint256(rewardRound.amount) - uint256(rewardRound.claimedAmount);
+        if (claimAmount > remainingPot) claimAmount = remainingPot;
 
         // Ignore floor-rounded zero claims to avoid unnecessary storage writes.
         if (claimAmount == 0) return 0;
@@ -755,6 +761,15 @@ contract JBStickyDistributor is IJBStickyDistributor {
     {
         newNextClaimRound = lastRound + 1;
 
+        // Criteria groups weigh the same live tranche array against every round in this walk — only the round's
+        // cutoff epoch changes — so fetch it once instead of once per round. Group 0 never reads tranches.
+        JBStickyTranche[] memory tranches = groupId == 0
+            ? new JBStickyTranche[](0)
+            : STICKY_HOOK.tranchesOf({
+                projectId: IJBStickyToken(hook).PROJECT_ID(),
+                holder: _claimBeneficiaryOf({hook: hook, tokenId: tokenId})
+            });
+
         // Walk every unclaimed historical round. The caller bounds this to completed rounds only.
         for (uint256 rewardRoundNumber = firstRound; rewardRoundNumber <= lastRound;) {
             // Load this round's reward data for the sticky token, group, and reward token.
@@ -768,7 +783,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
                 } else {
                     // Live rounds can still be materialized by snapshot voters into fresh vesting entries.
                     tokenAmount += _claimRewardRoundFor({
-                        hook: hook, groupId: groupId, tokenId: tokenId, rewardRound: rewardRound
+                        hook: hook, groupId: groupId, tokenId: tokenId, rewardRound: rewardRound, tranches: tranches
                     });
                 }
             }
@@ -900,7 +915,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
             } else {
                 // Criteria pots snapshot at the funding block: current bucket values ARE the snapshot, because
                 // tranches are append-only with now-timestamps and k >= 1.
-                uint256 snapshotEpoch = block.timestamp / STICKY_HOOK.EPOCH_DURATION();
+                uint256 snapshotEpoch = block.timestamp / EPOCH_DURATION;
 
                 // Store the snapshot epoch in the packed uint48 field.
                 rewardRound.snapshotEpoch = _toUint48(snapshotEpoch);
@@ -1177,15 +1192,14 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @notice A holder's live tranche amount old enough for a round's criteria.
     /// @dev Live tranches are safe: they're append-only with now-timestamps (nothing staked after the snapshot can
     /// reach an epoch <= snapshotEpoch - k with k >= 1), and LIFO unstaking means post-snapshot exits only reduce
-    /// the exiting holder's own weight. You must still be stuck to collect.
-    /// @param hook The sticky token whose project's tranches are read.
-    /// @param account The holder claiming.
+    /// the exiting holder's own weight. You must still be staked to claim.
+    /// @param tranches The holder's tranches, oldest first — fetched once by the caller and reused across every
+    /// round in a claim walk, since only `snapshotEpoch` (and so the cutoff) varies per round.
     /// @param snapshotEpoch The round's pinned epoch.
     /// @param weeksRequired The criteria threshold in epochs.
     /// @return amount The holder's aged stake.
     function _agedStakeOf(
-        address hook,
-        address account,
+        JBStickyTranche[] memory tranches,
         uint256 snapshotEpoch,
         uint256 weeksRequired
     )
@@ -1195,15 +1209,9 @@ contract JBStickyDistributor is IJBStickyDistributor {
     {
         if (snapshotEpoch < weeksRequired) return 0;
         uint256 cutoff = snapshotEpoch - weeksRequired;
-        JBStickyTranche[] memory tranches =
-            STICKY_HOOK.tranchesOf({projectId: IJBStickyToken(hook).PROJECT_ID(), holder: account});
-
-        // Hoisted out of the loop: one external call instead of one per tranche.
-        uint256 epochDuration = STICKY_HOOK.EPOCH_DURATION();
-
         for (uint256 i; i < tranches.length; i++) {
             // Tranches are oldest-first with nondecreasing timestamps; stop at the first too-young one.
-            if (uint256(tranches[i].timestamp) / epochDuration > cutoff) break;
+            if (uint256(tranches[i].timestamp) / EPOCH_DURATION > cutoff) break;
             amount += tranches[i].amount;
         }
     }

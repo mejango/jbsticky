@@ -352,6 +352,30 @@ contract JBStickyHookUnitTest is Test {
         hook.netStakedInEpochs(PROJECT_ID, 12, 10);
     }
 
+    function test_recordTransfer_zeroAmountCreatesNoTrancheAndStartsNoStreak() public {
+        address token = makeAddr("token");
+        vm.prank(deployer);
+        hook.setTokenFor({projectId: PROJECT_ID, token: token});
+
+        // Holder already has a position; a zero-value transfer must not touch it.
+        _pay(holder, 10e18);
+        uint256 streakStart = hook.streakStartOf(PROJECT_ID, holder);
+
+        address receiver = makeAddr("receiver");
+        vm.prank(token);
+        hook.recordTransfer({projectId: PROJECT_ID, from: holder, to: receiver, amount: 0});
+
+        // The sender's position is untouched.
+        assertEq(hook.trancheCountOf(PROJECT_ID, holder), 1);
+        assertEq(hook.stakedBalanceOf(PROJECT_ID, holder), 10e18);
+        assertEq(hook.streakStartOf(PROJECT_ID, holder), streakStart);
+
+        // The receiver gets nothing: no tranche, no streak, no balance.
+        assertEq(hook.trancheCountOf(PROJECT_ID, receiver), 0);
+        assertEq(hook.streakStartOf(PROJECT_ID, receiver), 0);
+        assertEq(hook.stakedBalanceOf(PROJECT_ID, receiver), 0);
+    }
+
     function _beforePayContext(uint256 value) internal view returns (JBBeforePayRecordedContext memory) {
         return JBBeforePayRecordedContext({
             terminal: terminal,
