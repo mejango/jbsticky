@@ -25,10 +25,13 @@ contract InvariantErc20 is ERC20 {
     }
 }
 
-/// @notice Drives a bounded actor set through every distributor and hook entrypoint against one transferable sticky
-/// project, tracking the ghost accounting `JBStickyDistributorInvariantTest` checks its invariants against.
+/// @notice Drives a bounded actor set through every distributor and hook entrypoint against two sticky projects —
+/// one transferable, one soulbound — that share the same reward token, tracking the ghost accounting
+/// `JBStickyDistributorInvariantTest` checks its invariants against.
 /// @dev Every action bumps the block number first, so group-0 votes snapshots (which require a strictly past block)
-/// never revert regardless of call order.
+/// never revert regardless of call order. The second project keeps a lean action set (stake, fund, claim only — no
+/// transfer, unstake, or recycle) since it exists solely to exercise per-hook custody isolation, not bucket
+/// conservation.
 contract JBStickyDistributorHandler is Test {
     uint256 internal constant MAX_STAKE_AMOUNT = 1_000_000e18;
     uint256 internal constant MAX_FUND_AMOUNT = 1_000_000e18;
@@ -40,15 +43,27 @@ contract JBStickyDistributorHandler is Test {
     InvariantErc20 public immutable reward;
     IJBToken public immutable stickyToken;
     uint256 public immutable projectId;
+    IJBToken public immutable stickyToken2;
+    uint256 public immutable projectId2;
     uint256 public immutable EPOCH_DURATION;
 
     address[] public actors;
 
-    /// @notice The total amount of the reward token ever actually accepted into distributor custody.
+    /// @notice The total amount of the reward token ever actually accepted into distributor custody, across both
+    /// hooks.
     uint256 public ghost_fundedTotal;
 
-    /// @notice The total amount of the reward token ever actually transferred out to a collecting actor.
+    /// @notice The total amount of the reward token ever actually transferred out to a collecting actor, across
+    /// both hooks.
     uint256 public ghost_collectedTotal;
+
+    /// @notice The amount of the reward token ever actually accepted into custody for one hook.
+    /// @custom:param hook The sticky token the funding was credited to.
+    mapping(address hook => uint256) public ghost_fundedOf;
+
+    /// @notice The amount of the reward token ever actually transferred out to a collecting actor for one hook.
+    /// @custom:param hook The sticky token the collection was debited from.
+    mapping(address hook => uint256) public ghost_collectedOf;
 
     /// @notice The touched reward round with the highest claimedAmount/amount ratio observed so far.
     JBStickyRewardRoundData public worstRound;
@@ -67,6 +82,8 @@ contract JBStickyDistributorHandler is Test {
         InvariantErc20 reward_,
         IJBToken stickyToken_,
         uint256 projectId_,
+        IJBToken stickyToken2_,
+        uint256 projectId2_,
         address[] memory actors_
     ) {
         HOOK = hook_;
@@ -76,6 +93,8 @@ contract JBStickyDistributorHandler is Test {
         reward = reward_;
         stickyToken = stickyToken_;
         projectId = projectId_;
+        stickyToken2 = stickyToken2_;
+        projectId2 = projectId2_;
         actors = actors_;
         EPOCH_DURATION = hook_.EPOCH_DURATION();
     }
@@ -89,7 +108,7 @@ contract JBStickyDistributorHandler is Test {
         _;
     }
 
-    /// @notice Stake a bounded amount of the underlying for a bounded actor.
+    /// @notice Stake a bounded amount of the underlying for a bounded actor in the primary (transferable) project.
     function stake(uint256 actorSeed, uint256 amountSeed) external bumpBlock {
         address actor = _actor(actorSeed);
         uint256 amount = bound(amountSeed, 1, MAX_STAKE_AMOUNT);
@@ -111,7 +130,7 @@ contract JBStickyDistributorHandler is Test {
         _trackStakeEpoch();
     }
 
-    /// @notice Unstake a bounded amount (partial or full) for a bounded actor.
+    /// @notice Unstake a bounded amount (partial or full) for a bounded actor in the primary project.
     function unstake(uint256 actorSeed, uint256 countSeed) external bumpBlock {
         address actor = _actor(actorSeed);
         uint256 balance = HOOK.stakedBalanceOf({projectId: projectId, holder: actor});
@@ -145,42 +164,112 @@ contract JBStickyDistributorHandler is Test {
         _trackStakeEpoch();
     }
 
-    /// @notice Fund the default (votes-weighted) group's current round with a bounded amount.
+    /// @notice Stake a bounded amount of the underlying for a bounded actor in the second (soulbound) project — the
+    /// only entrypoint that ever touches `projectId2`, so this project exists purely to give the distributor a
+    /// second hook whose custody must never leak into the first.
+    function stake2(uint256 actorSeed, uint256 amountSeed) external bumpBlock {
+        address actor = _actor(actorSeed);
+        uint256 amount = bound(amountSeed, 1, MAX_STAKE_AMOUNT);
+
+        staked.mint({to: actor, amount: amount});
+        vm.startPrank(actor);
+        staked.approve({spender: address(terminal), value: amount});
+        terminal.pay({
+            projectId: projectId2,
+            token: address(staked),
+            amount: amount,
+            beneficiary: actor,
+            minReturnedTokens: 0,
+            memo: "",
+            metadata: bytes("")
+        });
+        vm.stopPrank();
+    }
+
+    /// @notice Fund the primary project's default (votes-weighted) group's current round with a bounded amount.
     function fundDefaultGroup(uint256 amountSeed) external bumpBlock {
-        _fund({groupId: 0, amountSeed: amountSeed});
+        _fund({hookAddr: address(stickyToken), groupId: 0, amountSeed: amountSeed});
     }
 
-    /// @notice Fund a bounded stick-time criteria group's current round with a bounded amount.
+    /// @notice Fund the primary project's bounded stick-time criteria group's current round with a bounded amount.
     function fundCriteriaGroup(uint256 groupSeed, uint256 amountSeed) external bumpBlock {
-        _fund({groupId: _criteriaGroup(groupSeed), amountSeed: amountSeed});
+        _fund({hookAddr: address(stickyToken), groupId: _criteriaGroup(groupSeed), amountSeed: amountSeed});
     }
 
-    /// @notice Begin vesting a bounded actor's unclaimed rounds in the default group.
+    /// @notice Fund the second project's default group's current round with a bounded amount, from the same reward
+    /// token as the primary project.
+    function fundDefaultGroup2(uint256 amountSeed) external bumpBlock {
+        _fund({hookAddr: address(stickyToken2), groupId: 0, amountSeed: amountSeed});
+    }
+
+    /// @notice Fund the second project's bounded stick-time criteria group's current round with a bounded amount.
+    function fundCriteriaGroup2(uint256 groupSeed, uint256 amountSeed) external bumpBlock {
+        _fund({hookAddr: address(stickyToken2), groupId: _criteriaGroup(groupSeed), amountSeed: amountSeed});
+    }
+
+    /// @notice Begin vesting a bounded actor's unclaimed rounds in the primary project's default group.
     function beginVestingDefault(uint256 actorSeed) external bumpBlock {
-        _claimAndSweep({actor: _actor(actorSeed), groupId: 0, collect: false});
+        _claimAndSweep({hookAddr: address(stickyToken), actor: _actor(actorSeed), groupId: 0, collect: false});
     }
 
-    /// @notice Begin vesting a bounded actor's unclaimed rounds in a bounded criteria group.
+    /// @notice Begin vesting a bounded actor's unclaimed rounds in the primary project's bounded criteria group.
     function beginVestingCriteria(uint256 actorSeed, uint256 groupSeed) external bumpBlock {
-        _claimAndSweep({actor: _actor(actorSeed), groupId: _criteriaGroup(groupSeed), collect: false});
+        _claimAndSweep({
+            hookAddr: address(stickyToken), actor: _actor(actorSeed), groupId: _criteriaGroup(groupSeed), collect: false
+        });
     }
 
-    /// @notice Begin vesting and collect a bounded actor's unlocked rewards in the default group.
+    /// @notice Begin vesting and collect a bounded actor's unlocked rewards in the primary project's default group.
     function collectDefault(uint256 actorSeed) external bumpBlock {
-        _claimAndSweep({actor: _actor(actorSeed), groupId: 0, collect: true});
+        _claimAndSweep({hookAddr: address(stickyToken), actor: _actor(actorSeed), groupId: 0, collect: true});
     }
 
-    /// @notice Begin vesting and collect a bounded actor's unlocked rewards in a bounded criteria group.
+    /// @notice Begin vesting and collect a bounded actor's unlocked rewards in the primary project's bounded
+    /// criteria group.
     function collectCriteria(uint256 actorSeed, uint256 groupSeed) external bumpBlock {
-        _claimAndSweep({actor: _actor(actorSeed), groupId: _criteriaGroup(groupSeed), collect: true});
+        _claimAndSweep({
+            hookAddr: address(stickyToken), actor: _actor(actorSeed), groupId: _criteriaGroup(groupSeed), collect: true
+        });
     }
 
-    /// @notice Recycle a bounded expired round in the default group into the current round.
+    /// @notice Begin vesting a bounded actor's unclaimed rounds in the second project's default group.
+    function beginVestingDefault2(uint256 actorSeed) external bumpBlock {
+        _claimAndSweep({hookAddr: address(stickyToken2), actor: _actor(actorSeed), groupId: 0, collect: false});
+    }
+
+    /// @notice Begin vesting a bounded actor's unclaimed rounds in the second project's bounded criteria group.
+    function beginVestingCriteria2(uint256 actorSeed, uint256 groupSeed) external bumpBlock {
+        _claimAndSweep({
+            hookAddr: address(stickyToken2),
+            actor: _actor(actorSeed),
+            groupId: _criteriaGroup(groupSeed),
+            collect: false
+        });
+    }
+
+    /// @notice Begin vesting and collect a bounded actor's unlocked rewards in the second project's default group.
+    function collectDefault2(uint256 actorSeed) external bumpBlock {
+        _claimAndSweep({hookAddr: address(stickyToken2), actor: _actor(actorSeed), groupId: 0, collect: true});
+    }
+
+    /// @notice Begin vesting and collect a bounded actor's unlocked rewards in the second project's bounded criteria
+    /// group.
+    function collectCriteria2(uint256 actorSeed, uint256 groupSeed) external bumpBlock {
+        _claimAndSweep({
+            hookAddr: address(stickyToken2),
+            actor: _actor(actorSeed),
+            groupId: _criteriaGroup(groupSeed),
+            collect: true
+        });
+    }
+
+    /// @notice Recycle a bounded expired round in the primary project's default group into the current round.
     function recycleDefault(uint256 roundSeed) external bumpBlock {
         _recycle({groupId: 0, roundSeed: roundSeed});
     }
 
-    /// @notice Recycle a bounded expired round in a bounded criteria group into the current round.
+    /// @notice Recycle a bounded expired round in the primary project's bounded criteria group into the current
+    /// round.
     function recycleCriteria(uint256 groupSeed, uint256 roundSeed) external bumpBlock {
         _recycle({groupId: _criteriaGroup(groupSeed), roundSeed: roundSeed});
     }
@@ -195,8 +284,8 @@ contract JBStickyDistributorHandler is Test {
     // ------------------------------- views -------------------------------- //
     //*********************************************************************//
 
-    /// @notice The sum of every touched epoch's still-held bucket for the project — every bucket that could ever be
-    /// non-zero was created by a stake or transfer-receive within `[minTouchedEpoch, maxTouchedEpoch]`.
+    /// @notice The sum of every touched epoch's still-held bucket for the primary project — every bucket that could
+    /// ever be non-zero was created by a stake or transfer-receive within `[minTouchedEpoch, maxTouchedEpoch]`.
     function sumBuckets() external view returns (uint256 total) {
         if (maxTouchedEpoch < minTouchedEpoch) return 0;
         for (uint256 epoch = minTouchedEpoch; epoch <= maxTouchedEpoch; epoch++) {
@@ -204,7 +293,7 @@ contract JBStickyDistributorHandler is Test {
         }
     }
 
-    /// @notice The sum of every bounded actor's staked balance.
+    /// @notice The sum of every bounded actor's staked balance in the primary project.
     function sumStakedBalances() external view returns (uint256 total) {
         uint256 length = actors.length;
         for (uint256 i; i < length; i++) {
@@ -242,7 +331,7 @@ contract JBStickyDistributorHandler is Test {
         if (epoch > maxTouchedEpoch) maxTouchedEpoch = epoch;
     }
 
-    function _fund(uint256 groupId, uint256 amountSeed) internal {
+    function _fund(address hookAddr, uint256 groupId, uint256 amountSeed) internal {
         uint256 amount = bound(amountSeed, 0, MAX_FUND_AMOUNT);
         if (amount == 0) return;
 
@@ -251,52 +340,46 @@ contract JBStickyDistributorHandler is Test {
         uint256 balanceBefore = reward.balanceOf(address(distributor));
 
         if (groupId == 0) {
-            distributor.fund({hook: address(stickyToken), token: IERC20(address(reward)), amount: amount});
+            distributor.fund({hook: hookAddr, token: IERC20(address(reward)), amount: amount});
         } else {
-            distributor.fund({
-                hook: address(stickyToken), token: IERC20(address(reward)), amount: amount, groupId: groupId
-            });
+            distributor.fund({hook: hookAddr, token: IERC20(address(reward)), amount: amount, groupId: groupId});
         }
 
-        ghost_fundedTotal += reward.balanceOf(address(distributor)) - balanceBefore;
+        uint256 delta = reward.balanceOf(address(distributor)) - balanceBefore;
+        ghost_fundedOf[hookAddr] += delta;
+        ghost_fundedTotal += delta;
     }
 
-    /// @notice Begins vesting (and optionally collects) `actor`'s unclaimed rounds, then sweeps exactly the round
-    /// range the distributor just walked internally to refresh `worstRound`.
-    function _claimAndSweep(address actor, uint256 groupId, bool collect) internal {
+    /// @notice Begins vesting (and optionally collects) `actor`'s unclaimed rounds for one hook, then sweeps exactly
+    /// the round range the distributor just walked internally to refresh `worstRound`.
+    function _claimAndSweep(address hookAddr, address actor, uint256 groupId, bool collect) internal {
         uint256 tokenId = uint256(uint160(actor));
-        uint256 firstRound = groupId == 0
-            ? distributor.nextClaimRoundOf(address(stickyToken), 0, tokenId, IERC20(address(reward)))
-            : distributor.nextClaimRoundOf(address(stickyToken), groupId, tokenId, IERC20(address(reward)));
+        uint256 firstRound = distributor.nextClaimRoundOf(hookAddr, groupId, tokenId, IERC20(address(reward)));
 
         if (collect) {
             uint256 balanceBefore = reward.balanceOf(actor);
             if (groupId == 0) {
                 distributor.collectVestedRewards({
-                    hook: address(stickyToken), tokenIds: _tokenIds(actor), tokens: _tokens(), beneficiary: actor
+                    hook: hookAddr, tokenIds: _tokenIds(actor), tokens: _tokens(), beneficiary: actor
                 });
             } else {
                 distributor.collectVestedRewards({
-                    hook: address(stickyToken),
-                    groupId: groupId,
-                    tokenIds: _tokenIds(actor),
-                    tokens: _tokens(),
-                    beneficiary: actor
+                    hook: hookAddr, groupId: groupId, tokenIds: _tokenIds(actor), tokens: _tokens(), beneficiary: actor
                 });
             }
-            ghost_collectedTotal += reward.balanceOf(actor) - balanceBefore;
+            uint256 delta = reward.balanceOf(actor) - balanceBefore;
+            ghost_collectedOf[hookAddr] += delta;
+            ghost_collectedTotal += delta;
         } else if (groupId == 0) {
-            distributor.beginVesting({hook: address(stickyToken), tokenIds: _tokenIds(actor), tokens: _tokens()});
+            distributor.beginVesting({hook: hookAddr, tokenIds: _tokenIds(actor), tokens: _tokens()});
         } else {
-            distributor.beginVesting({
-                hook: address(stickyToken), groupId: groupId, tokenIds: _tokenIds(actor), tokens: _tokens()
-            });
+            distributor.beginVesting({hook: hookAddr, groupId: groupId, tokenIds: _tokenIds(actor), tokens: _tokens()});
         }
 
         uint256 round = distributor.currentRound();
         if (round == 0 || firstRound >= round) return;
         for (uint256 r = firstRound; r < round; r++) {
-            _updateWorstRound({groupId: groupId, round: r});
+            _updateWorstRound({hookAddr: hookAddr, groupId: groupId, round: r});
         }
     }
 
@@ -314,14 +397,14 @@ contract JBStickyDistributorHandler is Test {
             });
         }
 
-        _updateWorstRound({groupId: groupId, round: round});
-        _updateWorstRound({groupId: groupId, round: distributor.currentRound()});
+        _updateWorstRound({hookAddr: address(stickyToken), groupId: groupId, round: round});
+        _updateWorstRound({hookAddr: address(stickyToken), groupId: groupId, round: distributor.currentRound()});
     }
 
-    /// @notice Refreshes `worstRound` if the given (group, round) pair's claimedAmount/amount ratio is the highest
-    /// observed so far. This suite bounds every stake and fund amount well under `type(uint208).max`, so the
+    /// @notice Refreshes `worstRound` if the given (hook, group, round) triple's claimedAmount/amount ratio is the
+    /// highest observed so far. This suite bounds every stake and fund amount well under `type(uint208).max`, so the
     /// cross-multiplied comparison never overflows.
-    function _updateWorstRound(uint256 groupId, uint256 round) internal {
+    function _updateWorstRound(address hookAddr, uint256 groupId, uint256 round) internal {
         (
             uint208 amount,
             uint48 snapshotBlock,
@@ -329,7 +412,7 @@ contract JBStickyDistributorHandler is Test {
             uint48 claimDeadline,
             uint208 totalStake,
             uint48 snapshotEpoch
-        ) = distributor.rewardRoundOf(address(stickyToken), groupId, IERC20(address(reward)), round);
+        ) = distributor.rewardRoundOf(hookAddr, groupId, IERC20(address(reward)), round);
 
         // Rounds that never received funding have no ratio to compare.
         if (amount == 0) return;
@@ -349,12 +432,13 @@ contract JBStickyDistributorHandler is Test {
     }
 }
 
-/// @notice Invariant suite: the distributor can never over-promise its reward-token inventory, and the hook's
-/// per-epoch buckets always sum to exactly what's staked.
-/// @dev Drives one transferable sticky project through a bounded actor set. A fourth invariant — the distributor's
-/// per-hook `balanceOf` bounding per-hook unvested inventory — is redundant with `invariant_potSolvency` here,
-/// because this suite drives a single sticky project: the per-hook balance and the token's total distributor
-/// balance are the same number. It's skipped rather than asserted twice.
+/// @notice Invariant suite: the distributor can never over-promise its reward-token inventory, one hook's custody
+/// can never leak into another's, and the primary project's per-epoch buckets always sum to exactly what's staked.
+/// @dev Drives two sticky projects sharing one reward token through a bounded actor set: a transferable primary
+/// project (stake, unstake, transfer, fund, claim, recycle) and a soulbound second project (stake, fund, claim
+/// only) that exists solely to make cross-hook custody isolation falsifiable — the distributor pools every hook's
+/// reward-token balance in one real ERC-20 account (`_accountedBalanceOf`) but must keep each hook's share
+/// separately in `_balanceOf`, and that separation is exactly what `invariant_hookCustodyIsolation` checks.
 contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     uint256 constant ROUND_DURATION = 3 weeks;
     uint256 constant VESTING_ROUNDS = 2;
@@ -367,6 +451,8 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     JBStickyDistributor distributor;
     IJBToken stickyToken;
     uint256 projectId;
+    IJBToken stickyToken2;
+    uint256 projectId2;
 
     JBStickyDistributorHandler handler;
 
@@ -380,7 +466,7 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
         hook = deployer.HOOK();
 
         uint256 fee = jbProjects().creationFee();
-        vm.deal(address(this), fee);
+        vm.deal(address(this), 2 * fee);
         projectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(staked)),
             name: "Sticky",
@@ -391,6 +477,19 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
             soulbound: false
         });
         stickyToken = jbTokens().tokenOf(projectId);
+
+        // A second, soulbound sticky project sharing the same staked and reward tokens — the distributor's second
+        // hook, so custody isolation between hooks is actually exercised instead of assumed.
+        projectId2 = deployer.deployStickyFor{value: fee}({
+            stakedToken: IERC20Metadata(address(staked)),
+            name: "Sticky 2",
+            symbol: "STICKY2",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: true
+        });
+        stickyToken2 = jbTokens().tokenOf(projectId2);
 
         distributor = new JBStickyDistributor({
             directory: jbDirectory(),
@@ -415,6 +514,8 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
             reward_: reward,
             stickyToken_: stickyToken,
             projectId_: projectId,
+            stickyToken2_: stickyToken2,
+            projectId2_: projectId2,
             actors_: actors
         });
 
@@ -431,8 +532,60 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
         assertGe(amount, claimedAmount);
     }
 
-    /// @notice The hook's per-epoch buckets always sum to exactly the actor set's staked balances.
+    /// @notice One hook's reward-token custody can never leak into another's, even though both hooks' funds sit in
+    /// the same real ERC-20 balance. Every assertion here is an equality, not a bound: `_balanceOf` only ever moves
+    /// by exact funded/collected deltas (see `_recordRewardFunding` and `_unlockRewards`), so nothing should ever
+    /// make it drift from the ghost accounting.
+    function invariant_hookCustodyIsolation() public view {
+        uint256 hook1Balance = distributor.balanceOf(address(stickyToken), reward);
+        uint256 hook2Balance = distributor.balanceOf(address(stickyToken2), reward);
+
+        // (i) The internal per-hook ledger sums to exactly the aggregate ghost accounting.
+        assertEq(hook1Balance + hook2Balance, handler.ghost_fundedTotal() - handler.ghost_collectedTotal());
+
+        // (ii) Each hook's own custody matches only its own ghost accounting — a cross-hook drain (or an unchecked
+        // underflow silently wrapping one hook's balance) would break this without necessarily breaking (i).
+        assertEq(hook1Balance, handler.ghost_fundedOf(address(stickyToken)) - handler.ghost_collectedOf(address(stickyToken)));
+        assertEq(
+            hook2Balance, handler.ghost_fundedOf(address(stickyToken2)) - handler.ghost_collectedOf(address(stickyToken2))
+        );
+    }
+
+    /// @notice The primary project's hook buckets always sum to exactly the actor set's staked balances.
     function invariant_bucketConservation() public view {
         assertEq(handler.sumBuckets(), handler.sumStakedBalances());
+    }
+
+    /// @notice Non-vacuousness tripwire: deterministically drives the handler through fund → warp → collect for
+    /// both hooks and asserts the ghost totals actually moved, so a future bound or gating regression that makes
+    /// those actions permanently no-ops can't let the invariants above pass vacuously.
+    /// @dev Deliberately not `afterInvariant()`: that hook runs once per *independent* fuzz run (not once for the
+    /// whole campaign — Foundry calls `setUp()` before every run), and Foundry's fuzzer deliberately biases toward
+    /// boundary values like `0`. A single unlucky run out of 1024 can legitimately draw only zero-amount fund calls
+    /// within its own depth budget, which made an `afterInvariant`-based version of this check fail on ~1 in 1024
+    /// runs even though every invariant it guards was passing — confirmed by removing it and re-running clean.
+    /// A plain deterministic test exercises the same code paths without that per-run randomness.
+    function test_handlerReachesNonzeroFundingAndCollection() public {
+        handler.stake({actorSeed: 0, amountSeed: 100e18});
+        handler.stake2({actorSeed: 0, amountSeed: 100e18});
+        handler.fundDefaultGroup({amountSeed: 100e18});
+        handler.fundCriteriaGroup({groupSeed: 0, amountSeed: 100e18});
+        handler.fundDefaultGroup2({amountSeed: 100e18});
+
+        // One round in (well inside the 6-week claim deadline): materialize each hook's funded round into a
+        // vesting entry. Still fully locked, so this transfers nothing yet.
+        handler.warp({jumpSeed: ROUND_DURATION});
+        handler.collectDefault({actorSeed: 0});
+        handler.collectCriteria({actorSeed: 0, groupSeed: 0});
+        handler.collectDefault2({actorSeed: 0});
+
+        // Halfway through the 2-round vesting schedule: collect again to actually receive the unlocked half.
+        handler.warp({jumpSeed: ROUND_DURATION});
+        handler.collectDefault({actorSeed: 0});
+        handler.collectCriteria({actorSeed: 0, groupSeed: 0});
+        handler.collectDefault2({actorSeed: 0});
+
+        assertGt(handler.ghost_fundedTotal(), 0);
+        assertGt(handler.ghost_collectedTotal(), 0);
     }
 }
