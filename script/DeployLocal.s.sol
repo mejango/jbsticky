@@ -29,6 +29,15 @@ contract MockArt is ERC20 {
     }
 }
 
+/// @notice A second test token, staked with a stickiness bonus on a local fork.
+contract MockBan is ERC20 {
+    constructor() ERC20("Banana", "BAN") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint({account: to, value: amount});
+    }
+}
+
 /// @notice Deploys JBSticky plus a mintable test token to a local fork of a chain with nana core, and launches a
 /// sticky project for it. For local development only.
 contract DeployLocalScript is Script {
@@ -53,6 +62,7 @@ contract DeployLocalScript is Script {
         vm.startBroadcast();
 
         MockArt art = new MockArt();
+        MockBan ban = new MockBan();
         JBStickyDeployer deployer = new JBStickyDeployer({controller: controller, terminal: terminal});
 
         // A demo rewards distributor with fast rounds: 10-minute rounds, vested after 2 rounds, 7-day claims.
@@ -76,23 +86,38 @@ contract DeployLocalScript is Script {
         granters[0] = msg.sender;
         granters[1] = address(autoStick);
 
+        // ART: a pure wrapper — no stickiness bonus, fee-free unsticks.
         uint256 projectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(art)),
             name: "Streaking ART",
             symbol: "STICKYART",
             projectUri: "",
-            cashOutTaxRate: 500,
+            cashOutTaxRate: 0,
             granters: granters,
             soulbound: true
         });
         art.mint({to: msg.sender, amount: 1_000_000e18});
 
+        // BAN: carries a 10% stickiness bonus, so unsticks reward those who stay.
+        uint256 banProjectId = deployer.deployStickyFor{value: fee}({
+            stakedToken: IERC20Metadata(address(ban)),
+            name: "Streaking BAN",
+            symbol: "STICKYBAN",
+            projectUri: "",
+            cashOutTaxRate: 1000,
+            granters: granters,
+            soulbound: true
+        });
+        ban.mint({to: msg.sender, amount: 1_000_000e18});
+
         vm.stopBroadcast();
 
         console2.log("ART", address(art));
+        console2.log("BAN", address(ban));
         console2.log("JBStickyDeployer", address(deployer));
         console2.log("JBStickyHook", address(deployer.HOOK()));
         console2.log("projectId", projectId);
+        console2.log("banProjectId", banProjectId);
         console2.log("JBTokenDistributor", address(distributor));
         console2.log("JBStickyAutoStick", address(autoStick));
         console2.log("JBStickyRewardPockets", address(pockets));
