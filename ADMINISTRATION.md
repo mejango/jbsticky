@@ -31,3 +31,15 @@ Nobody can change behavior after deployment. The deployer contract owns every st
 - The project creation fee (`JBProjects.creationFee()`) must be sent exactly as `msg.value` to `deployStickyFor`.
 - Fee-on-transfer or rebasing-down tokens must not be used as staked tokens: the 1:1 backing invariant assumes the terminal receives what was paid.
 - Reward programs read `tranchesOf` / `currentStreakOf` / `longestStreakOf` and the `Staked` / `Unstaked` / `StreakStarted` / `StreakEnded` events; nothing on-chain needs administering to change reward rules.
+
+## Funding Stick-Time-Gated Rewards (Airdropper How-To)
+
+`JBStickyDistributor` is permissionless to fund — anyone can seed a reward pot for any sticky token, either directly or through a project's payout/reserved-token splits. Two funding paths:
+
+- **Direct funding:** call `fund(hook, token, amount, groupId)`, where `hook` is the sticky token address and `groupId` is the criteria — `0` for the votes-weighted everyone-pool (identical mechanics to the deployed `JBTokenDistributor`), or `1`–`520` for "stuck at least `k` weeks", with `k = groupId`. The 3-arg `fund(hook, token, amount)` overload always targets group 0. For native ETH, send `msg.value` and pass `JBConstants.NATIVE_TOKEN` as `token`.
+- **Split-funded (recipe):** configure a payout or reserved-token split with `hook` (the split's `hook` field) set to the `JBStickyDistributor` address, `beneficiary` set to the sticky token address, and `lockedUntil` set to the desired `k` in `[1, 520]`. Project distribution calls (`sendPayoutsOf` / `sendReservedTokensToSplitsOf`) route the split through `processSplitWith`, which reads `lockedUntil` as the criteria: `1`–`520` maps to threshold group `k = lockedUntil`; `0` or any other value (a genuine lock timestamp) falls through to group 0 rather than reverting. A split cannot be both genuinely time-locked and criteria-carrying — pick one when configuring it.
+
+Operational notes:
+- `groupId` (and split `lockedUntil`) above `520` reverts (`JBStickyDistributor_InvalidCriteria`) — pots can't be created for criteria no claim path understands yet.
+- The first funding of a (group, token, round) triggers an on-chain epoch walk back to the sticky project's first stake (~2.1k gas per epoch, ~1.1M gas worst case for a 10-year-old project); the cost lands on the funder for direct `fund` calls, or on the caller of the distribution function for split-funded pots. Subsequent fundings of the same round are cheap.
+- Group-0 (everyone) rewards behave byte-for-byte like the deployed `JBTokenDistributor` — same votes-snapshot mechanics, same claim/vesting model.

@@ -30,6 +30,29 @@ The package owns three contracts: a deployer that launches locked staking projec
 | `JBStickyToken` | Soulbound ERC-20 representing staked positions; checkpointed votes (self-delegated on mint, delegation locked) make it an `IJBActiveVotes` stake source for `JBTokenDistributor` rewards | One instance per sticky project, bound to its project ID via `canBeAddedTo`; mint/burn only by `JBTokens` |
 | `JBStickyRewardPockets` / `JBStickyRewardPocket` | Cross-chain reward inbox: one deterministic, chain-identical pocket per sticky token; sucker-bridge arrivals are settled permissionlessly into the distributor | Ported from `JBXDistributor`'s bridge-settlement pattern, simplified: attribution is by pocket address instead of by leaf, so there is no settlement ledger, no double-settle surface, and pockets work counterfactually (tokens can land before the pocket is deployed) |
 
+## Stick-time-gated rewards
+
+`JBStickyDistributor` (`src/JBStickyDistributor.sol`) is a clean fork of `JBDistributor` + `JBTokenDistributor` that adds a second reward-pot class alongside the base's votes-weighted group 0: **criteria groups** that pay out only to stake aged at least `k` weeks. It reads a sticky project's stake directly from `JBStickyHook` via `STICKY_HOOK`; nothing about `JBStickyHook`'s own callback-gating or tranche-book invariants changes.
+
+**Epoch buckets.** `JBStickyHook` anchors epochs globally, independent of any distributor's round schedule: `epochOf(t) = t / EPOCH_DURATION`, with `EPOCH_DURATION` fixed at 1 week. Two pieces of hook storage track stake by the epoch it entered: `netStakedIn[projectId][epoch]` (incremented on stake, decremented per consumed tranche — keyed by that tranche's own timestamp — on unstake or transfer-out) and `firstStakeEpochPlusOneOf[projectId]` (set once, bounds the walk). The batch view `netStakedInEpochs(projectId, fromEpoch, toEpoch)` lets a caller read a whole range in one external call.
+
+**Fund-time denominator.** The problem: pro-rata needs a denominator — "total stake stuck ≥ D at the snapshot" — but D is airdropper-chosen and tranches cross age thresholds silently, so no checkpointed quantity exists to look up lazily. The unlock: aging is deterministic. If stake is bucketed by the epoch it was staked in, then at any moment "total stake aged ≥ k epochs" is just the sum of buckets at least k epochs old, read at current values. Record that sum at fund time and it *is* the snapshot denominator — no history, no checkpoints, no pokes, no registration. Concretely, `_recordRewardRound` records `snapshotEpoch = block.timestamp / EPOCH_DURATION` and `totalStake = _agedTotalStake(hook, snapshotEpoch, groupId)` — the sum of `netStakedIn[projectId][e]` for `e` from `firstStakeEpochPlusOneOf - 1` through `snapshotEpoch - groupId` — the first time a (group, token, round) is funded. Later fundings of the same round only add to the pot; the snapshot never re-walks.
+
+**Downward-only claim rule.** A claimer's weight for a round is the sum of their **live** tranche amounts where `epochOf(tranche.timestamp) ≤ snapshotEpoch − k`, read from `STICKY_HOOK.tranchesOf` at claim time (`_agedStakeOf`). Why live tranches are safe:
+- Tranches are append-only with now-timestamps, so nothing staked after the snapshot can land in an epoch ≤ `snapshotEpoch − k` (epochs are monotonic in time and k ≥ 1).
+- LIFO unstaking consumes newest tranches first, so post-snapshot exits reduce only the exiting holder's own eligible weight, never anyone else's.
+- Therefore Σ numerators ≤ recorded denominator, always. Shortfall stays in the pot and recycles through the existing expiry path, still criteria-gated.
+
+**Documented rule:** you must still be stuck to collect. Unsticking deep enough to consume aged tranches after the snapshot forfeits that weight, permanently — claims read live tranche state, not a checkpoint. On-theme.
+
+**Why k ≥ 1 is load-bearing.** With k = 0, a tranche staked after the fund block but in the same epoch would pass the age test while the denominator missed it → Σ numerators could exceed the denominator → overdistribution / insolvency of the pot. Criteria groups therefore enforce `k ≥ 1`: `MAX_CRITERIA_WEEKS = 520` bounds the top end, and `_requireValidGroup` reverts with `JBStickyDistributor_InvalidCriteria` for any `groupId > 520` — 0 stays reserved for the votes-weighted everyone-pool, so every criteria group is `k ∈ [1, 520]` by construction.
+
+**`lockedUntil` overload.** `processSplitWith` (payout and reserved-token splits, `beneficiary` = the sticky token) reads criteria from the split's `lockedUntil` field:
+- `1 ≤ lockedUntil ≤ 520`: threshold criteria, `k = lockedUntil` weeks.
+- `0` or any other value (i.e. real lock timestamps): group 0.
+
+This overload is collision-free by construction: core stores `lockedUntil` verbatim and the lock only engages when `block.timestamp < lockedUntil`, so values ≤ 520 are 1970-era timestamps that never lock anything, while genuine lock timestamps are ≥ ~1.7e9 and route to group 0. The field only gains meaning when the split's hook is this distributor. Accepted trade: a split cannot be genuinely locked *and* criteria-carrying — locked splits fund the everyone-pool.
+
 ## Data Flow
 
 **Stake**: holder (or granter) → `JBMultiTerminal.
