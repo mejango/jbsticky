@@ -2382,10 +2382,8 @@ function renderStickQuote() {
   try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
   if (amount <= 0n) return;
   const r = Number(pool.reward) / 10000;
-  const st = parseFloat(Number(formatUnits(stickMintOf(pool, amount), 18)).toFixed(4));
   const back = parseFloat((Number(formatUnits(amount, pool.decimals)) * (1 - r) * 0.975).toFixed(4));
-  el.textContent = `${formatUnits(amount, pool.decimals)} ${pool.symbol} sticks for ≈ ${st} ${pool.stSymbol}. `
-    + `Get ${back} ${pool.symbol} back right away, and more as you stick around.`;
+  el.textContent = `Get ${back} ${pool.symbol} back right away, and more as you stick around.`;
 }
 
 function renderUnstickQuote() {
