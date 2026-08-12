@@ -87,6 +87,14 @@ interface IJBStickyDistributor is IJBSplitHook {
     /// @return directory The JB directory.
     function DIRECTORY() external view returns (IJBDirectory directory);
 
+    /// @notice The duration of one stick-age epoch, cached from `STICKY_HOOK.EPOCH_DURATION()` at deployment.
+    /// @return epochDuration The stick-age epoch duration, in seconds.
+    function EPOCH_DURATION() external view returns (uint256 epochDuration);
+
+    /// @notice The highest stick-time-weeks criteria group ID a reward pot can be funded under.
+    /// @return maxCriteriaWeeks The highest supported criteria group ID.
+    function MAX_CRITERIA_WEEKS() external view returns (uint256 maxCriteriaWeeks);
+
     /// @notice The duration of each round, specified in seconds.
     /// @return roundDuration The round duration, in seconds.
     function ROUND_DURATION() external view returns (uint256 roundDuration);

@@ -529,6 +529,24 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(snapshotEpoch, 14);
     }
 
+    function test_fundWithCriteriaAcceptsNativeToken() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
+
+        vm.deal(funder, 10e18);
+        vm.prank(funder);
+        // stuck >= 2 weeks
+        distributor.fund{value: 10e18}(address(stickyToken), IERC20(JBConstants.NATIVE_TOKEN), 0, 2);
+
+        (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) = distributor.rewardRoundOf(
+            address(stickyToken), 2, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound()
+        );
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18);
+        assertEq(snapshotEpoch, 14);
+    }
+
     function test_denominatorSumsOnlyAgedBuckets() public {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);

@@ -39,7 +39,10 @@ Nobody can change behavior after deployment. The deployer contract owns every st
 - **Direct funding:** call `fund(hook, token, amount, groupId)`, where `hook` is the sticky token address and `groupId` is the criteria — `0` for the votes-weighted everyone-pool (identical mechanics to the deployed `JBTokenDistributor`), or `1`–`520` for "stuck at least `k` weeks", with `k = groupId`. The 3-arg `fund(hook, token, amount)` overload always targets group 0. For native ETH, send `msg.value` and pass `JBConstants.NATIVE_TOKEN` as `token`.
 - **Split-funded (recipe):** configure a payout or reserved-token split with `hook` (the split's `hook` field) set to the `JBStickyDistributor` address, `beneficiary` set to the sticky token address, and `lockedUntil` set to the desired `k` in `[1, 520]`. Project distribution calls (`sendPayoutsOf` / `sendReservedTokensToSplitsOf`) route the split through `processSplitWith`, which reads `lockedUntil` as the criteria: `1`–`520` maps to threshold group `k = lockedUntil`; `0` or any other value (a genuine lock timestamp) falls through to group 0 rather than reverting. A split cannot be both genuinely time-locked and criteria-carrying — pick one when configuring it.
 
-Operational notes:
-- `groupId` (and split `lockedUntil`) above `520` reverts (`JBStickyDistributor_InvalidCriteria`) — pots can't be created for criteria no claim path understands yet.
+## Stick-Time Reward Notes
+
+- `groupId` above `520` reverts (`JBStickyDistributor_InvalidCriteria`) — pots can't be created for criteria no claim path understands yet. A split's out-of-range `lockedUntil` does not revert: `processSplitWith` routes it to group 0 instead, per the split-funded recipe above.
+- The first funder of a (group, token, round) fixes that round's eligibility snapshot (the block for group 0, the stick-age epoch for criteria groups) — fund early in your intended round if snapshot timing matters to you.
 - The first funding of a (group, token, round) triggers an on-chain epoch walk back to the sticky project's first stake (~2.1k gas per epoch, ~1.1M gas worst case for a 10-year-old project); the cost lands on the funder for direct `fund` calls, or on the caller of the distribution function for split-funded pots. Subsequent fundings of the same round are cheap.
 - Group-0 (everyone) rewards behave byte-for-byte like the deployed `JBTokenDistributor` — same votes-snapshot mechanics, same claim/vesting model.
+- Production deployments use 7-day rounds, alongside the 4 vesting rounds and 28-day claim window already noted in the README.

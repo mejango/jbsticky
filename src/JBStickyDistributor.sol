@@ -86,7 +86,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
 
     /// @notice The highest stick-time-weeks criteria group ID a reward pot can be funded under. Group IDs above this
     /// are reserved for future curve-based criteria and are rejected until implemented.
-    uint256 public constant MAX_CRITERIA_WEEKS = 520;
+    uint256 public constant override MAX_CRITERIA_WEEKS = 520;
 
     /// @notice The number of shares that represent 100%.
     uint256 public constant MAX_SHARE = 100_000;
@@ -104,7 +104,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
 
     /// @notice The duration of one stick-age epoch, cached from `STICKY_HOOK.EPOCH_DURATION()` at deployment so
     /// criteria-group accounting doesn't re-hit the hook for an immutable value on every round.
-    uint256 public immutable EPOCH_DURATION;
+    uint256 public immutable override EPOCH_DURATION;
 
     /// @notice The duration of each round, specified in seconds.
     uint256 public immutable override ROUND_DURATION;
@@ -323,6 +323,9 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @dev For native ETH, send `msg.value` and pass `IERC20(JBConstants.NATIVE_TOKEN)` as the token. Uses balance
     /// delta to handle fee-on-transfer tokens correctly. Group 0 is the default (votes-weighted) group; groups
     /// `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots.
+    /// @dev For criteria groups, `hook` must be a sticky token whose `PROJECT_ID` belongs to `STICKY_HOOK`: criteria
+    /// weights are read from the pinned hook's tranche data, so a foreign token with a colliding project ID would
+    /// only mis-weight its own pot.
     /// @param hook The sticky token to fund (determines which staker pool receives the tokens).
     /// @param token The token to fund with.
     /// @param amount The amount to fund (ignored for native ETH — `msg.value` is used instead).
