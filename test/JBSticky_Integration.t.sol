@@ -706,9 +706,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.approve({spender: address(adapter), value: type(uint256).max});
         adapter.setConfigFor({projectId: projectId, enabled: false, minimumAmount: 1e6, cooldown: 1 days});
         vm.stopPrank();
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user)
-        );
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user));
         adapter.compoundFor({projectId: projectId, holder: user});
 
         vm.prank(user);
@@ -744,7 +742,14 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
     }
 
     /// @notice Directly fund a criteria group's ART pot for `hookAddr`, matching `JBStickyDistributor.fund`.
-    function _fundArtGroup(JBStickyDistributor distributor_, address hookAddr, uint256 amount, uint256 groupId) internal {
+    function _fundArtGroup(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        uint256 amount,
+        uint256 groupId
+    )
+        internal
+    {
         address funder = makeAddr("criteria-funder");
         art.mint({to: funder, amount: amount});
         vm.startPrank(funder);
