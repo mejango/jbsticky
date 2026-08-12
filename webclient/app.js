@@ -2383,7 +2383,7 @@ function renderStickQuote() {
   if (amount <= 0n) return;
   const r = Number(pool.reward) / 10000;
   const back = parseFloat((Number(formatUnits(amount, pool.decimals)) * (1 - r) * 0.975).toFixed(4));
-  el.textContent = `Get ${back} ${pool.symbol} back right away, and more as you stick around.`;
+  el.textContent = `If you change your mind you can get ${back} ${pool.symbol} back right away, and more as you stick around.`;
 }
 
 function renderUnstickQuote() {
