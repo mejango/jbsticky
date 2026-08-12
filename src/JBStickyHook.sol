@@ -58,6 +58,20 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
+    /// @notice The duration of one stick-age epoch. Stick-time criteria are quantized to these epochs.
+    uint256 public constant override EPOCH_DURATION = 1 weeks;
+
+    /// @notice The net amount staked during each epoch that is still held, per project.
+    /// @dev Increases when a tranche is created in an epoch; decreases when that tranche is later consumed.
+    /// @custom:param projectId The ID of the sticky project.
+    /// @custom:param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
+    mapping(uint256 projectId => mapping(uint256 epoch => uint256)) public override netStakedIn;
+
+    /// @notice One more than the first epoch in which a project's token was staked, or 0 if never staked.
+    /// @dev Stored plus-one so an unset entry can't alias epoch 0.
+    /// @custom:param projectId The ID of the sticky project.
+    mapping(uint256 projectId => uint256) public override firstStakeEpochPlusOneOf;
+
     /// @notice The sticky token allowed to report transfers for a project.
     /// @custom:param projectId The ID of the sticky project.
     mapping(uint256 projectId => address) public override tokenOf;
@@ -380,6 +394,11 @@ contract JBStickyHook is ERC165, IJBStickyHook {
             JBStickyTranche({amount: SafeCast.toUint208(count), timestamp: SafeCast.toUint48(block.timestamp)})
         );
 
+        // Track the stake in its epoch bucket so distributors can total aged stake without checkpoints.
+        uint256 epoch = block.timestamp / EPOCH_DURATION;
+        netStakedIn[projectId][epoch] += count;
+        if (firstStakeEpochPlusOneOf[projectId] == 0) firstStakeEpochPlusOneOf[projectId] = epoch + 1;
+
         // Store the holder's new staked balance.
         stakedBalance = stakedBalanceOf[projectId][holder] + count;
         stakedBalanceOf[projectId][holder] = stakedBalance;
@@ -419,9 +438,11 @@ contract JBStickyHook is ERC165, IJBStickyHook {
                 // casting to 'uint208' is safe because `remaining` is less than `tranche.amount`, a uint208.
                 // forge-lint: disable-next-line(unsafe-typecast)
                 tranches[numberOfTranches - 1].amount = tranche.amount - uint208(remaining);
+                netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= remaining;
                 remaining = 0;
             } else {
                 // Otherwise consume the whole tranche and move on to the next-newest.
+                netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= tranche.amount;
                 remaining -= tranche.amount;
                 tranches.pop();
                 numberOfTranches--;

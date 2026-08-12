@@ -295,6 +295,45 @@ contract JBStickyHookUnitTest is Test {
         assertEq(hook.hasMintPermissionFor(PROJECT_ID, ruleset, holder), false);
     }
 
+    function test_bucketsTrackStakeByEpoch() public {
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        assertEq(hook.netStakedIn(PROJECT_ID, 10), 100e18);
+        assertEq(hook.firstStakeEpochPlusOneOf(PROJECT_ID), 11);
+
+        vm.warp(12 weeks + 1);
+        _pay(holder, 50e18);
+        assertEq(hook.netStakedIn(PROJECT_ID, 12), 50e18);
+        // First-stake marker doesn't move.
+        assertEq(hook.firstStakeEpochPlusOneOf(PROJECT_ID), 11);
+    }
+
+    function test_bucketsDecrementByConsumedTrancheEpoch() public {
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        vm.warp(12 weeks + 1);
+        _pay(holder, 50e18);
+
+        // Unstake 120: LIFO consumes the epoch-12 tranche fully (50) and 70 of the epoch-10 tranche.
+        _cashOut(holder, 120e18);
+        assertEq(hook.netStakedIn(PROJECT_ID, 12), 0);
+        assertEq(hook.netStakedIn(PROJECT_ID, 10), 30e18);
+    }
+
+    function test_bucketConservation() public {
+        address holder2 = makeAddr("holder2");
+
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        vm.warp(11 weeks + 1);
+        _pay(holder2, 40e18);
+        _cashOut(holder, 25e18);
+        assertEq(
+            hook.netStakedIn(PROJECT_ID, 10) + hook.netStakedIn(PROJECT_ID, 11),
+            hook.stakedBalanceOf(PROJECT_ID, holder) + hook.stakedBalanceOf(PROJECT_ID, holder2)
+        );
+    }
+
     function _beforePayContext(uint256 value) internal view returns (JBBeforePayRecordedContext memory) {
         return JBBeforePayRecordedContext({
             terminal: terminal,

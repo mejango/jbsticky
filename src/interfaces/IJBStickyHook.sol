@@ -76,12 +76,19 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @notice The directory of terminals and controllers for projects.
     function DIRECTORY() external view returns (IJBDirectory);
 
+    /// @notice The duration of one stick-age epoch. Stick-time criteria are quantized to these epochs.
+    function EPOCH_DURATION() external view returns (uint256);
+
     /// @notice The duration of a holder's active streak, in seconds.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
     /// @return The number of seconds since the holder's staked balance last became non-zero, or 0 if nothing is
     /// staked.
     function currentStreakOf(uint256 projectId, address holder) external view returns (uint256);
+
+    /// @notice One more than the first epoch in which a project's token was staked, or 0 if never staked.
+    /// @param projectId The ID of the sticky project to check.
+    function firstStakeEpochPlusOneOf(uint256 projectId) external view returns (uint256);
 
     /// @notice Whether an address can airdrop stakes to any holder of a sticky project.
     /// @param projectId The ID of the sticky project to check.
@@ -99,6 +106,11 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param holder The address to check the streak of.
     /// @return The holder's longest streak duration, in seconds.
     function longestStreakOf(uint256 projectId, address holder) external view returns (uint256);
+
+    /// @notice The net amount staked during each epoch that is still held, per project.
+    /// @param projectId The ID of the sticky project to check.
+    /// @param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
+    function netStakedIn(uint256 projectId, uint256 epoch) external view returns (uint256);
 
     /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
     /// @param projectId The ID of the sticky project to check the balance of.
