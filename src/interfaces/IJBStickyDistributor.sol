@@ -123,6 +123,22 @@ interface IJBStickyDistributor is IJBSplitHook {
     /// @return tokenAmount The currently collectable token amount.
     function collectableFor(address hook, uint256 tokenId, IERC20 token) external view returns (uint256 tokenAmount);
 
+    /// @notice Calculate the collectible token amount for a token ID in a specific reward group.
+    /// @param hook The sticky token the tokenId belongs to.
+    /// @param groupId The reward group to check (0 = the default group).
+    /// @param tokenId The ID of the token to calculate the token amount for.
+    /// @param token The address of the token to check.
+    /// @return tokenAmount The currently collectable token amount.
+    function collectableFor(
+        address hook,
+        uint256 groupId,
+        uint256 tokenId,
+        IERC20 token
+    )
+        external
+        view
+        returns (uint256 tokenAmount);
+
     /// @notice The number of the current round.
     /// @return round The current round number.
     function currentRound() external view returns (uint256 round);

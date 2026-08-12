@@ -47,6 +47,7 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
 
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
+    address carol = makeAddr("carol");
     address funder = makeAddr("funder");
 
     MockErc20 staked;
@@ -194,6 +195,32 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
             hook: address(stickyToken), tokenIds: _tokenIds(holder), tokens: _rewardTokens(), beneficiary: holder
         });
         collected = reward.balanceOf(holder) - balanceBefore;
+    }
+
+    /// @notice Begin vesting `holder`'s unclaimed rewards in a specific criteria group.
+    function _beginVestingGroupFor(address holder, uint256 groupId) internal {
+        distributor.beginVesting({
+            hook: address(stickyToken), groupId: groupId, tokenIds: _tokenIds(holder), tokens: _rewardTokens()
+        });
+    }
+
+    /// @notice Collect everything unlocked for `holder` in a specific criteria group, returning the amount that
+    /// landed in their wallet.
+    function _collectGroupFor(address holder, uint256 groupId) internal returns (uint256 collected) {
+        uint256 balanceBefore = reward.balanceOf(holder);
+        distributor.collectVestedRewards({
+            hook: address(stickyToken),
+            groupId: groupId,
+            tokenIds: _tokenIds(holder),
+            tokens: _rewardTokens(),
+            beneficiary: holder
+        });
+        collected = reward.balanceOf(holder) - balanceBefore;
+    }
+
+    /// @notice The collectable (unlocked, uncollected) amount for `holder` in a specific criteria group.
+    function _collectableGroupFor(address holder, uint256 groupId) internal view returns (uint256) {
+        return distributor.collectableFor(address(stickyToken), groupId, uint256(uint160(holder)), reward);
     }
 
     //*********************************************************************//
@@ -487,5 +514,51 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
             distributor.rewardRoundOf(address(stickyToken), 1, reward, distributor.currentRound());
         assertEq(amount, 15e18);
         assertEq(totalStake, 100e18);
+    }
+
+    function test_claimSplitsProRataAcrossAgedTranches() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        _stake(bob, 300e18);
+        vm.warp(13 weeks + 1);
+        _stake(bob, 600e18); // fresh bob tranche won't count for k=2 at epoch 14
+        vm.warp(14 weeks + 1);
+        _fundGroup(100e18, 2); // denominator = 400e18
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 2);
+        _beginVestingGroupFor(bob, 2);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        assertEq(_collectGroupFor(alice, 2), 25e18);
+        assertEq(_collectGroupFor(bob, 2), 75e18);
+    }
+
+    function test_postSnapshotDeepExitForfeitsAgedWeight() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        _stake(bob, 100e18);
+        vm.warp(12 weeks + 1);
+        _fundGroup(100e18, 1); // denominator 200e18
+
+        // Bob unsticks 80 after the snapshot: LIFO eats into his only (aged) tranche.
+        _unstake(bob, 80e18);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 1);
+        _beginVestingGroupFor(bob, 1);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        assertEq(_collectGroupFor(alice, 1), 50e18); // alice's share unaffected
+        assertEq(_collectGroupFor(bob, 1), 10e18); // 20/200 of the pot; 40e18 stays for recycle
+    }
+
+    function test_lateStakeCannotClaimOldRound() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(12 weeks + 1);
+        _fundGroup(100e18, 1);
+        _stake(carol, 500e18); // staked after snapshot
+
+        vm.warp(vm.getBlockTimestamp() + 30 weeks); // carol's tranche is now ancient in wall-time
+        _beginVestingGroupFor(carol, 1);
+        assertEq(_collectableGroupFor(carol, 1), 0); // epoch 12 > snapshotEpoch(12) - 1
     }
 }

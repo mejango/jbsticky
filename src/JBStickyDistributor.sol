@@ -20,6 +20,7 @@ import {IJBStickyDistributor} from "./interfaces/IJBStickyDistributor.sol";
 import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
 import {IJBStickyToken} from "./interfaces/IJBStickyToken.sol";
 import {JBStickyRewardRoundData} from "./structs/JBStickyRewardRoundData.sol";
+import {JBStickyTranche} from "./structs/JBStickyTranche.sol";
 
 /// @notice A singleton distributor that hands ERC-20 rewards (or native ETH) to the stakers of a sticky project with
 /// linear vesting. Each round, a snapshot is taken of the funded amount and of the stake that shares it, and stakers
@@ -471,6 +472,28 @@ contract JBStickyDistributor is IJBStickyDistributor {
         tokenAmount = _collectableFor({hook: hook, groupId: 0, tokenId: tokenId, token: token});
     }
 
+    /// @notice Calculate how much of a reward token is currently unlocked and ready to be collected for a given
+    /// staker token ID in a specific reward group. Only includes the vested portion — excludes amounts still locked
+    /// in vesting.
+    /// @param hook The sticky token the tokenId belongs to.
+    /// @param groupId The reward group to check (0 = the default group).
+    /// @param tokenId The ID of the staker token to calculate for.
+    /// @param token The reward token to check.
+    /// @return tokenAmount The amount of tokens that can be collected right now via `collectVestedRewards`.
+    function collectableFor(
+        address hook,
+        uint256 groupId,
+        uint256 tokenId,
+        IERC20 token
+    )
+        external
+        view
+        override
+        returns (uint256 tokenAmount)
+    {
+        tokenAmount = _collectableFor({hook: hook, groupId: groupId, tokenId: tokenId, token: token});
+    }
+
     //*********************************************************************//
     // -------------------------- public views --------------------------- //
     //*********************************************************************//
@@ -667,11 +690,13 @@ contract JBStickyDistributor is IJBStickyDistributor {
 
     /// @notice Claim one reward round using its recorded denominator.
     /// @param hook The sticky token whose stakers are claiming.
+    /// @param groupId The reward group being claimed (0 = the default group).
     /// @param tokenId The encoded staker address.
     /// @param rewardRound The stored reward-round data.
     /// @return tokenAmount The amount added to vesting.
     function _claimRewardRoundFor(
         address hook,
+        uint256 groupId,
         uint256 tokenId,
         JBStickyRewardRoundData storage rewardRound
     )
@@ -681,8 +706,16 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // Empty-denominator rounds have no pro-rata basis, so they cannot allocate rewards to any staker.
         if (rewardRound.totalStake == 0) return 0;
 
-        // Use the funding round's snapshot block, not the block at which the staker finally claims.
-        uint256 tokenStakeAmount = _tokenStakeAt({hook: hook, tokenId: tokenId, blockNumber: rewardRound.snapshotBlock});
+        // Group 0 weighs delegated voting power at the funding round's snapshot block. Criteria groups weigh live
+        // tranches that are old enough as of the funding round's snapshot epoch.
+        uint256 tokenStakeAmount = groupId == 0
+            ? _tokenStakeAt({hook: hook, tokenId: tokenId, blockNumber: rewardRound.snapshotBlock})
+            : _agedStakeOf({
+                hook: hook,
+                account: _claimBeneficiaryOf({hook: hook, tokenId: tokenId}),
+                snapshotEpoch: rewardRound.snapshotEpoch,
+                weeksRequired: groupId
+            });
 
         // Zero-vote stakers advance their cursor but do not consume reward inventory.
         if (tokenStakeAmount == 0) return 0;
@@ -734,7 +767,9 @@ contract JBStickyDistributor is IJBStickyDistributor {
                     _recycleExpiredRewardRound({hook: hook, groupId: groupId, token: token, round: rewardRoundNumber});
                 } else {
                     // Live rounds can still be materialized by snapshot voters into fresh vesting entries.
-                    tokenAmount += _claimRewardRoundFor({hook: hook, tokenId: tokenId, rewardRound: rewardRound});
+                    tokenAmount += _claimRewardRoundFor({
+                        hook: hook, groupId: groupId, tokenId: tokenId, rewardRound: rewardRound
+                    });
                 }
             }
 
@@ -1136,6 +1171,40 @@ contract JBStickyDistributor is IJBStickyDistributor {
         });
         for (uint256 i; i < amounts.length; i++) {
             total += amounts[i];
+        }
+    }
+
+    /// @notice A holder's live tranche amount old enough for a round's criteria.
+    /// @dev Live tranches are safe: they're append-only with now-timestamps (nothing staked after the snapshot can
+    /// reach an epoch <= snapshotEpoch - k with k >= 1), and LIFO unstaking means post-snapshot exits only reduce
+    /// the exiting holder's own weight. You must still be stuck to collect.
+    /// @param hook The sticky token whose project's tranches are read.
+    /// @param account The holder claiming.
+    /// @param snapshotEpoch The round's pinned epoch.
+    /// @param weeksRequired The criteria threshold in epochs.
+    /// @return amount The holder's aged stake.
+    function _agedStakeOf(
+        address hook,
+        address account,
+        uint256 snapshotEpoch,
+        uint256 weeksRequired
+    )
+        internal
+        view
+        returns (uint256 amount)
+    {
+        if (snapshotEpoch < weeksRequired) return 0;
+        uint256 cutoff = snapshotEpoch - weeksRequired;
+        JBStickyTranche[] memory tranches =
+            STICKY_HOOK.tranchesOf({projectId: IJBStickyToken(hook).PROJECT_ID(), holder: account});
+
+        // Hoisted out of the loop: one external call instead of one per tranche.
+        uint256 epochDuration = STICKY_HOOK.EPOCH_DURATION();
+
+        for (uint256 i; i < tranches.length; i++) {
+            // Tranches are oldest-first with nondecreasing timestamps; stop at the first too-young one.
+            if (uint256(tranches[i].timestamp) / epochDuration > cutoff) break;
+            amount += tranches[i].amount;
         }
     }
 
