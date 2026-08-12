@@ -112,10 +112,36 @@ therefore enforce `k ≥ 1` (revert otherwise).
 Group 0 (no criteria) keeps the base's exact ERC20Votes snapshot mechanics —
 `getPastVotes` numerator, `getPastTotalActiveVotes` denominator at
 `roundSnapshotBlock` — which `JBStickyToken` already supports (`IJBActiveVotes`,
-auto-self-delegated, delegation locked). `processSplitWith` (payout and
-reserved-token splits, beneficiary = sticky token) books to group 0 unchanged,
-so recurring split-funded rewards behave byte-for-byte like the deployed
-`JBTokenDistributor`.
+auto-self-delegated, delegation locked). Split-funded rewards without criteria
+behave byte-for-byte like the deployed `JBTokenDistributor`.
+
+### Splits carry criteria via `lockedUntil`
+
+`processSplitWith` (payout and reserved-token splits, beneficiary = sticky
+token) reads criteria from the split's `lockedUntil` field:
+
+- `1 ≤ lockedUntil ≤ 520`: threshold criteria, `k = lockedUntil` weeks.
+- `0` or any other value (i.e. real lock timestamps): group 0.
+
+This overload is collision-free by construction: core stores `lockedUntil`
+verbatim and the lock only engages when `block.timestamp < lockedUntil`
+(JBSplits.sol:187; the :388 lock-preservation rule also only applies while
+locked), so values ≤ 520 are 1970-era timestamps that never lock anything,
+while genuine lock timestamps are ≥ ~1.7e9 and route to group 0. The field
+only gains meaning when the split's hook is this distributor. Accepted trades:
+a split cannot be genuinely locked *and* criteria-carrying (locked splits fund
+the everyone-pool), and clients rendering "locked until" show such splits as
+unlocked — harmless. Values in (520, ~1.7e9) that are neither plausible
+criteria nor live timestamps deliberately fall to group 0 rather than
+reverting, because a split-hook revert would soft-land the funds back into the
+project via the terminal's try/catch — silent non-distribution is worse than
+an everyone-pool drop.
+
+Note the first split-funded arrival of a (group, token, round) triggers the
+epoch walk inside the payout/reserved-token distribution tx — the caller of
+`sendPayoutsOf`/`sendReservedTokensToSplitsOf` pays it. If that walk ever OOGs
+the split soft-lands back to the project (terminal try/catch), recoverable by
+re-running distribution with more gas.
 
 ## Criteria encoding
 
@@ -130,6 +156,9 @@ so recurring split-funded rewards behave byte-for-byte like the deployed
 - Claims pass the same groupId; the weight function dispatches on curveId.
   Unknown curveIds revert at fund time so pots can't be created that no claim
   path understands.
+- Split-funded pots map `lockedUntil ∈ [1, 520]` to `groupId = k` (curve 0);
+  see the splits section above. Direct `fund` accepts the full criteria
+  encoding; splits only express the threshold curve.
 
 ## Contract inventory
 
