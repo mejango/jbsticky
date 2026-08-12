@@ -44,6 +44,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Thrown when an address other than the deployer attempts to set a project's granters.
     error JBStickyHook_Unauthorized(address caller, address deployer);
 
+    /// @notice Thrown when an epoch range's bounds are inverted.
+    error JBStickyHook_InvalidEpochRange(uint256 fromEpoch, uint256 toEpoch);
+
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
@@ -376,6 +379,28 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         return interfaceId == type(IJBStickyHook).interfaceId || interfaceId == type(IJBRulesetDataHook).interfaceId
             || interfaceId == type(IJBPayHook).interfaceId || interfaceId == type(IJBCashOutHook).interfaceId
             || super.supportsInterface(interfaceId);
+    }
+
+    /// @notice The net still-held stake for each epoch in an inclusive range.
+    /// @param projectId The ID of the sticky project.
+    /// @param fromEpoch The first epoch to read.
+    /// @param toEpoch The last epoch to read.
+    /// @return amounts The net staked amount for each epoch, in order.
+    function netStakedInEpochs(
+        uint256 projectId,
+        uint256 fromEpoch,
+        uint256 toEpoch
+    )
+        external
+        view
+        override
+        returns (uint256[] memory amounts)
+    {
+        if (fromEpoch > toEpoch) revert JBStickyHook_InvalidEpochRange({fromEpoch: fromEpoch, toEpoch: toEpoch});
+        amounts = new uint256[](toEpoch - fromEpoch + 1);
+        for (uint256 i; i < amounts.length; i++) {
+            amounts[i] = netStakedIn[projectId][fromEpoch + i];
+        }
     }
 
     //*********************************************************************//

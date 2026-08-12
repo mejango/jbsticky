@@ -334,6 +334,24 @@ contract JBStickyHookUnitTest is Test {
         );
     }
 
+    function test_netStakedInEpochsRange() public {
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        vm.warp(12 weeks + 1);
+        _pay(holder, 50e18);
+
+        uint256[] memory amounts = hook.netStakedInEpochs(PROJECT_ID, 10, 12);
+        assertEq(amounts.length, 3);
+        assertEq(amounts[0], 100e18);
+        assertEq(amounts[1], 0);
+        assertEq(amounts[2], 50e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyHook.JBStickyHook_InvalidEpochRange.selector, 12, 10)
+        );
+        hook.netStakedInEpochs(PROJECT_ID, 12, 10);
+    }
+
     function _beforePayContext(uint256 value) internal view returns (JBBeforePayRecordedContext memory) {
         return JBBeforePayRecordedContext({
             terminal: terminal,

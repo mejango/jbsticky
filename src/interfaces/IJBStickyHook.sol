@@ -112,6 +112,16 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
     function netStakedIn(uint256 projectId, uint256 epoch) external view returns (uint256);
 
+    /// @notice The net still-held stake for each epoch in an inclusive range.
+    /// @param projectId The ID of the sticky project.
+    /// @param fromEpoch The first epoch to read.
+    /// @param toEpoch The last epoch to read.
+    /// @return amounts The net staked amount for each epoch, in order.
+    function netStakedInEpochs(uint256 projectId, uint256 fromEpoch, uint256 toEpoch)
+        external
+        view
+        returns (uint256[] memory amounts);
+
     /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
     /// @param projectId The ID of the sticky project to check the balance of.
     /// @param holder The address to check the balance of.
