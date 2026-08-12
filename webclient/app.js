@@ -2376,11 +2376,15 @@ function renderStickQuote() {
   const pool = ctx.pool;
   if (!el) return;
   el.textContent = "";
-  if (!pool || pool.reward === 0n) return;
+  if (!pool) return;
   const field = $("stake-amount");
   let amount = 0n;
   try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
   if (amount <= 0n) return;
+  if (pool.reward === 0n) {
+    el.textContent = `Get ${formatUnits(amount, pool.decimals)} ${pool.symbol} back anytime.`;
+    return;
+  }
   const r = Number(pool.reward) / 10000;
   const back = parseFloat((Number(formatUnits(amount, pool.decimals)) * (1 - r) * 0.975).toFixed(4));
   el.textContent = `If you change your mind you can get ${back} ${pool.symbol} back right away, and more as you stick around.`;
