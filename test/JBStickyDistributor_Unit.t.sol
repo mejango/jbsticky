@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
+import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
 import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
 import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
@@ -17,10 +18,25 @@ import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
 
 /// @notice An 18-decimal ERC-20 standing in for a token that gets staked or handed out as a reward.
 contract MockErc20 is ERC20 {
+    uint256 public feeBps; // taken out of every transfer when non-zero
+
     constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
 
     function mint(address to, uint256 amount) external {
         _mint({account: to, value: amount});
+    }
+
+    function setFeeBps(uint256 bps) external {
+        feeBps = bps;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        uint256 fee = (value * feeBps) / 10_000;
+        if (fee != 0 && from != address(0) && to != address(0)) {
+            super._update({from: from, to: address(0xdead), value: fee});
+            value -= fee;
+        }
+        super._update({from: from, to: to, value: value});
     }
 }
 
@@ -118,6 +134,36 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
     function _rewardTokens() internal view returns (IERC20[] memory tokens) {
         tokens = new IERC20[](1);
         tokens[0] = IERC20(address(reward));
+    }
+
+    function _nativeTokens() internal pure returns (IERC20[] memory tokens) {
+        tokens = new IERC20[](1);
+        tokens[0] = IERC20(JBConstants.NATIVE_TOKEN);
+    }
+
+    /// @notice A payout-split context routing `amount` of `token` to the sticky token's stakers.
+    function _splitContext(address token, uint256 amount) internal view returns (JBSplitHookContext memory context) {
+        context = JBSplitHookContext({
+            token: token,
+            amount: amount,
+            decimals: 18,
+            projectId: projectId,
+            groupId: uint256(uint160(token)),
+            split: JBSplit({
+                percent: 0,
+                projectId: 0,
+                beneficiary: payable(address(stickyToken)),
+                preferAddToBalance: false,
+                lockedUntil: 0,
+                hook: IJBSplitHook(address(distributor))
+            })
+        });
+    }
+
+    /// @notice The reward round the distributor is currently funding into.
+    function _currentRewardRoundOf(address token) internal view returns (uint208 amount, uint208 totalStake) {
+        (amount,,,, totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 0, IERC20(token), distributor.currentRound());
     }
 
     function _fund(uint256 amount) internal {
@@ -233,28 +279,123 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
     }
 
     function test_splitFundingRejectsUnauthorizedCallers() public {
-        JBSplitHookContext memory context = JBSplitHookContext({
-            token: address(reward),
-            amount: 1e18,
-            decimals: 18,
-            projectId: projectId,
-            groupId: 1,
-            split: JBSplit({
-                percent: 0,
-                projectId: 0,
-                beneficiary: payable(address(stickyToken)),
-                preferAddToBalance: false,
-                lockedUntil: 0,
-                hook: IJBSplitHook(address(distributor))
-            })
-        });
-
         vm.expectRevert(
             abi.encodeWithSelector(
                 JBStickyDistributor.JBStickyDistributor_Unauthorized.selector, projectId, address(this)
             )
         );
-        distributor.processSplitWith(context);
+        distributor.processSplitWith(_splitContext(address(reward), 1e18));
+    }
+
+    function test_splitFundingCreditsTheErc20BalanceDelta() public {
+        _stake(alice, 100e18);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // A payout split hands the distributor 40 reward tokens on the terminal's behalf.
+        address terminal = address(jbMultiTerminal());
+        reward.mint({to: terminal, amount: 40e18});
+        vm.startPrank(terminal);
+        reward.approve({spender: address(distributor), value: 40e18});
+        uint256 balanceBefore = reward.balanceOf(address(distributor));
+        distributor.processSplitWith(_splitContext(address(reward), 40e18));
+        vm.stopPrank();
+
+        // The pot is exactly what actually landed, and it is denominated against the staked supply.
+        uint256 delta = reward.balanceOf(address(distributor)) - balanceBefore;
+        (uint208 amount, uint208 totalStake) = _currentRewardRoundOf(address(reward));
+        assertEq(delta, 40e18);
+        assertEq(amount, delta);
+        assertEq(totalStake, 100e18);
+        assertEq(distributor.balanceOf(address(stickyToken), IERC20(address(reward))), 40e18);
+
+        // The split-funded pot claims and collects like any other round.
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingFor(alice);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        assertEq(_collectFor(alice), 40e18);
+    }
+
+    function test_splitFundingCreditsOnlyWhatAFeeOnTransferTokenDelivers() public {
+        _stake(alice, 100e18);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // The token skims 1% on the way in, so the nominal split amount overstates what arrives.
+        reward.setFeeBps(100);
+        address terminal = address(jbMultiTerminal());
+        reward.mint({to: terminal, amount: 40e18});
+        vm.startPrank(terminal);
+        reward.approve({spender: address(distributor), value: 40e18});
+        uint256 balanceBefore = reward.balanceOf(address(distributor));
+        distributor.processSplitWith(_splitContext(address(reward), 40e18));
+        vm.stopPrank();
+
+        // Only the delivered amount becomes claimable, so the pot can never over-promise.
+        uint256 delta = reward.balanceOf(address(distributor)) - balanceBefore;
+        (uint208 amount,) = _currentRewardRoundOf(address(reward));
+        assertEq(delta, 39.6e18);
+        assertEq(amount, delta);
+        assertEq(distributor.balanceOf(address(stickyToken), IERC20(address(reward))), delta);
+    }
+
+    function test_splitFundingRevertsWhenErc20CarriesNativeValue() public {
+        address terminal = address(jbMultiTerminal());
+        vm.deal(terminal, 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyDistributor.JBStickyDistributor_TokenMismatch.selector,
+                address(reward),
+                JBConstants.NATIVE_TOKEN,
+                uint256(1)
+            )
+        );
+        vm.prank(terminal);
+        distributor.processSplitWith{value: 1}(_splitContext(address(reward), 1e18));
+    }
+
+    function test_splitFundingRevertsWhenNativeValueMissesTheContextAmount() public {
+        address terminal = address(jbMultiTerminal());
+        vm.deal(terminal, 1e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyDistributor.JBStickyDistributor_NativeAmountMismatch.selector, uint256(0.5e18), uint256(1e18)
+            )
+        );
+        vm.prank(terminal);
+        distributor.processSplitWith{value: 0.5e18}(_splitContext(JBConstants.NATIVE_TOKEN, 1e18));
+    }
+
+    function test_nativeSplitFundingCollectsThroughTheNativeTransferPath() public {
+        _stake(alice, 75e18);
+        _stake(bob, 25e18);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // A native payout split must deliver exactly the context amount.
+        address terminal = address(jbMultiTerminal());
+        vm.deal(terminal, 100e18);
+        vm.prank(terminal);
+        distributor.processSplitWith{value: 100e18}(_splitContext(JBConstants.NATIVE_TOKEN, 100e18));
+
+        (uint208 amount, uint208 totalStake) = _currentRewardRoundOf(JBConstants.NATIVE_TOKEN);
+        assertEq(amount, 100e18);
+        assertEq(totalStake, 100e18);
+        assertEq(address(distributor).balance, 100e18);
+
+        // Claim, then collect through the native-transfer branch.
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        distributor.beginVesting({hook: address(stickyToken), tokenIds: _tokenIds(alice), tokens: _nativeTokens()});
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+
+        uint256 aliceBalanceBefore = alice.balance;
+        distributor.collectVestedRewards({
+            hook: address(stickyToken), tokenIds: _tokenIds(alice), tokens: _nativeTokens(), beneficiary: alice
+        });
+        assertEq(alice.balance - aliceBalanceBefore, 75e18);
+
+        // Bob's unclaimed share stays in the distributor's custody.
+        assertEq(address(distributor).balance, 25e18);
+        assertEq(distributor.balanceOf(address(stickyToken), IERC20(JBConstants.NATIVE_TOKEN)), 25e18);
     }
 
     function test_unstakedHolderKeepsAlreadyClaimedRewards() public {
