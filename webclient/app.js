@@ -2482,9 +2482,10 @@ async function deployStreaks() {
   }
   const reward = BigInt(Math.round(rewardPercent * 100));
   const soulbound = $("d-soulbound").value === "1";
-  // The auto-stick adapter is added below; launch-time human granters are not exposed in the UI —
-  // holders trust senders individually after launch.
-  const humanGranters = [];
+  // Launch-time trusted senders (Extras). The auto-stick adapter is appended below regardless.
+  const humanGranters = $("d-add-granters").checked
+    ? ($("d-granters").value || "").split(",").map((value) => value.trim()).filter(Boolean)
+    : [];
   for (const granter of humanGranters) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(granter)) throw new Error(`bad airdrop sender: ${granter}`);
   }
@@ -2548,7 +2549,7 @@ async function deployStreaks() {
         ["NAME", name],
         ["SYMBOL", symbol],
         ["STICKINESS BONUS", reward > 0n ? `${pct(reward)} of every unstick stays with those still sticking` : "none"],
-        ["AIRDROP SENDERS", humanGranters.length ? humanGranters.join(", ") : "none"],
+        ["TRUSTED SENDERS", humanGranters.length ? humanGranters.join(", ") : "none"],
         ["AUTO-STICK", target.autoStickAdapter
           ? `pre-approved through ${target.autoStickAdapter}; each holder still opts in`
           : "unavailable — no auto-stick adapter is configured"],
@@ -3137,11 +3138,16 @@ for (const preset of document.querySelectorAll(".preset")) {
     renderCurve();
   };
 }
+$("d-add-granters").onchange = () => {
+  $("d-granters-row").classList.toggle("hide", !$("d-add-granters").checked);
+  $("d-granters-hint").classList.toggle("hide", !$("d-add-granters").checked);
+};
 $("create-toggle").onclick = () => {
-  for (const id of ["d-custom-name", "d-add-reward"]) $(id).checked = false;
-  for (const id of ["d-name-row", "d-name-hint", "d-reward-wrap", "d-reward-hint"]) {
+  for (const id of ["d-custom-name", "d-add-reward", "d-add-granters"]) $(id).checked = false;
+  for (const id of ["d-name-row", "d-name-hint", "d-reward-wrap", "d-reward-hint", "d-granters-row", "d-granters-hint"]) {
     $(id).classList.add("hide");
   }
+  $("d-extras").open = false;
   rewardChoice = "10";
   for (const preset of document.querySelectorAll(".preset")) preset.classList.toggle("on", preset.dataset.v === "10");
   $("d-reward-custom-row").classList.add("hide");
