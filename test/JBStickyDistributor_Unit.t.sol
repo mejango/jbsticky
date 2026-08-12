@@ -144,6 +144,20 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
 
     /// @notice A payout-split context routing `amount` of `token` to the sticky token's stakers.
     function _splitContext(address token, uint256 amount) internal view returns (JBSplitHookContext memory context) {
+        context = _splitContext({token: token, amount: amount, lockedUntil: 0});
+    }
+
+    /// @notice A payout-split context routing `amount` of `token` to the sticky token's stakers, carrying
+    /// `lockedUntil` on the split (the criteria-selection field under test).
+    function _splitContext(
+        address token,
+        uint256 amount,
+        uint48 lockedUntil
+    )
+        internal
+        view
+        returns (JBSplitHookContext memory context)
+    {
         context = JBSplitHookContext({
             token: token,
             amount: amount,
@@ -155,10 +169,21 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
                 projectId: 0,
                 beneficiary: payable(address(stickyToken)),
                 preferAddToBalance: false,
-                lockedUntil: 0,
+                lockedUntil: lockedUntil,
                 hook: IJBSplitHook(address(distributor))
             })
         });
+    }
+
+    /// @notice Route `amount` of the reward token through a payout split carrying `lockedUntil`, pranking the
+    /// registered terminal as the caller.
+    function _processSplitWithLockedUntil(uint256 amount, uint48 lockedUntil) internal {
+        address terminal = address(jbMultiTerminal());
+        reward.mint({to: terminal, amount: amount});
+        vm.startPrank(terminal);
+        reward.approve({spender: address(distributor), value: amount});
+        distributor.processSplitWith(_splitContext({token: address(reward), amount: amount, lockedUntil: lockedUntil}));
+        vm.stopPrank();
     }
 
     /// @notice The reward round the distributor is currently funding into.
@@ -432,6 +457,29 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         // Bob's unclaimed share stays in the distributor's custody.
         assertEq(address(distributor).balance, 25e18);
         assertEq(distributor.balanceOf(address(stickyToken), IERC20(JBConstants.NATIVE_TOKEN)), 25e18);
+    }
+
+    function test_splitLockedUntilSelectsCriteriaGroup() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
+
+        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 3}); // lockedUntil = 3 => k = 3 weeks
+        (uint208 amount,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 3, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18);
+    }
+
+    function test_splitRealLockTimestampFallsToGroupZero() public {
+        _stake(alice, 100e18);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // A genuine future lock timestamp is far outside [1, MAX_CRITERIA_WEEKS] and must not be mistaken for a
+        // criteria threshold.
+        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: uint48(vm.getBlockTimestamp() + 365 days)});
+        (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
     }
 
     function test_unstakedHolderKeepsAlreadyClaimedRewards() public {

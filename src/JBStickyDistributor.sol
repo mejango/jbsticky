@@ -356,6 +356,13 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // The target sticky token is the split's beneficiary.
         address hook = address(context.split.beneficiary);
 
+        // Small lockedUntil values are 1970-era timestamps that can never lock a split, so the field
+        // doubles as the split's stick-time criteria. Real lock timestamps route to the everyone-pool;
+        // out-of-band values also fall to group 0 rather than reverting, because a split-hook revert
+        // soft-lands the funds back into the project silently.
+        uint256 lockedUntil = context.split.lockedUntil;
+        uint256 groupId = (lockedUntil >= 1 && lockedUntil <= MAX_CRITERIA_WEEKS) ? lockedUntil : 0;
+
         // Native splits must conserve the terminal's stated context amount exactly.
         if (context.token == JBConstants.NATIVE_TOKEN) {
             if (msg.value != context.amount) {
@@ -363,8 +370,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
             }
 
             if (msg.value != 0) {
-                // Split-funded pots go to the default group (0).
-                _recordRewardFunding({hook: hook, groupId: 0, token: IERC20(context.token), amount: msg.value});
+                _recordRewardFunding({hook: hook, groupId: groupId, token: IERC20(context.token), amount: msg.value});
             }
         } else {
             // Validate that native ETH is not cross-booked under an ERC-20 token.
@@ -381,8 +387,8 @@ contract JBStickyDistributor is IJBStickyDistributor {
             uint256 delta =
                 _acceptErc20FundsFrom({token: IERC20(context.token), from: msg.sender, amount: context.amount});
 
-            // Assign only the amount actually received to this round's reward pot (default group, 0).
-            _recordRewardFunding({hook: hook, groupId: 0, token: IERC20(context.token), amount: delta});
+            // Assign only the amount actually received to this round's reward pot.
+            _recordRewardFunding({hook: hook, groupId: groupId, token: IERC20(context.token), amount: delta});
         }
     }
 
