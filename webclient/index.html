@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sticky</title>
+<link rel="icon" type="image/png" href="drip-corner.png">
+<style>
+  @font-face {
+    font-family: "Beatrice"; src: url("Beatrice-Regular.woff2") format("woff2");
+    font-weight: 400; font-display: swap;
+  }
+  @font-face {
+    font-family: "Beatrice"; src: url("Beatrice-Medium.woff2") format("woff2");
+    font-weight: 500 700; font-display: swap;
+  }
+  @font-face {
+    font-family: "Agrandir"; src: url("PPAgrandir-WideBold.woff2") format("woff2");
+    font-weight: 700; font-display: swap;
+  }
+  :root {
+    --bg: #f0f7f9; --card: #f8fcfd; --line: #d8e7eb; --text: #1c2d33; --muted: #64808a;
+    --accent: #0e7c91; --amber: #2fb3c7; --ink: #1c2d33; --teal: #7fd4e0; --err: #b34a35; --out: #b34a35;
+    --top-fold-height: 50px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding-top: var(--top-fold-height); background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Beatrice", "Helvetica Neue", Arial, sans-serif;
+  }
+  main {
+    max-width: 1800px; margin: 0 auto; padding: 20px 16px 80px;
+    position: relative; z-index: 1; background: var(--bg);
+  }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-height: 35px; margin-bottom: 36px; }
+  .brand-slime {
+    position: absolute; top: 0; left: 16px; width: 54px; height: 69px;
+    line-height: 0; overflow: hidden; cursor: pointer;
+  }
+  .brand-slime img { display: block; width: 100%; height: auto; transform: translateY(-1px); }
+  .brand-slime:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+  header .right.top-fold-fixed {
+    position: fixed; z-index: 20; top: 20px;
+    right: max(16px, calc((100vw - 1800px) / 2 + 16px));
+  }
+  .overscroll-slime {
+    position: absolute; z-index: 0; top: 0;
+    left: max(16px, calc((100vw - 1800px) / 2 + 16px)); width: 54px;
+    height: var(--top-fold-height); line-height: 0; overflow: hidden; cursor: pointer;
+  }
+  .overscroll-slime img {
+    position: absolute; right: 0; bottom: -9px; display: block; width: 100%; height: auto;
+    transform: scaleY(-1);
+  }
+  .overscroll-slime:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+  .brand { font-size: 15px; font-weight: 700; letter-spacing: 2px; cursor: pointer; }
+  .brand span { color: var(--amber); }
+  header .right { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  .link { color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
+  .mut { color: var(--muted); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; position: relative; }
+  section h2 { font-size: 13px; letter-spacing: 1.5px; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  label { display: block; color: var(--muted); font-size: 13px; margin: 8px 0 2px; letter-spacing: 1px; }
+  input {
+    width: 100%; background: #fdffff; border: 1px solid var(--line); border-radius: 4px;
+    color: var(--text); font: inherit; padding: 6px 8px;
+  }
+  input:focus { outline: none; border-color: var(--amber); }
+  select {
+    appearance: none; -webkit-appearance: none; width: 100%; font: inherit; color: var(--text);
+    background: #fdffff url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364808a'/%3E%3C/svg%3E") no-repeat right 12px center;
+    border: 1px solid var(--line); border-radius: 4px; padding: 6px 34px 6px 8px; cursor: pointer;
+  }
+  select:focus { outline: none; border-color: var(--amber); }
+  .dd { position: relative; }
+  .dd-btn {
+    display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; color: var(--text);
+    letter-spacing: 1px; border: 1px solid var(--line); border-radius: 4px; padding: 6px 34px 6px 8px;
+    cursor: pointer;
+    background: #fdffff url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364808a'/%3E%3C/svg%3E") no-repeat right 12px center;
+  }
+  .dd-btn:hover { border-color: var(--ink); }
+  .dd-btn svg, .dd-item svg { display: block; flex: none; }
+  .dd-menu {
+    position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; z-index: 30;
+    background: var(--card); border: 1px solid var(--ink); border-radius: 6px; overflow: auto;
+    max-height: 280px; box-shadow: 0 8px 24px rgba(33, 30, 26, 0.18);
+  }
+  .dd-item { display: flex; align-items: center; gap: 8px; padding: 7px 12px; cursor: pointer; white-space: nowrap; letter-spacing: 1px; }
+  .dd-item:hover { background: #fdffff; }
+  .dd-item.on { color: var(--accent); font-weight: 700; }
+  button {
+    background: var(--teal); color: var(--ink); border: none; border-radius: 4px; font: inherit;
+    font-weight: 700; letter-spacing: 1px; padding: 8px 15px; cursor: pointer; margin-top: 10px;
+  }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--ink); }
+  button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  th { text-align: left; color: var(--muted); font-size: 13px; letter-spacing: 1px; font-weight: 600; border-bottom: 1px solid var(--line); padding: 4px 8px 4px 0; }
+  td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--line); }
+  tr.pick { cursor: pointer; }
+  tr.pick:hover td { color: var(--accent); }
+  .feed { list-style: none; margin: 0; padding: 0; }
+  .feed li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .feed .when { color: var(--muted); }
+  .feed .verb { color: var(--accent); font-weight: 600; }
+  .feed .verb.out { color: var(--out); }
+  .addr { color: var(--muted); }
+  .tok { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+  .colhead { font-size: 15px; font-weight: 700; letter-spacing: 0; color: var(--text); margin: 4px 0 12px; font-family: "Agrandir", "Beatrice", sans-serif; }
+  .list-card { background: transparent; border: none; border-radius: 0; overflow: hidden; }
+  .card-item { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .card-item:last-child { border-bottom: none; }
+  .card-item.pickc { cursor: pointer; }
+  .card-item.pickc:hover { background: #e6f0f3; }
+  .card-head { display: flex; gap: 10px; align-items: flex-start; }
+  .card-head svg { flex: none; margin-top: 2px; }
+  .rank { color: var(--muted); flex: none; width: 14px; margin-top: 2px; }
+  .kv { font-size: 13px; }
+  .pie-table { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .pie-table #pie { flex: none; }
+  .owner-pie-chart { width: 260px; line-height: 0; text-align: center; }
+  .owner-pie-chart svg { display: block; width: 190px; height: auto; margin: 0 auto; overflow: visible; }
+  .owner-pie-total { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.3; white-space: nowrap; }
+  .owner-pie-total b { color: var(--text); font-weight: 600; }
+  .owner-pie-separator { margin: 0 4px; color: var(--line); }
+  .owner-pie-track { stroke: var(--line); }
+  .owner-pie-slice {
+    cursor: pointer; opacity: .88; transition: opacity 120ms ease, stroke-width 120ms ease;
+    outline: none;
+  }
+  .owner-pie-chart:has(.owner-pie-slice.active) .owner-pie-slice:not(.active) { opacity: .42; }
+  .owner-pie-slice.active { opacity: 1; stroke-width: 25; }
+  .owner-pie-slice:focus-visible { filter: drop-shadow(0 0 2px var(--accent)); }
+  .owner-pie-label text {
+    fill: var(--text); text-anchor: middle; font-family: "Beatrice", "Helvetica Neue", Arial, sans-serif;
+    font-size: 9px; line-height: 1;
+  }
+  .owner-pie-label .owner-pie-wallet { font-size: 7.5px; font-weight: 600; }
+  .owner-pie-label .owner-pie-balance { fill: var(--muted); font-size: 8px; }
+  .owner-pie-label .owner-pie-percent { fill: var(--accent); font-size: 9px; font-weight: 700; }
+  #leaderboard tr.pie-active td { background: #e6f3f6; color: var(--accent); }
+  .trusted-empty strong { display: block; color: var(--text); font-weight: 500; }
+  .trusted-empty span { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  .token-summary { display: flex; flex-direction: column; gap: 12px; }
+  .token-meta-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 0; }
+  .token-meta {
+    display: inline-flex; align-items: baseline; gap: 7px;
+    margin-right: 16px; padding-right: 16px; border-right: 1px solid var(--line);
+  }
+  .token-meta:last-child { margin-right: 0; padding-right: 0; border-right: none; }
+  .token-meta b { color: var(--muted); font-size: 12px; letter-spacing: 1px; font-weight: 600; }
+  .token-meta-address { font-variant-numeric: tabular-nums; }
+  .token-copy {
+    position: relative; display: inline; margin: 0; padding: 0; border: 0; border-radius: 0;
+    background: none; color: var(--accent); font: inherit; font-weight: inherit; letter-spacing: inherit;
+    text-decoration: underline; text-decoration-color: var(--amber); cursor: pointer;
+  }
+  .token-copy::after {
+    content: attr(data-address); position: absolute; z-index: 50; top: calc(100% + 7px); left: 50%;
+    padding: 5px 8px; border-radius: 4px; background: var(--ink); color: #f0f7f9;
+    font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap;
+    opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity 100ms ease;
+  }
+  .token-copy:hover::after, .token-copy:focus-visible::after { opacity: 1; }
+  .token-contracts { margin-top: 3px; font-size: 13px; }
+  .token-contracts summary { width: max-content; color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
+  .token-contract-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 22px; margin-top: 12px; }
+  .token-contract-grid > div:last-child { grid-column: 1 / -1; }
+  .token-contract-grid b { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; letter-spacing: 1px; font-weight: 600; }
+  .token-contract-grid span { word-break: break-all; }
+  @media (max-width: 560px) {
+    .token-meta { margin-right: 10px; padding-right: 10px; }
+    .token-contract-grid { grid-template-columns: 1fr; }
+    .token-contract-grid > div:last-child { grid-column: auto; }
+  }
+  .kv .mut { letter-spacing: 1px; }
+
+  /* JBM-style home dashboard: protocol chart over the first two feeds. */
+  #view-home { width: 100%; }
+  #view-project, #view-account { width: 100%; max-width: 1068px; margin-left: auto; margin-right: auto; }
+  .cols3 {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.5fr);
+    grid-template-rows: auto 1fr; gap: 20px; align-items: start;
+  }
+  .cols3 > div { min-width: 0; }
+  .home-secured { grid-column: 1 / span 2; grid-row: 1; padding: 8px 0 22px; border-bottom: 1px solid var(--line); }
+  .home-secured-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; min-height: 64px; }
+  .home-secured-value {
+    color: var(--text); font: 700 clamp(28px, 3vw, 42px)/1.05 "Agrandir", "Beatrice", sans-serif;
+    font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+  }
+  .home-secured-label { color: var(--muted); font-size: 14px; font-weight: 600; }
+  .home-secured-hover { display: flex; gap: 22px; padding-bottom: 3px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .home-secured-hover b { color: var(--text); font-weight: 600; }
+  .home-secured-hover.hide { display: flex; visibility: hidden; }
+  .home-secured-chart { width: 100%; min-height: 240px; margin-top: 12px; }
+  .home-secured-plot { position: relative; width: 100%; height: 240px; outline: none; touch-action: pan-y; }
+  .home-secured-plot:focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
+  .home-secured-bars {
+    position: absolute; top: 28px; right: 8px; bottom: 31px; left: 54px;
+    display: flex; align-items: flex-end; gap: clamp(2px, .35vw, 5px); border-bottom: 1px solid var(--line);
+  }
+  .home-secured-bar {
+    flex: 1 1 0; min-width: 1px; border-radius: 2px 2px 0 0; background: #cfe2e7;
+    transition: background 90ms ease, opacity 90ms ease;
+  }
+  .home-secured-bar.active { background: var(--amber); }
+  .home-secured-chart.is-inspecting .home-secured-bar:not(.active) { opacity: .68; }
+  .home-secured-axis { position: absolute; color: var(--muted); font-size: 11px; line-height: 1; }
+  .home-secured-y-max { top: 28px; left: 0; transform: translateY(-1px); }
+  .home-secured-y-zero { bottom: 27px; left: 0; }
+  .home-secured-x-start { bottom: 7px; left: 54px; }
+  .home-secured-x-end { right: 8px; bottom: 7px; }
+  #home-panel-latest { grid-column: 1; grid-row: 2; }
+  #home-panel-stickiest { grid-column: 2; grid-row: 2; border-left: 1px solid var(--line); padding-left: 20px; }
+  #home-panel-airdrops { grid-column: 3; grid-row: 1 / span 2; border-left: 1px solid var(--line); padding-left: 20px; }
+  .hero-col { grid-column: 4; grid-row: 1 / span 2; border-left: 1px solid var(--line); padding-left: 20px; }
+  .home-mobile-tabs, .home-ranking-tabs { display: none; }
+  .home-ranking-tab { margin: 0; }
+
+  @media (min-width: 768px) and (max-width: 1279px) {
+    .cols3 { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto auto 1fr; }
+    .home-secured { grid-column: 1 / span 2; grid-row: 1; }
+    #home-panel-latest { grid-column: 1; grid-row: 2 / span 2; }
+    .home-ranking-tabs {
+      display: flex; grid-column: 2; grid-row: 2; gap: 18px; padding-left: 20px;
+      border-left: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    }
+    .home-ranking-tab {
+      padding: 6px 2px 8px; background: transparent; border: 0; border-bottom: 2px solid transparent;
+      border-radius: 0; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 1.5px;
+    }
+    .home-ranking-tab.on { color: var(--text); border-bottom-color: var(--amber); }
+    #home-panel-stickiest, #home-panel-airdrops {
+      display: none; grid-column: 2; grid-row: 3; border-left: 1px solid var(--line); padding-left: 20px;
+    }
+    #home-panel-stickiest.ranking-on, #home-panel-airdrops.ranking-on { display: block; }
+    #home-panel-stickiest .colhead, #home-panel-airdrops .colhead { display: none; }
+    .hero-col { grid-column: 3; grid-row: 1 / span 3; }
+  }
+
+  @media (min-width: 640px) and (max-width: 767px) {
+    .cols3 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto auto auto 1fr; }
+    .hero-col { grid-column: 1 / -1; grid-row: 1; border-left: none; padding-left: 0; }
+    .home-secured { grid-column: 1 / -1; grid-row: 2; }
+    #home-panel-latest { grid-column: 1; grid-row: 3 / span 2; }
+    .home-ranking-tabs {
+      display: flex; grid-column: 2; grid-row: 3; gap: 18px; padding-left: 20px;
+      border-left: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    }
+    .home-ranking-tab {
+      padding: 6px 2px 8px; background: transparent; border: 0; border-bottom: 2px solid transparent;
+      border-radius: 0; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 1.5px;
+    }
+    .home-ranking-tab.on { color: var(--text); border-bottom-color: var(--amber); }
+    #home-panel-stickiest, #home-panel-airdrops {
+      display: none; grid-column: 2; grid-row: 4; border-left: 1px solid var(--line); padding-left: 20px;
+    }
+    #home-panel-stickiest.ranking-on, #home-panel-airdrops.ranking-on { display: block; }
+    #home-panel-stickiest .colhead, #home-panel-airdrops .colhead { display: none; }
+  }
+
+  @media (max-width: 639px) {
+    .cols3 { grid-template-columns: 1fr; grid-template-rows: none; }
+    .hero-col { order: -3; grid-column: auto; grid-row: auto; border-left: none; padding-left: 0; }
+    .home-secured { order: -2; grid-column: auto; grid-row: auto; padding-top: 0; }
+    .home-secured-head { align-items: flex-start; flex-direction: column; gap: 6px; }
+    .home-secured-hover { width: 100%; justify-content: space-between; gap: 10px; }
+    .home-secured-chart { min-height: 210px; margin-top: 6px; }
+    .home-secured-plot { height: 210px; }
+    .home-secured-bars { left: 42px; }
+    .home-secured-x-start { left: 42px; }
+    .home-mobile-tabs {
+      display: flex; order: -1; width: 100%; gap: 18px; border-bottom: 1px solid var(--line); margin: 4px 0 14px;
+    }
+    .home-mobile-tab {
+      flex: 1; min-width: 0; margin: 0; padding: 8px 2px 10px; background: transparent; border: 0;
+      border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);
+      font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 1.5px;
+    }
+    .home-mobile-tab.on { color: var(--text); border-bottom-color: var(--amber); }
+    .home-list-panel { display: none; order: 1; grid-column: auto !important; grid-row: auto !important; border-left: none !important; padding-left: 0 !important; }
+    .home-list-panel.on { display: block; }
+    .home-list-panel > .colhead { display: none; }
+  }
+  .home-ranking-tab, .home-mobile-tab {
+    font-family: "Agrandir", "Beatrice", sans-serif;
+    font-weight: 700;
+  }
+  .hero { text-align: center; padding: 46px 22px 26px; position: relative; background: transparent; border: none; }
+  .drip { position: absolute; top: -2px; pointer-events: none; z-index: 1; }
+  .hero h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: 0; font-family: "Agrandir", "Beatrice", sans-serif; }
+  .hero h1 span { color: var(--amber); }
+  .hero p.tag { font-size: 14px; color: var(--text); margin: 0 0 16px; }
+  .hero .foot { margin-top: 14px; font-size: 15px; }
+
+  /* project page */
+  .proj-head { display: flex; gap: 16px; align-items: center; }
+  .logo {
+    width: 72px; height: 72px; border-radius: 8px; flex: none;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  .proj-head h2 { margin: 0; font-size: 19px; letter-spacing: 0; color: var(--text); font-family: "Agrandir", "Beatrice", sans-serif; }
+  .proj-head h2 .mut { font-weight: 400; }
+  .headline { font-size: 16px; margin: 3px 0; }
+  .headline-key { color: var(--muted); }
+  .pip { color: #cfe2e7; margin: 0 10px; }
+  .headline b { color: var(--text); font-weight: 500; }
+  .proj-grid { display: grid; grid-template-columns: 300px 1fr; gap: 14px; align-items: start; }
+  @media (max-width: 820px) { .proj-grid { grid-template-columns: 1fr; } }
+  .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .tab {
+    padding: 6px 2px 8px; cursor: pointer; letter-spacing: 0; font-size: 15px; font-weight: 700;
+    font-family: "Agrandir", "Beatrice", sans-serif; color: var(--muted); border-bottom: 2px solid transparent;
+  }
+  .tab.on { color: var(--text); border-bottom-color: var(--amber); }
+  .chip { display: inline-block; border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; font-size: 13px; margin-right: 8px; background: #fdffff; }
+  .chip i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 1px; }
+  .position-summary { display: flex; align-items: flex-end; gap: 34px; flex-wrap: wrap; margin: 4px 0 20px; }
+  .position-total { min-width: 150px; }
+  .position-total b { display: block; color: var(--text); font: 700 24px/1.2 "Agrandir", "Beatrice", sans-serif; }
+  .position-total span, .position-metric span, .position-stakes-title {
+    display: block; margin-top: 3px; color: var(--muted); font-size: 12px; letter-spacing: 1px; font-weight: 600;
+  }
+  .position-metric b { display: block; color: var(--accent); font-size: 16px; }
+  .position-stakes-title { margin: 0 0 5px; }
+  .table-scroll { width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; }
+  .position-table { min-width: 520px; }
+  .leaderboard-table { min-width: 520px; }
+  .address-label {
+    display: inline-block; white-space: nowrap; cursor: help;
+    text-decoration: underline dotted color-mix(in srgb, var(--muted) 55%, transparent);
+    text-underline-offset: 3px;
+  }
+  .address-tooltip {
+    position: fixed; z-index: 100; max-width: calc(100vw - 16px); padding: 6px 9px;
+    border-radius: 4px; background: var(--ink); color: var(--bg); pointer-events: none;
+    font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere;
+    box-shadow: 0 4px 14px rgba(28, 45, 51, .24);
+  }
+  .pie-wrap { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .legend { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  .legend li { margin: 3px 0; }
+  .legend i { display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 2px; }
+  #status, .inline-status {
+    width: max-content; max-width: min(100%, 68ch); margin: 8px 0 0; padding: 7px 10px;
+    border-left: 3px solid var(--line); background: color-mix(in srgb, var(--card) 82%, var(--bg));
+    color: var(--muted); border-radius: 0 4px 4px 0; font-size: 13px; line-height: 1.4;
+    white-space: normal; overflow-wrap: anywhere;
+  }
+  #status { margin: -18px 0 20px auto; }
+  #status.hide, .inline-status.hide { display: none; }
+  #status.err, .inline-status.err { color: var(--err); border-left-color: var(--err); }
+  #status.ok, .inline-status.ok { color: var(--accent); border-left-color: var(--accent); }
+  #tx-status {
+    position: fixed; z-index: 100; top: 62px; right: 16px; width: min(360px, calc(100vw - 32px));
+    padding: 11px 38px 11px 13px; border: 1px solid var(--line); border-left: 4px solid var(--amber);
+    border-radius: 4px; background: #fdffff; color: var(--text); font-size: 13px; line-height: 1.4;
+    box-shadow: 4px 4px 0 rgba(28, 45, 51, .14); overflow-wrap: anywhere;
+  }
+  #tx-status.hide { display: none; }
+  #tx-status.err { border-left-color: var(--err); }
+  #tx-status.ok { border-left-color: var(--accent); }
+  #tx-status-close {
+    position: absolute; top: 3px; right: 7px; margin: 0; padding: 2px 5px; border: 0;
+    background: transparent; color: var(--muted); font-size: 17px; font-weight: 400; letter-spacing: 0;
+  }
+  .explain-rule { border-top: 1px solid var(--line); margin-top: 44px; }
+  .explain { max-width: 68ch; margin: 44px auto 0; font-size: 17px; line-height: 1.65; }
+  .explain + .explain { margin-top: clamp(88px, 9vw, 128px); }
+  .explain img { display: block; margin: 0 auto 26px; }
+  .explain h2 { font-size: 26px; margin: 0 0 14px; font-family: "Agrandir", "Beatrice", sans-serif; color: var(--text); }
+  .explain ol { margin: 14px 0 0; padding-left: 30px; }
+  .explain li { margin: 10px 0; padding-left: 6px; }
+  .explain li::marker { color: var(--accent); font-weight: 700; }
+  .site-footer { margin-top: 46px; padding: 26px 0 8px; color: var(--muted); text-align: center; }
+  .site-footer .fine { border-top: 1px solid var(--line); padding-top: 16px; font-size: 13px; }
+  .site-footer p { margin: 4px 0; }
+  dialog {
+    background: var(--card); border: 1px solid var(--ink); border-radius: 8px; padding: 18px 20px;
+    max-width: 600px; width: calc(100% - 32px); max-height: calc(100vh - 32px); overflow-y: auto;
+    color: var(--text); font: inherit; position: relative;
+  }
+  .dlg-x {
+    position: absolute; top: 10px; right: 12px; background: none; border: none; padding: 4px 6px;
+    font: inherit; font-size: 16px; line-height: 1; color: var(--muted); cursor: pointer;
+  }
+  .dlg-x:hover { color: var(--ink); }
+  dialog::backdrop { background: rgba(33, 30, 26, 0.55); }
+  dialog h2 {
+    margin: 4px 0 12px; color: var(--text); font: 700 15px/1.5 "Agrandir", "Beatrice", sans-serif;
+    letter-spacing: 0;
+  }
+  .txstep { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 10px 0; background: #fdffff; }
+  .txstep th { font-weight: 600; vertical-align: top; }
+  .rawbox { word-break: break-all; white-space: pre-wrap; font-size: 12px; max-height: 200px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cd-eyebrow { font-size: 11px; letter-spacing: 2px; font-weight: 700; color: var(--accent); text-transform: uppercase; }
+  dialog h2.cd-title { font: 700 22px/1.2 "Agrandir", "Beatrice", sans-serif; color: var(--text); letter-spacing: 0; margin: 4px 0 14px; }
+  .cd-summary:not(:empty) { margin: 0 0 14px; }
+  .cd-summary-row { display: flex; justify-content: space-between; gap: 18px; padding: 3px 0; }
+  .cd-summary-row .k { color: var(--muted); }
+  .cd-summary-row .v { font-weight: 600; text-align: right; }
+  .cd-steps { border: 1px solid var(--line); border-radius: 6px; background: #fdffff; padding: 12px 14px; margin-bottom: 12px; }
+  .cd-steps p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  .cd-step { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-weight: 600; }
+  .cd-step i {
+    flex: none; width: 22px; height: 22px; border: 1.5px solid var(--accent); border-radius: 50%;
+    color: var(--accent); font-style: normal; font-size: 12px; display: flex; align-items: center; justify-content: center;
+  }
+  .cd-step.pending { color: var(--muted); font-weight: 400; }
+  .cd-step.pending i { border-color: var(--muted); color: var(--muted); }
+  .cd-step.current i { background: var(--accent); border-color: var(--accent); color: #fdffff; }
+  .cd-step.done i { background: var(--teal); border-color: var(--teal); color: var(--ink); }
+  .cd-warn {
+    border: 1px solid #eccfc6; background: #fdf1ec; color: var(--err); border-radius: 6px;
+    padding: 10px 12px; font-size: 13px; margin-bottom: 4px;
+  }
+  .cd-chain { font-size: 11px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
+  .cd-contract { font-size: 12px; color: var(--muted); word-break: break-all; margin: 1px 0 4px; }
+  .cd-contract b { color: var(--text); font-weight: 600; }
+  .txstep h3 { font-size: 15px; margin: 2px 0 6px; letter-spacing: 0; }
+  .cd-raw { margin-top: 8px; font-size: 13px; }
+  .cd-raw summary { color: var(--accent); cursor: pointer; width: max-content; }
+  .cd-raw .rawbox { margin-top: 6px; }
+  .cd-audit-row { text-align: right; margin: 4px 0 2px; font-size: 13px; }
+  .dlg-actions { display: flex; gap: 10px; }
+  .dlg-actions button { flex: 1; }
+  .fund-direct { display: flex; align-items: flex-end; gap: 10px; margin-top: 10px; }
+  .fund-direct #r-amount-wrap { flex: 1; min-width: 140px; }
+  .fund-direct button { flex: 0 0 auto; min-width: 96px; margin-top: 0; }
+  .check { display: flex; align-items: center; gap: 8px; margin: 12px 0 2px; font-size: 13px; letter-spacing: 1px; cursor: pointer; color: var(--text); }
+  .check input { width: auto; accent-color: var(--amber); }
+  .chain-picker { margin: 0; }
+  .create-section { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
+  .create-section-title { display: block; margin: 0 0 8px; color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: 1px; }
+  .create-section-title + .check { margin-top: 0; }
+  .deploy-section { margin-top: 22px; padding-top: 16px; }
+  .deploy-section .dlg-actions { justify-content: flex-end; }
+  .deploy-section .dlg-actions button { flex: 0 0 auto; }
+  .chain-picker select { max-width: 240px; }
+  .chain-options { display: flex; flex-wrap: wrap; gap: 10px 24px; margin-top: 12px; }
+  .chain-option { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text); cursor: pointer; letter-spacing: 0; }
+  .chain-option input { width: auto; margin: 0; accent-color: var(--amber); }
+  .chain-option-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
+  .chain-option-icon svg { display: block; width: 18px; height: 18px; }
+  .chain-picker .hint { margin-top: 10px; }
+  .project-chains { display: inline-flex; align-items: center; gap: 3px; vertical-align: middle; }
+  .project-chain { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
+  .project-chain svg { width: 18px; height: 18px; }
+  button:disabled { cursor: not-allowed; opacity: .45; }
+  .hint { font-size: 13px; margin: 2px 0 6px; }
+  .hint-subtle { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+  .option-detail { margin-left: 28px; }
+  .preset-row { display: flex; gap: 8px; margin: 4px 0 6px; }
+  .preset {
+    border: 1px solid var(--line); border-radius: 4px; padding: 5px 14px; cursor: pointer;
+    background: #fdffff; font-size: 13px; letter-spacing: 1px;
+  }
+  .preset:hover { border-color: var(--ink); }
+  .preset.on { background: var(--teal); border-color: var(--teal); color: var(--ink); font-weight: 700; }
+  .connect-btn {
+    background: transparent; color: var(--text); border: 1px solid var(--ink); border-radius: 4px;
+    font: inherit; font-weight: 700; letter-spacing: 1px; padding: 5px 12px; cursor: pointer; margin: 0;
+  }
+  .connect-btn:hover { background: var(--card); }
+  .connect-btn.connected { background: var(--ink); color: #f0f7f9; }
+  .connect-btn.viewing-as { background: var(--amber); color: var(--ink); }
+  .wallet-menu {
+    position: fixed; z-index: 60; min-width: 230px; background: #fdffff;
+    border: 1px solid var(--ink); border-radius: 6px; padding: 4px;
+    box-shadow: 0 8px 24px rgba(33, 30, 26, 0.18); font-size: 13px;
+  }
+  .wallet-menu-item {
+    display: block; width: 100%; text-align: left; background: transparent; border: none;
+    font: inherit; letter-spacing: 1px; padding: 8px 10px; cursor: pointer; margin: 0; color: var(--text);
+    border-radius: 4px; font-weight: 400;
+  }
+  .wallet-menu-item:hover { background: var(--card); }
+  .wallet-menu-danger { color: var(--err); }
+  .wallet-menu-separator { margin: 4px 8px; border-top: 1px solid var(--line); }
+  .wallet-menu-note { padding: 8px 10px; color: var(--muted); }
+  .wallet-menu-error { color: var(--err); }
+  .wallet-menu-balances { padding: 8px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+  .wallet-menu-balance-row { display: flex; justify-content: space-between; gap: 20px; line-height: 1.7; }
+  .viewas-prompt { padding: 6px 10px 8px; }
+  .viewas-prompt input { margin-bottom: 6px; }
+  .wallet-pick { display: flex; align-items: center; gap: 8px; }
+  .wallet-pick-icon { width: 18px; height: 18px; border-radius: 4px; flex: none; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+<a class="overscroll-slime" href="#" aria-label="Go to homepage"><img src="drip-round.png" alt=""></a>
+<main>
+  <header>
+    <a class="brand-slime" id="brand-slime" href="#" aria-label="Go to homepage">
+      <img src="drip-corner.png" alt="">
+    </a>
+    <div class="right">
+      <button class="connect-btn" id="connect-btn">Connect wallet</button>
+    </div>
+  </header>
+  <div id="status" class="hide" role="status" aria-live="polite">idle</div>
+
+
+  <!-- ============================================================ HOME -->
+  <div id="view-home">
+    <div class="cols3">
+      <div class="home-mobile-tabs" role="tablist" aria-label="Homepage lists">
+        <button class="home-mobile-tab on" id="home-tab-latest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-latest">LATEST</button>
+        <button class="home-mobile-tab" id="home-tab-stickiest" type="button" role="tab" aria-selected="false" aria-controls="home-panel-stickiest">STICKIEST</button>
+        <button class="home-mobile-tab" id="home-tab-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">AIRDROPS</button>
+      </div>
+      <div class="home-ranking-tabs" role="tablist" aria-label="Sticky rankings">
+        <button class="home-ranking-tab on" id="home-rank-stickiest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-stickiest">STICKIEST</button>
+        <button class="home-ranking-tab" id="home-rank-airdrops" type="button" role="tab" aria-selected="false" aria-controls="home-panel-airdrops">AIRDROPS</button>
+      </div>
+      <div class="home-secured" id="home-secured">
+        <div class="home-secured-head">
+          <div>
+            <div class="home-secured-value" id="home-secured-value">–</div>
+            <div class="home-secured-label">Secured by Sticky</div>
+          </div>
+          <div class="home-secured-hover hide" id="home-secured-hover" aria-live="polite">
+            <span>Date: <b id="home-secured-date"></b></span>
+            <span>Value: <b id="home-secured-hover-value"></b></span>
+          </div>
+        </div>
+        <div class="home-secured-chart" id="home-secured-chart"></div>
+      </div>
+      <div class="home-list-panel on" id="home-panel-latest" role="tabpanel" aria-labelledby="home-tab-latest">
+        <h2 class="colhead">Latest</h2>
+        <div class="list-card" id="activity"></div>
+      </div>
+      <div class="home-list-panel ranking-on" id="home-panel-stickiest" role="tabpanel" aria-labelledby="home-tab-stickiest home-rank-stickiest">
+        <h2 class="colhead">Stickiest</h2>
+        <div class="list-card" id="projects"></div>
+      </div>
+      <div class="home-list-panel" id="home-panel-airdrops" role="tabpanel" aria-labelledby="home-tab-airdrops home-rank-airdrops">
+        <h2 class="colhead">Airdrops</h2>
+        <div class="list-card" id="airdrops"></div>
+      </div>
+      <div class="hero-col">
+        <section class="hero">
+          <img src="hero-donut.png" alt="" style="width:230px;max-width:70%;display:block;margin:0 auto 8px">
+          <h1>Sticky</h1>
+          <p class="tag" style="font-size:17px">Mark your presence,<br>earn by sticking around.</p>
+          <button id="create-toggle">Make your token sticky</button>
+          <p class="foot mut">100% open source, <a class="link" href="https://github.com/Bananapus/nana-sticky-v6" target="_blank" rel="noopener">audit or create with your AI</a>.</p>
+        </section>
+      </div>
+    </div>
+
+    <div class="explain-rule"></div>
+
+    <div class="explain">
+      <img src="jar.png" alt="" style="width:260px;max-width:70%">
+      <h2>Dip one in, get a sticky one out</h2>
+      <ol>
+        <li>Exchange any token for a sticky version back.</li>
+        <li>Stick more anytime, unstick anytime too.</li>
+        <li>Stuck tokens can be airdropped reward tokens by anyone, claimable weekly.</li>
+        <li>Sticky tokens can have a bonus: all who unstick give back a little to all who stick.</li>
+        <li>Sticky token rules are set when the token is made, and can't be changed.</li>
+      </ol>
+    </div>
+
+    <div class="explain">
+      <img src="cone.png" alt="" style="width:210px;max-width:60%">
+      <h2>Worth it</h2>
+      <ol>
+        <li>The ledger remembers who has stuck around — stickiness we can attest to.</li>
+        <li>Optional bonuses go to the stickiest, paid by those who unstick.</li>
+        <li>Unstick whenever — you take your share of the pool's backing, minus any stickiness bonus you leave behind.</li>
+        <li>No admins, no updates, no surprises. The code is public and can't be changed.</li>
+        <li>Works for any token — across Ethereum, Arbitrum, Base, and Optimism.</li>
+      </ol>
+    </div>
+
+    <div class="explain">
+      <img src="juicebox.png" alt="" style="width:180px;max-width:55%">
+      <h2>Juicy insides</h2>
+      <p>Under the hood, every sticky token is a fine-tuned <a class="link" href="https://juicebox.money" target="_blank" rel="noopener">Juicebox</a> — inheriting Juicebox's security, and making it completely interoperable with other Juicebox-based money engines.</p>
+    </div>
+  </div>
+  <!-- ========================================================= ACCOUNT -->
+  <div id="view-account" class="hide">
+    <p><span class="link" onclick="location.hash=''">&larr; home</span></p>
+    <section>
+      <div class="proj-head">
+        <div class="logo" id="a-logo"></div>
+        <div>
+          <h2 id="a-title">Account</h2>
+          <div class="mut" id="a-address" style="word-break:break-all"></div>
+        </div>
+      </div>
+    </section>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start">
+      <div>
+        <h2 class="colhead">Positions</h2>
+        <div class="list-card" id="a-positions"></div>
+      </div>
+      <div>
+        <h2 class="colhead">Activity</h2>
+        <div class="list-card" id="a-activity"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================= PROJECT -->
+  <div id="view-project" class="hide">
+    <div class="proj-head" style="margin-bottom:18px">
+      <div class="logo" id="p-logo" style="width:104px;height:104px"></div>
+      <div>
+        <h2><span id="h-symbol"></span> <span class="mut" id="h-name"></span></h2>
+        <div class="headline"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b><span class="pip">|</span><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b><span class="pip">|</span><span class="headline-key">Average active stick:</span> <b id="h-average">–</b><span class="pip">|</span><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b><span id="h-chains-wrap"><span class="pip">|</span><span class="headline-key">On:</span> <span class="project-chains" id="h-chains"></span></span></div>
+      </div>
+    </div>
+
+    <div class="proj-grid">
+      <div>
+        <section>
+          <h2 id="stake-title">Stick</h2>
+          <div style="display:flex;gap:8px;align-items:stretch">
+            <div style="flex:1;min-width:0">
+              <div style="position:relative">
+                <input id="stake-amount" placeholder="10" style="padding-right:64px">
+                <span id="stake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
+              </div>
+              <div class="mut" style="margin-top:3px;font-size:12px">
+                <span class="link" id="stake-balance" role="button" tabindex="0" title="Use full wallet balance"></span>
+                <span id="stake-balance-label"></span>
+              </div>
+            </div>
+            <button id="stake" style="margin-top:0;flex:none;align-self:flex-start;padding-top:0;padding-bottom:0;height:36.5px">Stick</button>
+          </div>
+        </section>
+        <section>
+          <h2>Latest</h2>
+          <ul class="feed" id="p-activity"></ul>
+        </section>
+      </div>
+
+      <div>
+        <div class="tabs">
+          <div class="tab on" id="tab-btn-overview">Overview</div>
+          <div class="tab" id="tab-btn-owners">Tokens</div>
+          <div class="tab" id="tab-btn-rewards">Airdrops</div>
+        </div>
+
+        <div id="tab-overview">
+          <section>
+            <span class="chip"><i style="background:#1c2d33"></i>Total stuck</span>
+            <span class="chip"><i style="background:#2fb3c7"></i>Active sticks</span>
+            <div id="chart"></div>
+          </section>
+          <section>
+            <h2>Details</h2>
+            <div id="token-info" class="token-summary"></div>
+          </section>
+        </div>
+
+        <div id="tab-rewards" class="hide">
+          <section>
+            <h2>Send airdrop rewards</h2>
+            <p class="mut">Reward those currently stuck, proportional to amount stuck.</p>
+            <button id="open-fund">Send</button>
+            <details class="token-contracts" style="margin-top:14px">
+              <summary>Recurring rewards from a Juicebox project's splits</summary>
+              <p class="mut" style="margin:10px 0 6px">In any Juicebox project's reserved token splits (or payout
+                splits), add a split with the reward distributor as its hook and this sticky token as its
+                beneficiary. Every distribution then funds that round's rewards for stickers directly — no manual
+                sends, nothing to settle. The routed project's token must be deployed as an ERC-20.</p>
+              <table><tbody>
+                <tr><th style="width:140px">SPLIT HOOK</th><td style="word-break:break-all" id="rr-hook">–</td></tr>
+                <tr><th>BENEFICIARY</th><td style="word-break:break-all" id="rr-beneficiary">–</td></tr>
+              </tbody></table>
+              <div class="row" style="gap:8px">
+                <button id="rr-copy-hook" class="ghost" style="flex:0 1 auto">Copy hook address</button>
+                <button id="rr-copy-beneficiary" class="ghost" style="flex:0 1 auto">Copy beneficiary address</button>
+              </div>
+            </details>
+          </section>
+          <section>
+            <h2>Your rewards</h2>
+            <table>
+              <thead><tr><th>TOKEN</th><th>AMOUNT</th><th>AVAILABLE</th><th></th></tr></thead>
+              <tbody id="rewards-list"></tbody>
+            </table>
+            <div class="row">
+              <div><label>CHECK ANOTHER REWARD TOKEN</label><input id="r-check" placeholder="0x…"></div>
+            </div>
+            <button id="r-add" class="ghost">Check</button>
+          </section>
+          <section id="autostick-card" class="hide">
+            <h2 id="as-heading">Auto-stick rewards</h2>
+            <p class="mut" id="as-blurb"></p>
+            <div id="as-state" style="margin-bottom:4px"></div>
+            <div class="row" style="gap:8px">
+              <button id="as-toggle" style="flex:0 1 auto"></button>
+              <button id="as-stick-now" class="ghost hide" style="flex:0 1 auto">Stick ready rewards now</button>
+              <button id="as-begin-vesting" class="ghost hide" style="flex:0 1 auto">Start unlocking</button>
+              <button id="as-repair" class="ghost hide" style="flex:0 1 auto"></button>
+              <button id="as-settings" class="ghost hide" style="flex:0 1 auto">Settings</button>
+            </div>
+          </section>
+          <section>
+            <h2>Who can stick for you</h2>
+            <p class="mut">Addresses you trust can send you airdrops that stick automatically.</p>
+            <table><tbody id="trusted-list"></tbody></table>
+            <button id="open-trust" class="ghost">Trust</button>
+          </section>
+        </div>
+
+        <div id="tab-owners" class="hide">
+          <section>
+            <h2>You</h2>
+            <div class="position-summary">
+              <div class="position-total"><b id="p-balance">–</b><span>Stuck</span></div>
+              <div class="position-metric"><b id="p-current">–</b><span>Active oldest</span></div>
+              <div class="position-metric"><b id="p-longest">–</b><span>Record</span></div>
+            </div>
+            <span id="p-wallet" class="hide"></span>
+            <div class="table-scroll">
+              <table class="position-table">
+                <thead><tr><th id="tranches-amount-head">AMOUNT</th><th>STUCK SINCE</th><th>AGE</th></tr></thead>
+                <tbody id="tranches"></tbody>
+              </table>
+            </div>
+            <button id="open-unstick" class="ghost" style="margin-top:12px">Unstick</button>
+          </section>
+          <section>
+            <h2>All</h2>
+            <div class="pie-table">
+              <div id="pie"></div>
+              <div style="flex:1;min-width:0">
+                <div class="tabs" style="margin-bottom:10px">
+                  <div class="tab on" id="sort-longest">OLDEST</div>
+                  <div class="tab" id="sort-largest">BIGGEST</div>
+                </div>
+                <div class="table-scroll">
+                  <table class="leaderboard-table">
+                    <thead><tr><th>#</th><th>ACCOUNT</th><th>%</th><th>STUCK</th><th>AGE</th></tr></thead>
+                    <tbody id="leaderboard"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="p-bonus-card" class="hide">
+            <h2>Stickiness bonus</h2>
+            <p class="mut" id="p-bonus-blurb"></p>
+            <div id="p-ratchet"></div>
+          </section>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</main>
+<dialog id="connection-dialog">
+  <h2>Connection</h2>
+  <div class="row">
+    <div><label>RPC URL</label><input id="rpc"></div>
+  </div>
+  <div class="row">
+    <div><label>DEPLOYER ADDRESS</label><input id="deployer"></div>
+    <div><label>ACCOUNT</label><input id="account"></div>
+  </div>
+  <div class="dlg-actions">
+    <button id="connection-close" class="ghost">Close</button>
+    <button id="load">Reload</button>
+  </div>
+</dialog>
+
+<dialog id="create-dialog">
+  <button id="create-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2>Create</h2>
+  <div class="row">
+    <div>
+      <label class="create-section-title">TOKEN TO MAKE STICKY</label><input id="d-token" placeholder="0x…">
+      <p class="hint hide" id="d-token-meta" style="display:flex;align-items:center;gap:6px;margin:5px 0 0"></p>
+    </div>
+  </div>
+  <div class="create-section">
+    <label class="create-section-title">OPTIONS</label>
+    <label class="check"><input type="checkbox" id="d-custom-name"> Set custom token name and symbol</label>
+    <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults — "Sticky &lt;name of the locked token&gt;" and STICKY&lt;SYMBOL&gt;.</p>
+    <div class="row hide option-detail" id="d-name-row">
+      <div><label>NAME</label><input id="d-name" placeholder="Sticky ART"></div>
+      <div><label>SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
+    </div>
+    <label class="check"><input type="checkbox" id="d-add-reward"> Add stickiness bonus</label>
+    <p class="mut hint hide option-detail" id="d-reward-hint">Every unstick leaves some behind for those still sticking with it.<span class="hint-subtle">Nonzero rewards add the $JBP6 2.5% protocol fee to unsticks.</span></p>
+    <div class="hide option-detail" id="d-reward-wrap">
+      <div class="preset-row">
+        <div class="preset" data-v="5">5%</div>
+        <div class="preset on" data-v="10">10%</div>
+        <div class="preset" data-v="25">25%</div>
+        <div class="preset" data-v="custom">CUSTOM</div>
+      </div>
+      <div class="row hide" id="d-reward-custom-row">
+        <div><label>CUSTOM (%)</label><input id="d-reward" placeholder="10" value="10"></div>
+      </div>
+      <div id="d-ratchet"></div>
+      <p class="mut hint" id="d-curve-note"></p>
+      <details class="hint" id="d-fee-details">
+        <summary style="cursor:pointer;color:var(--accent)">Read about fees</summary>
+        <p class="mut" style="margin:6px 0 0">
+          Sticking is always free. With a stickiness bonus on, each unstick pays a 2.5% fee to the Juicebox
+          project — the same fee any Juicebox project pays on funds leaving. The unsticker gets $JBP6 tokens
+          back for it, making them a part-owner of Juicebox itself, earning a cut of everyone else's fees.
+          Sticky tokens with no bonus unstick fee-free.
+        </p>
+      </details>
+    </div>
+    <label class="check"><input type="checkbox" id="d-add-granters"> Add airdrop senders</label>
+    <p class="mut hint hide option-detail" id="d-granters-hint">Addresses allowed to lock tokens for any holder without asking — grant programs, reward bots. Everyone else needs a holder's personal trust to touch their position.</p>
+    <div class="row hide option-detail" id="d-granters-row">
+      <div><label>AIRDROP SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
+    </div>
+  </div>
+  <div class="create-section">
+    <div style="max-width:240px"><label class="create-section-title">TRANSFERS</label>
+      <select id="d-soulbound">
+        <option value="1" selected>Locked</option>
+        <option value="0">Unlocked</option>
+      </select>
+    </div>
+    <p class="mut" id="d-soulbound-hint" style="margin:6px 0 0"></p>
+  </div>
+  <div class="create-section deploy-section">
+    <label class="create-section-title">DEPLOY</label>
+    <div class="chain-picker">
+      <select id="d-environment" aria-label="Deployment environment">
+        <option value="production">Production</option>
+        <option value="testnet">Testnets</option>
+      </select>
+      <div class="chain-options" id="d-chains"></div>
+      <p class="mut hint">The same permanent rules are deployed on every selected chain. The token to lock must exist at the same address on each one.</p>
+      <p class="err hint hide" id="d-chains-error">Choose at least one chain.</p>
+    </div>
+    <p class="mut">Once deployed, settings are permanent.</p>
+    <div class="dlg-actions">
+      <button id="deploy">Deploy sticky token</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="fund-dialog">
+  <button id="fund-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2>Airdrop</h2>
+  <div class="row">
+    <div style="flex:0 0 200px;min-width:0"><label>FROM CHAIN</label>
+      <div class="dd" id="r-origin-dd">
+        <div class="dd-btn" id="r-origin-btn"></div>
+        <div class="dd-menu hide" id="r-origin-menu"></div>
+      </div>
+    </div>
+    <div id="r-token-wrap" style="flex:1;min-width:140px"><label>AIRDROPPED TOKEN</label><input id="r-token" placeholder="0x…"></div>
+  </div>
+  <div id="fund-direct" class="fund-direct">
+    <div id="r-amount-wrap"><label>AMOUNT</label><input id="r-amount" placeholder="100"></div>
+    <button id="fund">Send</button>
+  </div>
+  <div id="fund-bridge" class="hide">
+    <p class="mut" id="bridge-recipe">on the origin chain, bridge any sucker-mapped project token through its own sucker with this pocket as the claim beneficiary — the streaks project itself needs no suckers | arrivals appear below once claimed here</p>
+    <table><tbody>
+      <tr><th style="width:150px">POCKET ADDRESS</th><td style="word-break:break-all" id="pocket-addr">–</td></tr>
+      <tr><th>UNSETTLED</th><td id="pocket-pending">–</td></tr>
+    </tbody></table>
+    <button id="settle" class="ghost">Settle arrivals into rewards</button>
+  </div>
+</dialog>
+
+<dialog id="unstick-dialog">
+  <button id="unstick-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2>Unstick</h2>
+  <div style="position:relative">
+    <input id="unstake-amount" placeholder="5" style="padding-right:70px">
+    <span id="unstake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
+  </div>
+  <div style="text-align:right;margin-top:3px">
+    <span class="mut" id="unstake-max" style="font-size:12px;cursor:pointer">max</span>
+  </div>
+  <div class="mut" style="margin-top:8px" id="unstake-hint">newest tranche first | stickiness clock resets only at zero</div>
+  <div class="mut" style="margin-top:6px" id="unstake-quote"></div>
+  <div class="dlg-actions">
+    <button id="unstake" class="danger">Unstick</button>
+  </div>
+</dialog>
+
+<dialog id="trust-dialog">
+  <button id="trust-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2>Trust a sender</h2>
+  <p class="mut">A sender you trust can lock tokens into your streak for you — grants, airdrops, a friend. Everyone else stays blocked.</p>
+  <label>SENDER ADDRESS</label><input id="trust-addr" placeholder="0x…">
+  <div class="dlg-actions">
+    <button id="trust">Trust sender</button>
+  </div>
+</dialog>
+
+<dialog id="autostick-dialog">
+  <button id="as-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2 id="as-dialog-title">Turn on auto-stick</h2>
+  <p class="mut" id="as-dialog-blurb"></p>
+  <div class="row">
+    <div><label id="as-min-label">MINIMUM PER AUTO-STICK</label><input id="as-min" placeholder="1"></div>
+  </div>
+  <label>AT MOST ONCE EVERY</label>
+  <div class="preset-row">
+    <div class="preset" data-as-cooldown="86400">DAY</div>
+    <div class="preset on" data-as-cooldown="604800">WEEK</div>
+    <div class="preset" data-as-cooldown="2592000">MONTH</div>
+  </div>
+  <div id="as-allowance-wrap">
+    <label>TOKEN ALLOWANCE</label>
+    <div class="preset-row">
+      <div class="preset on" data-as-allowance="unlimited">UNLIMITED</div>
+      <div class="preset" data-as-allowance="custom">CUSTOM CAP</div>
+    </div>
+    <p class="mut hint" id="as-allowance-hint">An unlimited allowance lets auto-stick run hands-off forever. The contract can only ever pull rewards it just delivered to you, and only to stick them for you.</p>
+    <div class="row hide" id="as-allowance-custom-row">
+      <div><label id="as-allowance-label">ALLOWANCE CAP</label><input id="as-allowance" placeholder="100"></div>
+    </div>
+  </div>
+  <div class="dlg-actions">
+    <button id="as-save">Turn on auto-stick</button>
+  </div>
+</dialog>
+
+<dialog id="confirm-dialog">
+  <button id="cd-close" class="dlg-x" aria-label="Close">✕</button>
+  <div class="cd-eyebrow">Transaction sequence</div>
+  <h2 id="cd-title" class="cd-title">Confirm</h2>
+  <div id="cd-summary" class="cd-summary"></div>
+  <div id="cd-steps" class="cd-steps hide"></div>
+  <div id="cd-warn" class="cd-warn"></div>
+  <div id="cd-body"></div>
+  <div class="cd-audit-row"><span class="link" id="cd-audit">[copy tx audit prompt]</span></div>
+  <div class="dlg-actions">
+    <button id="cd-cancel" class="ghost">Cancel</button>
+    <button id="cd-confirm">Confirm & send</button>
+  </div>
+</dialog>
+<footer class="site-footer">
+  <div class="fine">
+    <p>Sticky tokens are open source, enforced by the Juicebox protocol on the Ethereum network.</p>
+    <p>Review the <a class="link" href="https://github.com/Bananapus/nana-sticky-v6" target="_blank" rel="noopener">contract code</a> and the <a class="link" href="https://github.com/Bananapus/nana-sticky-v6/tree/main/webclient" target="_blank" rel="noopener">website code</a>, or check this <span class="link" id="conn-toggle">connection</span>.</p>
+    <p>Terms of service: Risks are borne entirely by the users of the open source code.</p>
+  </div>
+</footer>
+<div id="tx-status" class="hide" role="status" aria-live="polite">
+  <button id="tx-status-close" type="button" aria-label="Dismiss transaction notification">×</button>
+  <span id="tx-status-message"></span>
+</div>
+<div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
+<script src="config.js?v=106"></script>
+<script src="app.js?v=125"></script>
+</body>
+</html>
