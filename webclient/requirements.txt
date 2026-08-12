@@ -1,0 +1,1 @@
+# Intentionally empty — serve.py is stdlib-only; this file makes Nixpacks provision Python.
