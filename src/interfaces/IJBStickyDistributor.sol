@@ -83,6 +83,10 @@ interface IJBStickyDistributor is IJBSplitHook {
     /// @return claimDuration The claim duration, in seconds.
     function CLAIM_DURATION() external view returns (uint48 claimDuration);
 
+    /// @notice The divisor used to encode a criteria group ID as `minWeeks * CRITERIA_BASE + maxWeeks`.
+    /// @return criteriaBase The criteria encoding base.
+    function CRITERIA_BASE() external view returns (uint256 criteriaBase);
+
     /// @notice The JB directory used to verify terminal/controller callers.
     /// @return directory The JB directory.
     function DIRECTORY() external view returns (IJBDirectory directory);
@@ -91,8 +95,8 @@ interface IJBStickyDistributor is IJBSplitHook {
     /// @return epochDuration The stick-age epoch duration, in seconds.
     function EPOCH_DURATION() external view returns (uint256 epochDuration);
 
-    /// @notice The highest stick-time-weeks criteria group ID a reward pot can be funded under.
-    /// @return maxCriteriaWeeks The highest supported criteria group ID.
+    /// @notice The highest value either the `minWeeks` or `maxWeeks` parameter of a criteria group ID can take.
+    /// @return maxCriteriaWeeks The highest supported criteria parameter value.
     function MAX_CRITERIA_WEEKS() external view returns (uint256 maxCriteriaWeeks);
 
     /// @notice The duration of each round, specified in seconds.
@@ -180,9 +184,9 @@ interface IJBStickyDistributor is IJBSplitHook {
     function beginVesting(address hook, uint256[] calldata tokenIds, IERC20[] calldata tokens) external;
 
     /// @notice Claims tokens and begins vesting from a specific reward group.
-    /// @dev Permissionless. No reward tokens leave the distributor. Group 0 is the default group; groups
-    /// `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots that require the staker's tranche to be at least that
-    /// many weeks old.
+    /// @dev Permissionless. No reward tokens leave the distributor. Group 0 is the default group; groups encoded as
+    /// `minWeeks * CRITERIA_BASE + maxWeeks` are stick-time criteria pots that require the staker's tranche to fall
+    /// within that epoch window.
     /// @param hook The sticky token whose stakers are vesting.
     /// @param groupId The reward group to vest from (0 = the default group).
     /// @param tokenIds The IDs to claim rewards for.
@@ -236,7 +240,8 @@ interface IJBStickyDistributor is IJBSplitHook {
 
     /// @notice Fund the distributor for a specific sticky token and reward group.
     /// @dev For native ETH, send `msg.value` and pass `IERC20(NATIVE_TOKEN)` as the token. Group 0 is the default
-    /// (votes-weighted) group; groups `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots.
+    /// (votes-weighted) group; groups encoded as `minWeeks * CRITERIA_BASE + maxWeeks` are stick-time criteria
+    /// pots.
     /// @param hook The sticky token to fund.
     /// @param token The token to fund with.
     /// @param amount The amount to fund.

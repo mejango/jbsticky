@@ -464,9 +464,9 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _stake(alice, 100e18);
         vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
 
-        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 3}); // lockedUntil = 3 => k = 3 weeks
+        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 3000}); // lockedUntil = 3000 => min = 3 weeks
         (uint208 amount,,,, uint208 totalStake,) =
-            distributor.rewardRoundOf(address(stickyToken), 3, reward, distributor.currentRound());
+            distributor.rewardRoundOf(address(stickyToken), 3000, reward, distributor.currentRound());
         assertEq(amount, 10e18);
         assertEq(totalStake, 100e18);
     }
@@ -475,8 +475,8 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _stake(alice, 100e18);
         vm.roll(vm.getBlockNumber() + 1);
 
-        // A genuine future lock timestamp is far outside [1, MAX_CRITERIA_WEEKS] and must not be mistaken for a
-        // criteria threshold.
+        // A genuine future lock timestamp is far outside the valid criteria-window range and must not be mistaken
+        // for a criteria window.
         _processSplitWithLockedUntil({amount: 10e18, lockedUntil: uint48(vm.getBlockTimestamp() + 365 days)});
         (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
         assertEq(amount, 10e18);
@@ -496,18 +496,51 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(_collectFor(alice), 100e18);
     }
 
-    function test_fundRejectsInvalidCriteria() public {
+    function test_fundAcceptsValidCriteriaGroups() public {
+        uint256[5] memory validGroups = [uint256(0), 4000, 1004, 4008, 520_520];
+
+        vm.roll(vm.getBlockNumber() + 1); // group 0 needs a past block for its votes snapshot
+
+        reward.mint(funder, 5e18);
+        vm.startPrank(funder);
+        reward.approve(address(distributor), 5e18);
+        for (uint256 i; i < validGroups.length; i++) {
+            distributor.fund(address(stickyToken), reward, 1e18, validGroups[i]);
+        }
+        vm.stopPrank();
+    }
+
+    function test_fundRejectsInvalidCriteriaGroups() public {
+        // 8004 = max(4) < min(8); 4999 = max(999) > MAX_CRITERIA_WEEKS; 521000 = min(521) > MAX_CRITERIA_WEEKS;
+        // 1 << 240 lands in the reserved curve band and also fails min > MAX_CRITERIA_WEEKS.
+        uint256[4] memory invalidGroups = [uint256(8004), 4999, 521_000, uint256(1) << 240];
+
+        reward.mint(funder, 10e18);
+        vm.startPrank(funder);
+        reward.approve(address(distributor), 10e18);
+        for (uint256 i; i < invalidGroups.length; i++) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, invalidGroups[i]
+                )
+            );
+            distributor.fund(address(stickyToken), reward, 1e18, invalidGroups[i]);
+        }
+        vm.stopPrank();
+    }
+
+    function test_oldEncodingGroupIdsFailClosed() public {
+        // Every previously-valid bare-k criteria value (1-520) decodes to minWeeks == 0 under the new encoding,
+        // which is invalid — a stale config reverts rather than being silently reinterpreted as a different window.
         reward.mint(funder, 10e18);
         vm.startPrank(funder);
         reward.approve(address(distributor), 10e18);
 
-        vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 521));
-        distributor.fund(address(stickyToken), reward, 10e18, 521);
+        vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 4));
+        distributor.fund(address(stickyToken), reward, 1e18, 4);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, uint256(1) << 240)
-        );
-        distributor.fund(address(stickyToken), reward, 10e18, uint256(1) << 240);
+        vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 520));
+        distributor.fund(address(stickyToken), reward, 1e18, 520);
         vm.stopPrank();
     }
 
@@ -519,11 +552,11 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         reward.mint(funder, 10e18);
         vm.startPrank(funder);
         reward.approve(address(distributor), 10e18);
-        distributor.fund(address(stickyToken), reward, 10e18, 2); // stuck >= 2 weeks
+        distributor.fund(address(stickyToken), reward, 10e18, 2000); // stuck >= 2 weeks
         vm.stopPrank();
 
         (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) =
-            distributor.rewardRoundOf(address(stickyToken), 2, reward, distributor.currentRound());
+            distributor.rewardRoundOf(address(stickyToken), 2000, reward, distributor.currentRound());
         assertEq(amount, 10e18);
         assertEq(totalStake, 100e18);
         assertEq(snapshotEpoch, 14);
@@ -537,10 +570,10 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         vm.deal(funder, 10e18);
         vm.prank(funder);
         // stuck >= 2 weeks
-        distributor.fund{value: 10e18}(address(stickyToken), IERC20(JBConstants.NATIVE_TOKEN), 0, 2);
+        distributor.fund{value: 10e18}(address(stickyToken), IERC20(JBConstants.NATIVE_TOKEN), 0, 2000);
 
         (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) = distributor.rewardRoundOf(
-            address(stickyToken), 2, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound()
+            address(stickyToken), 2000, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound()
         );
         assertEq(amount, 10e18);
         assertEq(totalStake, 100e18);
@@ -551,21 +584,21 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);
         vm.warp(13 weeks + 1);
-        _stake(bob, 300e18); // too fresh for k=2 at epoch 14
+        _stake(bob, 300e18); // too fresh for min=2 at epoch 14
         vm.warp(14 weeks + 1);
 
-        _fundGroup(10e18, 2);
+        _fundGroup(10e18, 2000);
         (,,,, uint208 totalStake,) =
-            distributor.rewardRoundOf(address(stickyToken), 2, reward, distributor.currentRound());
+            distributor.rewardRoundOf(address(stickyToken), 2000, reward, distributor.currentRound());
         assertEq(totalStake, 100e18); // only alice's epoch-10 bucket is <= 14 - 2
     }
 
     function test_denominatorZeroWhenNothingAged() public {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);
-        _fundGroup(10e18, 52); // nothing is a year old
+        _fundGroup(10e18, 52_000); // nothing is a year old
         (,,,, uint208 totalStake,) =
-            distributor.rewardRoundOf(address(stickyToken), 52, reward, distributor.currentRound());
+            distributor.rewardRoundOf(address(stickyToken), 52_000, reward, distributor.currentRound());
         assertEq(totalStake, 0);
     }
 
@@ -573,11 +606,11 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);
         vm.warp(12 weeks + 1);
-        _fundGroup(10e18, 1);
+        _fundGroup(10e18, 1000);
         _stake(bob, 900e18); // same round, after the pin
-        _fundGroup(5e18, 1); // must not re-walk
+        _fundGroup(5e18, 1000); // must not re-walk
         (uint208 amount,,,, uint208 totalStake,) =
-            distributor.rewardRoundOf(address(stickyToken), 1, reward, distributor.currentRound());
+            distributor.rewardRoundOf(address(stickyToken), 1000, reward, distributor.currentRound());
         assertEq(amount, 15e18);
         assertEq(totalStake, 100e18);
     }
@@ -587,16 +620,16 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _stake(alice, 100e18);
         _stake(bob, 300e18);
         vm.warp(13 weeks + 1);
-        _stake(bob, 600e18); // fresh bob tranche won't count for k=2 at epoch 14
+        _stake(bob, 600e18); // fresh bob tranche won't count for min=2 at epoch 14
         vm.warp(14 weeks + 1);
-        _fundGroup(100e18, 2); // denominator = 400e18
+        _fundGroup(100e18, 2000); // denominator = 400e18
 
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
-        _beginVestingGroupFor(alice, 2);
-        _beginVestingGroupFor(bob, 2);
+        _beginVestingGroupFor(alice, 2000);
+        _beginVestingGroupFor(bob, 2000);
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
-        assertEq(_collectGroupFor(alice, 2), 25e18);
-        assertEq(_collectGroupFor(bob, 2), 75e18);
+        assertEq(_collectGroupFor(alice, 2000), 25e18);
+        assertEq(_collectGroupFor(bob, 2000), 75e18);
     }
 
     function test_postSnapshotDeepExitForfeitsAgedWeight() public {
@@ -604,28 +637,28 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _stake(alice, 100e18);
         _stake(bob, 100e18);
         vm.warp(12 weeks + 1);
-        _fundGroup(100e18, 1); // denominator 200e18
+        _fundGroup(100e18, 1000); // denominator 200e18
 
         // Bob unsticks 80 after the snapshot: LIFO eats into his only (aged) tranche.
         _unstake(bob, 80e18);
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
-        _beginVestingGroupFor(alice, 1);
-        _beginVestingGroupFor(bob, 1);
+        _beginVestingGroupFor(alice, 1000);
+        _beginVestingGroupFor(bob, 1000);
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
-        assertEq(_collectGroupFor(alice, 1), 50e18); // alice's share unaffected
-        assertEq(_collectGroupFor(bob, 1), 10e18); // 20/200 of the pot; 40e18 stays for recycle
+        assertEq(_collectGroupFor(alice, 1000), 50e18); // alice's share unaffected
+        assertEq(_collectGroupFor(bob, 1000), 10e18); // 20/200 of the pot; 40e18 stays for recycle
     }
 
     function test_lateStakeCannotClaimOldRound() public {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);
         vm.warp(12 weeks + 1);
-        _fundGroup(100e18, 1);
+        _fundGroup(100e18, 1000);
         _stake(carol, 500e18); // staked after snapshot
 
         vm.warp(vm.getBlockTimestamp() + 30 weeks); // carol's tranche is now ancient in wall-time
-        _beginVestingGroupFor(carol, 1);
-        assertEq(_collectableGroupFor(carol, 1), 0); // epoch 12 > snapshotEpoch(12) - 1
+        _beginVestingGroupFor(carol, 1000);
+        assertEq(_collectableGroupFor(carol, 1000), 0); // epoch 12 > snapshotEpoch(12) - 1
     }
 
     function test_transferDoesNotInheritAgeForCriteriaClaims() public {
@@ -663,7 +696,7 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         reward.mint({to: funder, amount: 100e18});
         vm.startPrank(funder);
         reward.approve({spender: address(distributor), value: 100e18});
-        distributor.fund({hook: address(openToken), token: IERC20(address(reward)), amount: 100e18, groupId: 1});
+        distributor.fund({hook: address(openToken), token: IERC20(address(reward)), amount: 100e18, groupId: 1000});
         vm.stopPrank();
 
         // Alice transfers half her position to carol AFTER the snapshot, in the same epoch it was funded. LIFO
@@ -675,17 +708,17 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
 
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
         distributor.beginVesting({
-            hook: address(openToken), groupId: 1, tokenIds: _tokenIds(alice), tokens: _rewardTokens()
+            hook: address(openToken), groupId: 1000, tokenIds: _tokenIds(alice), tokens: _rewardTokens()
         });
         distributor.beginVesting({
-            hook: address(openToken), groupId: 1, tokenIds: _tokenIds(carol), tokens: _rewardTokens()
+            hook: address(openToken), groupId: 1000, tokenIds: _tokenIds(carol), tokens: _rewardTokens()
         });
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
 
         uint256 aliceBalanceBefore = reward.balanceOf(alice);
         distributor.collectVestedRewards({
             hook: address(openToken),
-            groupId: 1,
+            groupId: 1000,
             tokenIds: _tokenIds(alice),
             tokens: _rewardTokens(),
             beneficiary: alice
@@ -698,11 +731,120 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         uint256 carolBalanceBefore = reward.balanceOf(carol);
         distributor.collectVestedRewards({
             hook: address(openToken),
-            groupId: 1,
+            groupId: 1000,
             tokenIds: _tokenIds(carol),
             tokens: _rewardTokens(),
             beneficiary: carol
         });
         assertEq(reward.balanceOf(carol) - carolBalanceBefore, 0);
+    }
+
+    //*********************************************************************//
+    // --------------------- criteria-window generalization --------------- //
+    //*********************************************************************//
+
+    function test_cohortDenominatorOnlyMiddleBucketsCount() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18); // epoch 10 — below the (4, 8) window at snapshot epoch 20
+        vm.warp(14 weeks + 1);
+        _stake(bob, 200e18); // epoch 14 — inside [12, 16]
+        vm.warp(18 weeks + 1);
+        _stake(carol, 300e18); // epoch 18 — above the window (too fresh for min = 4)
+        vm.warp(20 weeks + 1);
+
+        _fundGroup(10e18, 4008); // cohort: 4 to 8 weeks
+        (,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 4008, reward, distributor.currentRound());
+        assertEq(totalStake, 200e18); // only bob's epoch-14 bucket falls inside [12, 16]
+    }
+
+    function test_cohortNumeratorClaimsOnlyDepositCohortSlice() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18); // epoch 10 — below the (4, 8) window
+        vm.warp(14 weeks + 1);
+        _stake(alice, 100e18); // epoch 14 — inside [12, 16]
+        _stake(bob, 100e18); // epoch 14 — inside [12, 16], matches alice's in-window slice
+        vm.warp(18 weeks + 1);
+        _stake(alice, 100e18); // epoch 18 — above the window (too fresh)
+        vm.warp(20 weeks + 1);
+
+        _fundGroup(100e18, 4008); // denominator = alice's epoch-14 100e18 + bob's epoch-14 100e18 = 200e18
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 4008);
+        _beginVestingGroupFor(bob, 4008);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+
+        // Alice staked 300e18 across three tranches, but only her epoch-14 deposit-cohort slice counts — so she
+        // splits the pot evenly with bob rather than claiming 3x his share.
+        assertEq(_collectGroupFor(alice, 4008), 50e18);
+        assertEq(_collectGroupFor(bob, 4008), 50e18);
+    }
+
+    function test_recencyPaysNewestWeeksExcludesOldTenure() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18); // epoch 10 — older tenure, outside the recency window
+        vm.warp(18 weeks + 1);
+        _stake(bob, 100e18); // epoch 18 — inside the last-4-completed-weeks window [16, 19] at snapshot 20
+        vm.warp(20 weeks + 1);
+
+        _fundGroup(100e18, 1004); // recency: last 4 completed weeks
+        (,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 1004, reward, distributor.currentRound());
+        assertEq(totalStake, 100e18); // only bob's recent stake counts; alice's old tenure is excluded
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 1004);
+        _beginVestingGroupFor(bob, 1004);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        assertEq(_collectGroupFor(alice, 1004), 0);
+        assertEq(_collectGroupFor(bob, 1004), 100e18);
+    }
+
+    function test_recencyPotInsolvencyGuardAgainstSameEpochLateStake() public {
+        vm.warp(18 weeks + 1);
+        _stake(alice, 100e18); // epoch 18 — inside the (1, 4) window at snapshot epoch 20
+
+        vm.warp(20 weeks + 1);
+        _fundGroup(100e18, 1004); // recency window [16, 19]; denominator = alice's 100e18
+        _stake(bob, 500e18); // epoch 20 — staked in the SAME epoch as the fund tx, right after it
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 1004);
+        _beginVestingGroupFor(bob, 1004);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+
+        // Bob's tranche lands in epoch 20 == snapshotEpoch, strictly above hi = 19 — min >= 1 keeps the snapshot
+        // epoch itself out of every window — so it contributes zero to his claim regardless of the recorded
+        // denominator. This is the guard that keeps the sum of claims from ever exceeding the funded pot.
+        assertEq(_collectableGroupFor(bob, 1004), 0);
+        uint256 aliceClaim = _collectGroupFor(alice, 1004);
+        uint256 bobClaim = _collectGroupFor(bob, 1004);
+        assertEq(aliceClaim, 100e18);
+        assertEq(bobClaim, 0);
+        assertEq(aliceClaim + bobClaim, 100e18); // sum of claims never exceeds the pot
+    }
+
+    function test_splitLockedUntilSelectsCohortGroup() public {
+        vm.warp(14 weeks + 1);
+        _stake(alice, 100e18); // epoch 14 — inside a (4, 8) window at snapshot epoch 20
+        vm.warp(20 weeks + 1);
+
+        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 4008});
+        (uint208 amount,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 4008, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18); // alice's epoch-14 tranche falls inside [12, 16]
+    }
+
+    function test_splitStaleEncodingFallsToGroupZero() public {
+        _stake(alice, 100e18);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // lockedUntil = 4 is the old bare-k encoding, which decodes to minWeeks == 0 and is invalid — it must fall
+        // to group 0 rather than reverting, same as a real lock timestamp.
+        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 4});
+        (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
     }
 }

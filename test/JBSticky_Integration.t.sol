@@ -860,37 +860,37 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         _stakeArt(bob, 100e6);
         vm.warp(14 weeks + 1);
 
-        // Fund a k = 2 ("stuck >= 2 weeks") pot through both entry paths: a direct fund in ART, and a payout split
-        // carrying lockedUntil = 2 in a second reward token.
-        _fundArtGroup(distributor, address(token), 90e6, 2);
-        _fundGroupViaSplit(distributor, address(token), reward2, 60e18, 2);
+        // Fund a min = 2 ("stuck >= 2 weeks") pot through both entry paths: a direct fund in ART, and a payout
+        // split carrying lockedUntil = 2000 in a second reward token.
+        _fundArtGroup(distributor, address(token), 90e6, 2000);
+        _fundGroupViaSplit(distributor, address(token), reward2, 60e18, 2000);
 
         // Complete the funding round and fully vest.
         vm.warp(vm.getBlockTimestamp() + 1 days);
-        _beginVestingGroupFor(distributor, address(token), alice, 2, IERC20(address(art)));
-        _beginVestingGroupFor(distributor, address(token), bob, 2, IERC20(address(art)));
-        _beginVestingGroupFor(distributor, address(token), alice, 2, IERC20(address(reward2)));
-        _beginVestingGroupFor(distributor, address(token), bob, 2, IERC20(address(reward2)));
+        _beginVestingGroupFor(distributor, address(token), alice, 2000, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), bob, 2000, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), alice, 2000, IERC20(address(reward2)));
+        _beginVestingGroupFor(distributor, address(token), bob, 2000, IERC20(address(reward2)));
         vm.warp(vm.getBlockTimestamp() + 2 days);
 
-        // Bob's tranche is one week too fresh for k = 2 at the funding snapshot: he carries no aged weight in
+        // Bob's tranche is one week too fresh for min = 2 at the funding snapshot: he carries no aged weight in
         // either pot, and alice — the only aged staker — claims each pot in full.
-        assertEq(_collectGroupFor(distributor, address(token), alice, 2, IERC20(address(art))), 90e6);
-        assertEq(_collectGroupFor(distributor, address(token), bob, 2, IERC20(address(art))), 0);
-        assertEq(_collectGroupFor(distributor, address(token), alice, 2, IERC20(address(reward2))), 60e18);
-        assertEq(_collectGroupFor(distributor, address(token), bob, 2, IERC20(address(reward2))), 0);
+        assertEq(_collectGroupFor(distributor, address(token), alice, 2000, IERC20(address(art))), 90e6);
+        assertEq(_collectGroupFor(distributor, address(token), bob, 2000, IERC20(address(art))), 0);
+        assertEq(_collectGroupFor(distributor, address(token), alice, 2000, IERC20(address(reward2))), 60e18);
+        assertEq(_collectGroupFor(distributor, address(token), bob, 2000, IERC20(address(reward2))), 0);
 
         // A later ART pot: bob has now aged into the criteria too, so he shares it with alice — but carol, who
         // stakes right as this round is funded, is still too fresh to count.
         vm.warp(60 weeks + 1);
         _stakeArt(carol, 100e6);
-        _fundArtGroup(distributor, address(token), 200e6, 2);
+        _fundArtGroup(distributor, address(token), 200e6, 2000);
         uint256 expiredRound = distributor.currentRound();
 
         // Complete the round so the funded round becomes claimable, then only alice claims before the round's
         // claim window closes; bob's half is left to expire.
         vm.warp(vm.getBlockTimestamp() + 1 days);
-        _beginVestingGroupFor(distributor, address(token), alice, 2, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), alice, 2000, IERC20(address(art)));
 
         // Past the claim deadline, carol's tranche has aged into the criteria too — recycling re-walks the
         // denominator at the CURRENT epoch and buckets rather than reusing the expired round's stale total.
@@ -898,12 +898,12 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         uint256[] memory rounds = new uint256[](1);
         rounds[0] = expiredRound;
         uint256 recycled = distributor.recycleExpiredRewards({
-            hook: address(token), groupId: 2, token: IERC20(address(art)), rounds: rounds
+            hook: address(token), groupId: 2000, token: IERC20(address(art)), rounds: rounds
         });
         assertEq(recycled, 100e6);
 
         (uint208 freshAmount,,,, uint208 freshTotalStake,) =
-            distributor.rewardRoundOf(address(token), 2, IERC20(address(art)), distributor.currentRound());
+            distributor.rewardRoundOf(address(token), 2000, IERC20(address(art)), distributor.currentRound());
         assertEq(freshAmount, 100e6);
         assertEq(freshTotalStake, 300e18);
     }

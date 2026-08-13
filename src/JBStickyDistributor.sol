@@ -42,8 +42,8 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @notice Thrown when an empty tokenIds array is passed.
     error JBStickyDistributor_EmptyTokenIds(uint256 tokenIdCount);
 
-    /// @notice Thrown when a reward group ID is not the default group (0) or a supported stick-time-weeks criteria
-    /// in `[1, MAX_CRITERIA_WEEKS]`.
+    /// @notice Thrown when a reward group ID is not the default group (0) or a valid criteria window encoded as
+    /// `minWeeks * CRITERIA_BASE + maxWeeks`.
     error JBStickyDistributor_InvalidCriteria(uint256 groupId);
 
     /// @notice Thrown when the round duration is zero.
@@ -84,8 +84,11 @@ contract JBStickyDistributor is IJBStickyDistributor {
     // ------------------------- public constants ------------------------ //
     //*********************************************************************//
 
-    /// @notice The highest stick-time-weeks criteria group ID a reward pot can be funded under. Group IDs above this
-    /// are reserved for future curve-based criteria and are rejected until implemented.
+    /// @notice The divisor used to encode a criteria group ID as `minWeeks * CRITERIA_BASE + maxWeeks`.
+    uint256 public constant override CRITERIA_BASE = 1000;
+
+    /// @notice The highest value either the `minWeeks` or `maxWeeks` parameter of a criteria group ID can take.
+    /// Values above this are reserved for future curve-based criteria and are rejected until implemented.
     uint256 public constant override MAX_CRITERIA_WEEKS = 520;
 
     /// @notice The number of shares that represent 100%.
@@ -322,7 +325,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// the caller. An alternative to split-based funding — useful for one-off deposits or external reward sources.
     /// @dev For native ETH, send `msg.value` and pass `IERC20(JBConstants.NATIVE_TOKEN)` as the token. Uses balance
     /// delta to handle fee-on-transfer tokens correctly. Group 0 is the default (votes-weighted) group; groups
-    /// `[1, MAX_CRITERIA_WEEKS]` are stick-time criteria pots.
+    /// encoded as `minWeeks * CRITERIA_BASE + maxWeeks` are stick-time criteria pots.
     /// @dev For criteria groups, `hook` must be a sticky token whose `PROJECT_ID` belongs to `STICKY_HOOK`: criteria
     /// weights are read from the pinned hook's tranche data, so a foreign token with a colliding project ID would
     /// only mis-weight its own pot.
@@ -351,9 +354,10 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @dev Stick-time criteria come from `context.split.lockedUntil`, never from `context.groupId`. The latter is the
     /// key the caller looked the split group up under — `uint256(uint160(token))` for payouts,
     /// `JBSplitGroupIds.RESERVED_TOKENS` for reserved tokens — so it is fixed by the distribution path rather than
-    /// chosen per split. Reading criteria from it would make every reserved-token split resolve to `k = 1` week, since
-    /// `RESERVED_TOKENS == 1` falls inside the criteria range, and would offer no way to run two criteria off one
-    /// payout token. `lockedUntil` is per-split and inert below 521, so it carries the criteria instead.
+    /// chosen per split. Reading criteria from it would make every reserved-token split resolve to a 1-week tenure
+    /// window, since `RESERVED_TOKENS == 1` falls inside the criteria range, and would offer no way to run two
+    /// criteria off one payout token. `lockedUntil` is per-split and every valid criteria encoding sits within ~6
+    /// days of the Unix epoch, permanently inert to a real lock timestamp, so it carries the criteria instead.
     /// @param context The split hook context from the terminal or controller.
     function processSplitWith(JBSplitHookContext calldata context) external payable override {
         // Only terminals and controllers for the project can call this.
@@ -370,7 +374,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // out-of-band values also fall to group 0 rather than reverting, because a split-hook revert
         // soft-lands the funds back into the project silently.
         uint256 lockedUntil = context.split.lockedUntil;
-        uint256 groupId = (lockedUntil >= 1 && lockedUntil <= MAX_CRITERIA_WEEKS) ? lockedUntil : 0;
+        uint256 groupId = _isValidGroup(lockedUntil) ? lockedUntil : 0;
 
         // Native splits must conserve the terminal's stated context amount exactly.
         if (context.token == JBConstants.NATIVE_TOKEN) {
@@ -732,7 +736,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // tranches that are old enough as of the funding round's snapshot epoch.
         uint256 tokenStakeAmount = groupId == 0
             ? _tokenStakeAt({hook: hook, tokenId: tokenId, blockNumber: rewardRound.snapshotBlock})
-            : _agedStakeOf({tranches: tranches, snapshotEpoch: rewardRound.snapshotEpoch, weeksRequired: groupId});
+            : _windowStakeOf({tranches: tranches, snapshotEpoch: rewardRound.snapshotEpoch, groupId: groupId});
 
         // Zero-vote stakers advance their cursor but do not consume reward inventory.
         if (tokenStakeAmount == 0) return 0;
@@ -929,7 +933,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
                 rewardRound.totalStake = _toUint208(_totalStake({hook: hook, blockNumber: snapshotBlock}));
             } else {
                 // Criteria pots snapshot at the funding block: current bucket values ARE the snapshot, because
-                // tranches are append-only with now-timestamps and k >= 1.
+                // tranches are append-only with now-timestamps and minWeeks >= 1.
                 uint256 snapshotEpoch = block.timestamp / EPOCH_DURATION;
 
                 // Store the snapshot epoch in the packed uint48 field.
@@ -937,7 +941,7 @@ contract JBStickyDistributor is IJBStickyDistributor {
 
                 // Store the packed total stake that shares this group's round reward pot.
                 rewardRound.totalStake =
-                    _toUint208(_agedTotalStake({hook: hook, snapshotEpoch: snapshotEpoch, weeksRequired: groupId}));
+                    _toUint208(_windowTotalStake({hook: hook, snapshotEpoch: snapshotEpoch, groupId: groupId}));
             }
 
             // Store the packed claim deadline fixed for this distributor.
@@ -1174,63 +1178,6 @@ contract JBStickyDistributor is IJBStickyDistributor {
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice A holder's live tranche amount old enough for a round's criteria.
-    /// @dev Live tranches are safe: they're append-only with now-timestamps (nothing staked after the snapshot can
-    /// reach an epoch <= snapshotEpoch - k with k >= 1), and LIFO unstaking means post-snapshot exits only reduce
-    /// the exiting holder's own weight. You must still be staked to claim.
-    /// @param tranches The holder's tranches, oldest first — fetched once by the caller and reused across every
-    /// round in a claim walk, since only `snapshotEpoch` (and so the cutoff) varies per round.
-    /// @param snapshotEpoch The round's pinned epoch.
-    /// @param weeksRequired The criteria threshold in epochs.
-    /// @return amount The holder's aged stake.
-    function _agedStakeOf(
-        JBStickyTranche[] memory tranches,
-        uint256 snapshotEpoch,
-        uint256 weeksRequired
-    )
-        internal
-        view
-        returns (uint256 amount)
-    {
-        if (snapshotEpoch < weeksRequired) return 0;
-        uint256 cutoff = snapshotEpoch - weeksRequired;
-        for (uint256 i; i < tranches.length; i++) {
-            // Tranches are oldest-first with nondecreasing timestamps; stop at the first too-young one.
-            if (uint256(tranches[i].timestamp) / EPOCH_DURATION > cutoff) break;
-            amount += tranches[i].amount;
-        }
-    }
-
-    /// @notice The total still-held stake at least `weeksRequired` epochs old, read at current bucket values.
-    /// @param hook The sticky token whose project's buckets are read.
-    /// @param snapshotEpoch The epoch being snapshotted.
-    /// @param weeksRequired The criteria threshold in epochs.
-    /// @return total The aged-stake denominator.
-    function _agedTotalStake(
-        address hook,
-        uint256 snapshotEpoch,
-        uint256 weeksRequired
-    )
-        internal
-        view
-        returns (uint256 total)
-    {
-        uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
-        uint256 firstPlusOne = STICKY_HOOK.firstStakeEpochPlusOneOf(projectId);
-
-        // No stake ever, or the threshold reaches past the first stake: nothing qualifies.
-        if (firstPlusOne == 0 || snapshotEpoch < weeksRequired || firstPlusOne - 1 > snapshotEpoch - weeksRequired) {
-            return 0;
-        }
-
-        uint256[] memory amounts = STICKY_HOOK.netStakedInEpochs({
-            projectId: projectId, fromEpoch: firstPlusOne - 1, toEpoch: snapshotEpoch - weeksRequired
-        });
-        for (uint256 i; i < amounts.length; i++) {
-            total += amounts[i];
-        }
-    }
-
     /// @notice Check if the account matches the staker address encoded in the token ID.
     /// @dev The token ID encodes the staker address as `uint256(uint160(stakerAddress))`.
     /// @param hook Unused — access is determined by the tokenId encoding.
@@ -1318,6 +1265,52 @@ contract JBStickyDistributor is IJBStickyDistributor {
         }
     }
 
+    /// @notice Resolve a criteria group ID into the epoch window it selects.
+    /// @dev `groupId` is expected to already be a valid criteria group (`minWeeks >= 1`) — callers gate that with
+    /// `_requireValidGroup` or `_isValidGroup` before reaching here.
+    /// @param snapshotEpoch The round's pinned epoch.
+    /// @param groupId The criteria group ID, encoded as `minWeeks * CRITERIA_BASE + maxWeeks`.
+    /// @return lo The first eligible epoch. Zero when the window is unbounded below.
+    /// @return hi The last eligible epoch.
+    /// @return isEmpty True when no epoch can qualify.
+    function _criteriaWindowFor(
+        uint256 snapshotEpoch,
+        uint256 groupId
+    )
+        internal
+        pure
+        returns (uint256 lo, uint256 hi, bool isEmpty)
+    {
+        uint256 minWeeks = groupId / CRITERIA_BASE;
+        uint256 maxWeeks = groupId % CRITERIA_BASE;
+
+        // The window's top bound would fall at or above the snapshot epoch itself; no epoch can qualify.
+        if (snapshotEpoch < minWeeks) return (0, 0, true);
+
+        hi = snapshotEpoch - minWeeks;
+        lo = maxWeeks == 0 ? 0 : (snapshotEpoch < maxWeeks ? 0 : snapshotEpoch - maxWeeks);
+
+        // Unreachable given the checks above, but returned defensively.
+        if (lo > hi) return (0, 0, true);
+    }
+
+    /// @notice Whether a reward group ID is the default group (0) or a valid criteria window.
+    /// @param groupId The reward group ID to check.
+    /// @return valid True if the group ID can be funded or claimed from.
+    function _isValidGroup(uint256 groupId) internal pure returns (bool valid) {
+        if (groupId == 0) return true;
+
+        uint256 minWeeks = groupId / CRITERIA_BASE;
+        uint256 maxWeeks = groupId % CRITERIA_BASE;
+
+        // minWeeks == 0 is the encoding this generalization retires — every previously-valid bare-k criteria value
+        // (1-520) decodes to minWeeks == 0 here, so stale configs fail closed instead of being reinterpreted.
+        if (minWeeks == 0 || minWeeks > MAX_CRITERIA_WEEKS || maxWeeks > MAX_CRITERIA_WEEKS) return false;
+        if (maxWeeks != 0 && maxWeeks < minWeeks) return false;
+
+        valid = true;
+    }
+
     /// @notice Revert unless the caller can collect the requested token IDs to the beneficiary.
     /// @dev A caller that controls a token ID can route that token ID's collected rewards anywhere. A helper that
     /// does not control the token ID can only collect to that token ID's canonical beneficiary.
@@ -1350,12 +1343,10 @@ contract JBStickyDistributor is IJBStickyDistributor {
         if (token != address(0)) revert JBStickyDistributor_ReentrantTokenTransfer(token);
     }
 
-    /// @notice Revert unless a reward group ID is the default group (0) or a supported stick-time-weeks criteria.
-    /// @dev Group IDs above `MAX_CRITERIA_WEEKS` are reserved for future curve-based criteria and are rejected until
-    /// implemented.
+    /// @notice Revert unless a reward group ID is the default group (0) or a valid criteria window.
     /// @param groupId The reward group ID to validate.
     function _requireValidGroup(uint256 groupId) internal pure {
-        if (groupId > MAX_CRITERIA_WEEKS) revert JBStickyDistributor_InvalidCriteria({groupId: groupId});
+        if (!_isValidGroup(groupId)) revert JBStickyDistributor_InvalidCriteria({groupId: groupId});
     }
 
     /// @notice Whether a reward round has passed its claim deadline.
@@ -1473,6 +1464,73 @@ contract JBStickyDistributor is IJBStickyDistributor {
             unchecked {
                 ++i;
             }
+        }
+    }
+
+    /// @notice A holder's live tranche amount within a criteria group's epoch window.
+    /// @dev Live tranches are safe: they're append-only with now-timestamps (nothing staked after the snapshot can
+    /// land inside a window whose top bound is at most snapshotEpoch - 1, since minWeeks >= 1), and LIFO unstaking
+    /// means post-snapshot exits only reduce the exiting holder's own weight. You must still be staked to claim.
+    /// @dev No clamp to the holder's first tranche is needed here — a comparison against `lo == 0` is already
+    /// correct, and tranches cannot predate the first stake.
+    /// @param tranches The holder's tranches, oldest first — fetched once by the caller and reused across every
+    /// round in a claim walk, since only `snapshotEpoch` (and so the window) varies per round.
+    /// @param snapshotEpoch The round's pinned epoch.
+    /// @param groupId The criteria group whose window bounds the sum.
+    /// @return amount The holder's in-window stake.
+    function _windowStakeOf(
+        JBStickyTranche[] memory tranches,
+        uint256 snapshotEpoch,
+        uint256 groupId
+    )
+        internal
+        view
+        returns (uint256 amount)
+    {
+        (uint256 lo, uint256 hi, bool isEmpty) = _criteriaWindowFor({snapshotEpoch: snapshotEpoch, groupId: groupId});
+        if (isEmpty) return 0;
+
+        for (uint256 i; i < tranches.length; i++) {
+            uint256 epoch = uint256(tranches[i].timestamp) / EPOCH_DURATION;
+
+            // Tranches are oldest-first with nondecreasing timestamps.
+            if (epoch < lo) continue; // older than the window; keep scanning
+            if (epoch > hi) break; // younger than the window, and so is everything after it
+
+            amount += tranches[i].amount;
+        }
+    }
+
+    /// @notice The total still-held stake within a criteria group's epoch window, read at current bucket values.
+    /// @param hook The sticky token whose project's buckets are read.
+    /// @param snapshotEpoch The epoch being snapshotted.
+    /// @param groupId The criteria group whose window bounds the walk.
+    /// @return total The window-stake denominator.
+    function _windowTotalStake(
+        address hook,
+        uint256 snapshotEpoch,
+        uint256 groupId
+    )
+        internal
+        view
+        returns (uint256 total)
+    {
+        (uint256 lo, uint256 hi, bool isEmpty) = _criteriaWindowFor({snapshotEpoch: snapshotEpoch, groupId: groupId});
+        if (isEmpty) return 0;
+
+        uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
+        uint256 firstPlusOne = STICKY_HOOK.firstStakeEpochPlusOneOf(projectId);
+
+        // No stake ever, or the window sits entirely before the first stake: nothing qualifies.
+        if (firstPlusOne == 0 || firstPlusOne - 1 > hi) return 0;
+
+        // Clamp lo up to the first stake epoch — mandatory, since an unclamped lo == 0 (an unbounded window) would
+        // walk `netStakedInEpochs` from the Unix epoch.
+        if (lo < firstPlusOne - 1) lo = firstPlusOne - 1;
+
+        uint256[] memory amounts = STICKY_HOOK.netStakedInEpochs({projectId: projectId, fromEpoch: lo, toEpoch: hi});
+        for (uint256 i; i < amounts.length; i++) {
+            total += amounts[i];
         }
     }
 }
