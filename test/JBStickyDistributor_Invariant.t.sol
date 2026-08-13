@@ -256,10 +256,7 @@ contract JBStickyDistributorHandler is Test {
     /// group.
     function collectCriteria2(uint256 actorSeed, uint256 groupSeed) external bumpBlock {
         _claimAndSweep({
-            hookAddr: address(stickyToken2),
-            actor: _actor(actorSeed),
-            groupId: _criteriaGroup(groupSeed),
-            collect: true
+            hookAddr: address(stickyToken2), actor: _actor(actorSeed), groupId: _criteriaGroup(groupSeed), collect: true
         });
     }
 
@@ -309,10 +306,13 @@ contract JBStickyDistributorHandler is Test {
         return actors[seed % actors.length];
     }
 
-    /// @notice Picks one of the bounded stick-time criteria groups exercised by this suite.
+    /// @notice Picks one of the encoded `minWeeks * CRITERIA_BASE + maxWeeks` criteria-window groups exercised by
+    /// this suite: two tenure windows (bounded min, unbounded max), two recency windows (min = 1, bounded max), and
+    /// two cohort windows (min > 1, bounded max) — covering every window shape the generalized encoding defines.
     function _criteriaGroup(uint256 seed) internal pure returns (uint256) {
-        uint256[3] memory groups = [uint256(1), uint256(2), uint256(4)];
-        return groups[seed % 3];
+        uint256[6] memory groups =
+            [uint256(2000), uint256(4000), uint256(1002), uint256(1004), uint256(2004), uint256(4008)];
+        return groups[seed % 6];
     }
 
     function _tokenIds(address actor) internal pure returns (uint256[] memory tokenIds) {
@@ -390,7 +390,9 @@ contract JBStickyDistributorHandler is Test {
         rounds[0] = round;
 
         if (groupId == 0) {
-            distributor.recycleExpiredRewards({hook: address(stickyToken), token: IERC20(address(reward)), rounds: rounds});
+            distributor.recycleExpiredRewards({
+                hook: address(stickyToken), token: IERC20(address(reward)), rounds: rounds
+            });
         } else {
             distributor.recycleExpiredRewards({
                 hook: address(stickyToken), groupId: groupId, token: IERC20(address(reward)), rounds: rounds
@@ -545,9 +547,12 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
 
         // (ii) Each hook's own custody matches only its own ghost accounting — a cross-hook drain (or an unchecked
         // underflow silently wrapping one hook's balance) would break this without necessarily breaking (i).
-        assertEq(hook1Balance, handler.ghost_fundedOf(address(stickyToken)) - handler.ghost_collectedOf(address(stickyToken)));
         assertEq(
-            hook2Balance, handler.ghost_fundedOf(address(stickyToken2)) - handler.ghost_collectedOf(address(stickyToken2))
+            hook1Balance, handler.ghost_fundedOf(address(stickyToken)) - handler.ghost_collectedOf(address(stickyToken))
+        );
+        assertEq(
+            hook2Balance,
+            handler.ghost_fundedOf(address(stickyToken2)) - handler.ghost_collectedOf(address(stickyToken2))
         );
     }
 
@@ -558,7 +563,11 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
 
     /// @notice Non-vacuousness tripwire: deterministically drives the handler through fund → warp → collect for
     /// both hooks and asserts the ghost totals actually moved, so a future bound or gating regression that makes
-    /// those actions permanently no-ops can't let the invariants above pass vacuously.
+    /// those actions permanently no-ops can't let the invariants above pass vacuously. Also proves each of the
+    /// three criteria-window shapes — tenure, recency, and cohort — individually funds and pays out, not just the
+    /// default group: a single actor's stake sits in one epoch, and a 4-week pre-fund warp is the unique offset
+    /// that lands that epoch inside a tenure(2+), a recency(1-4), and a cohort(4-8) window simultaneously (tenure's
+    /// floor is unbounded, recency's ceiling is the stake epoch + 4, and cohort's floor is the stake epoch + 4).
     /// @dev Deliberately not `afterInvariant()`: that hook runs once per *independent* fuzz run (not once for the
     /// whole campaign — Foundry calls `setUp()` before every run), and Foundry's fuzzer deliberately biases toward
     /// boundary values like `0`. A single unlucky run out of 1024 can legitimately draw only zero-amount fund calls
@@ -566,24 +575,49 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     /// runs even though every invariant it guards was passing — confirmed by removing it and re-running clean.
     /// A plain deterministic test exercises the same code paths without that per-run randomness.
     function test_handlerReachesNonzeroFundingAndCollection() public {
+        address actor = handler.actors(0);
+
         handler.stake({actorSeed: 0, amountSeed: 100e18});
         handler.stake2({actorSeed: 0, amountSeed: 100e18});
         handler.fundDefaultGroup({amountSeed: 100e18});
-        handler.fundCriteriaGroup({groupSeed: 0, amountSeed: 100e18});
         handler.fundDefaultGroup2({amountSeed: 100e18});
+
+        // Age the stake's epoch 4 weeks before pinning any criteria round's snapshot — see the shape-overlap note
+        // above. Two 2-week jumps rather than one 4-week jump because `warp` bounds a single jump to `ROUND_DURATION`.
+        handler.warp({jumpSeed: 2 weeks});
+        handler.warp({jumpSeed: 2 weeks});
+
+        // `_criteriaGroup`'s array is `[2000, 4000, 1002, 1004, 2004, 4008]`; these seeds select one representative
+        // of each shape (indices 0, 3, 5) so each is individually proven below.
+        handler.fundCriteriaGroup({groupSeed: 0, amountSeed: 100e18}); // tenure: 2+ weeks
+        handler.fundCriteriaGroup({groupSeed: 3, amountSeed: 100e18}); // recency: last 4 completed weeks
+        handler.fundCriteriaGroup({groupSeed: 5, amountSeed: 100e18}); // cohort: 4-8 weeks
 
         // One round in (well inside the 6-week claim deadline): materialize each hook's funded round into a
         // vesting entry. Still fully locked, so this transfers nothing yet.
         handler.warp({jumpSeed: ROUND_DURATION});
         handler.collectDefault({actorSeed: 0});
-        handler.collectCriteria({actorSeed: 0, groupSeed: 0});
         handler.collectDefault2({actorSeed: 0});
+        handler.collectCriteria({actorSeed: 0, groupSeed: 0});
+        handler.collectCriteria({actorSeed: 0, groupSeed: 3});
+        handler.collectCriteria({actorSeed: 0, groupSeed: 5});
 
         // Halfway through the 2-round vesting schedule: collect again to actually receive the unlocked half.
         handler.warp({jumpSeed: ROUND_DURATION});
         handler.collectDefault({actorSeed: 0});
-        handler.collectCriteria({actorSeed: 0, groupSeed: 0});
         handler.collectDefault2({actorSeed: 0});
+
+        uint256 balanceBeforeTenure = reward.balanceOf(actor);
+        handler.collectCriteria({actorSeed: 0, groupSeed: 0});
+        assertGt(reward.balanceOf(actor) - balanceBeforeTenure, 0, "tenure window paid nothing");
+
+        uint256 balanceBeforeRecency = reward.balanceOf(actor);
+        handler.collectCriteria({actorSeed: 0, groupSeed: 3});
+        assertGt(reward.balanceOf(actor) - balanceBeforeRecency, 0, "recency window paid nothing");
+
+        uint256 balanceBeforeCohort = reward.balanceOf(actor);
+        handler.collectCriteria({actorSeed: 0, groupSeed: 5});
+        assertGt(reward.balanceOf(actor) - balanceBeforeCohort, 0, "cohort window paid nothing");
 
         assertGt(handler.ghost_fundedTotal(), 0);
         assertGt(handler.ghost_collectedTotal(), 0);
