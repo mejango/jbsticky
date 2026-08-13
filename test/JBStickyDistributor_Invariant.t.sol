@@ -10,6 +10,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {JBMultiTerminal} from "@bananapus/core-v6/src/JBMultiTerminal.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
+import {mulDiv} from "@prb/math/src/Common.sol";
 
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
@@ -84,6 +85,18 @@ contract JBStickyDistributorHandler is Test {
 
     /// @notice The touched reward round with the highest claimedAmount/amount ratio observed so far.
     JBStickyRewardRoundData public worstRound;
+
+    /// @notice The largest observed gap between a criteria claim's harness-derived expected entitlement and what
+    /// the contract actually materialized into a vesting entry (0 if no mismatch has ever been observed).
+    /// @dev Ghost-tracked rather than asserted inline in the action that observes it: `fail_on_revert = false`
+    /// means a revert from inside a handler action is treated as "discard this call" by the invariant runner, not
+    /// as a failure — an `assertEq` here would silently vanish into the revert/discard count instead of failing
+    /// the campaign. `invariant_criteriaClaimEntitlement` is the checker that actually asserts against this.
+    uint256 public ghost_worstEntitlementMismatch;
+
+    /// @notice True once any criteria claim materialized a different number of new vesting entries than the
+    /// harness predicted (an entry appearing for a harness-computed zero-weight claim, or the reverse).
+    bool public ghost_entitlementCountMismatch;
 
     /// @notice The oldest epoch a bucket-affecting action has touched, or `type(uint256).max` if none yet.
     uint256 public minTouchedEpoch = type(uint256).max;
@@ -428,9 +441,23 @@ contract JBStickyDistributorHandler is Test {
 
     /// @notice Begins vesting (and optionally collects) `actor`'s unclaimed rounds for one hook, then sweeps exactly
     /// the round range the distributor just walked internally to refresh `worstRound`.
+    /// @dev For criteria groups with exactly one pending round, also independently verifies the materialized
+    /// entitlement against the harness's own window computation — see `_prepareCriteriaEntitlementCheck`.
     function _claimAndSweep(address hookAddr, address actor, uint256 groupId, bool collect) internal {
         uint256 tokenId = uint256(uint160(actor));
-        uint256 firstRound = distributor.nextClaimRoundOf(hookAddr, groupId, tokenId, IERC20(address(reward)));
+        IERC20 token = IERC20(address(reward));
+        uint256 firstRound = distributor.nextClaimRoundOf(hookAddr, groupId, tokenId, token);
+        uint256 round = distributor.currentRound();
+
+        (bool checkEntitlement, uint256 expectedShare, uint256 vestingCountBefore) = _prepareCriteriaEntitlementCheck({
+            hookAddr: hookAddr,
+            actor: actor,
+            groupId: groupId,
+            tokenId: tokenId,
+            token: token,
+            firstRound: firstRound,
+            round: round
+        });
 
         if (collect) {
             uint256 balanceBefore = reward.balanceOf(actor);
@@ -452,11 +479,153 @@ contract JBStickyDistributorHandler is Test {
             distributor.beginVesting({hook: hookAddr, groupId: groupId, tokenIds: _tokenIds(actor), tokens: _tokens()});
         }
 
-        uint256 round = distributor.currentRound();
+        if (checkEntitlement) {
+            _recordCriteriaEntitlement({
+                hookAddr: hookAddr,
+                groupId: groupId,
+                tokenId: tokenId,
+                token: token,
+                vestingCountBefore: vestingCountBefore,
+                expectedShare: expectedShare
+            });
+        }
+
         if (round == 0 || firstRound >= round) return;
         for (uint256 r = firstRound; r < round; r++) {
             _updateWorstRound({hookAddr: hookAddr, groupId: groupId, round: r});
         }
+    }
+
+    /// @notice Determines whether this claim call is checkable for exact per-actor entitlement, and if so,
+    /// precomputes the expected materialized amount and the pre-call vesting-entry count to diff against.
+    /// @dev Only a single pending round is checkable: `_claimPastRewardsForTokenId` lumps every round in
+    /// `[firstRound, round - 1]` into one vesting entry, so a multi-round span can't be attributed to one round's
+    /// entitlement. Skipping in that case (rather than asserting) is deliberate — `_criteriaGroupForClaim`'s reuse
+    /// rate keeps single-round claims common across the campaign, so this isn't a large loss of coverage.
+    /// @dev Does NOT skip when the harness computes a zero weight: it still runs the check with `expectedShare == 0`,
+    /// which `_assertCriteriaEntitlement` turns into "no new vesting entry must appear" — the case that actually
+    /// catches a widened claim window (an actor the fund-time denominator correctly excluded, but a buggy
+    /// claim-time filter wrongly includes).
+    function _prepareCriteriaEntitlementCheck(
+        address hookAddr,
+        address actor,
+        uint256 groupId,
+        uint256 tokenId,
+        IERC20 token,
+        uint256 firstRound,
+        uint256 round
+    )
+        internal
+        view
+        returns (bool checkEntitlement, uint256 expectedShare, uint256 vestingCountBefore)
+    {
+        if (groupId == 0 || round == 0 || round - firstRound != 1) return (false, 0, 0);
+
+        (uint208 amount,, uint208 claimedAmount,, uint208 totalStake, uint48 snapshotEpoch) =
+            distributor.rewardRoundOf(hookAddr, groupId, token, firstRound);
+        if (totalStake == 0) return (false, 0, 0);
+
+        uint256 base = distributor.CRITERIA_BASE();
+        uint256 minWeeks = groupId / base;
+        uint256 maxWeeks = groupId % base;
+        if (uint256(snapshotEpoch) < minWeeks) return (false, 0, 0);
+
+        uint256 hi = uint256(snapshotEpoch) - minWeeks;
+        uint256 lo = maxWeeks == 0 ? 0 : (uint256(snapshotEpoch) < maxWeeks ? 0 : uint256(snapshotEpoch) - maxWeeks);
+        if (lo > hi) return (false, 0, 0);
+
+        uint256 targetProjectId = hookAddr == address(stickyToken) ? projectId : projectId2;
+        uint256 weight = _actorWindowWeight({projectId_: targetProjectId, actor: actor, lo: lo, hi: hi});
+
+        // Mirrors `_claimRewardRoundFor`'s exact arithmetic, including its remaining-pot clamp — that clamp is
+        // orthogonal to the window computation this check targets (it's already covered by `invariant_potSolvency`
+        // and can legitimately bind when an earlier claim or recycle already settled part of this round), so
+        // replicating it here keeps the check honest instead of producing false positives from it.
+        uint256 rawShare = mulDiv(uint256(amount), weight, uint256(totalStake));
+        uint256 remainingPot = uint256(amount) - uint256(claimedAmount);
+        expectedShare = rawShare > remainingPot ? remainingPot : rawShare;
+
+        vestingCountBefore = _vestingEntryCount({hookAddr: hookAddr, groupId: groupId, tokenId: tokenId, token: token});
+        checkEntitlement = true;
+    }
+
+    /// @notice One actor's live tranche weight inside `[lo, hi]`, read straight from `HOOK.tranchesOf` — never the
+    /// distributor's internal window helper.
+    function _actorWindowWeight(
+        uint256 projectId_,
+        address actor,
+        uint256 lo,
+        uint256 hi
+    )
+        internal
+        view
+        returns (uint256 weight)
+    {
+        JBStickyTranche[] memory tranches = HOOK.tranchesOf(projectId_, actor);
+        for (uint256 t; t < tranches.length; t++) {
+            uint256 epoch = uint256(tranches[t].timestamp) / EPOCH_DURATION;
+            if (epoch < lo || epoch > hi) continue;
+            weight += tranches[t].amount;
+        }
+    }
+
+    /// @notice Probes `vestingDataOf`'s length for one (hook, groupId, tokenId, token) by reading indices until the
+    /// auto-generated array getter reverts out of bounds — there's no dedicated length getter.
+    function _vestingEntryCount(
+        address hookAddr,
+        uint256 groupId,
+        uint256 tokenId,
+        IERC20 token
+    )
+        internal
+        view
+        returns (uint256 length)
+    {
+        while (true) {
+            try distributor.vestingDataOf(hookAddr, groupId, tokenId, token, length) returns (
+                uint256, uint256, uint256
+            ) {
+                unchecked {
+                    length++;
+                }
+            } catch {
+                break;
+            }
+        }
+    }
+
+    /// @notice Records (without reverting) whether the contract materialized exactly the vesting entry the harness
+    /// independently predicted — the invariant that catches a claim-time window diverging from the fund-time
+    /// window, which conservation invariants structurally cannot (see `invariant_criteriaWindowSolvency`'s natspec
+    /// for why). Deliberately non-reverting: see `ghost_worstEntitlementMismatch`'s natspec for why an inline
+    /// `assertEq` here would not actually fail the campaign under this suite's `fail_on_revert = false`.
+    /// `invariant_criteriaClaimEntitlement` is the checker that turns this ghost state into a real failure.
+    function _recordCriteriaEntitlement(
+        address hookAddr,
+        uint256 groupId,
+        uint256 tokenId,
+        IERC20 token,
+        uint256 vestingCountBefore,
+        uint256 expectedShare
+    )
+        internal
+    {
+        uint256 vestingCountAfter =
+            _vestingEntryCount({hookAddr: hookAddr, groupId: groupId, tokenId: tokenId, token: token});
+
+        if (expectedShare == 0) {
+            if (vestingCountAfter != vestingCountBefore) ghost_entitlementCountMismatch = true;
+            return;
+        }
+
+        if (vestingCountAfter != vestingCountBefore + 1) {
+            ghost_entitlementCountMismatch = true;
+            return;
+        }
+
+        (, uint256 actualAmount,) = distributor.vestingDataOf(hookAddr, groupId, tokenId, token, vestingCountBefore);
+        uint256 diff = actualAmount > expectedShare ? actualAmount - expectedShare : expectedShare - actualAmount;
+        if (diff > ghost_worstEntitlementMismatch) ghost_worstEntitlementMismatch = diff;
     }
 
     function _recycle(uint256 groupId, uint256 roundSeed) internal {
@@ -643,28 +812,45 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     }
 
     /// @notice For every criteria round ever funded, independently recomputes the window-stake denominator from
-    /// live tranches and asserts it never exceeds the round's recorded `totalStake`. `potSolvency`'s
-    /// `assertGe(amount, claimedAmount)` is tautological — `_claimRewardRoundFor` already clamps every claim to
-    /// `amount - claimedAmount`, so that assertion can only fail if the clamp itself is deleted. It cannot detect
-    /// the actual risk of this generalization: a claim-time window that diverges from the fund-time window (e.g. a
-    /// wider filter reading past the frozen `[lo, hi]`) would still conserve custody and still respect the clamp —
-    /// it would only ever surface as late claimers silently receiving nothing, or worse, receiving more than the
-    /// round can pay. This invariant recomputes the bounds independently in the harness — deriving `lo`/`hi` from
-    /// the round's stored `snapshotEpoch` and `groupId` exactly as `_criteriaWindowFor` specifies, rather than
-    /// calling into the distributor's internal helper — and sums every bounded actor's live `HOOK.tranchesOf`
-    /// weight against those bounds, so a real divergence between the two window computations would show up here as
-    /// a live-recomputed sum exceeding the denominator the contract actually recorded.
-    /// @dev `<=`, not `==`: live tranches can only have shrunk since the round's snapshot (partial or full
-    /// unstakes reduce a holder's own tranches), never grown into an already-frozen window — `minWeeks >= 1` keeps
-    /// the current, still-open epoch out of every valid window, so nothing staked after the snapshot can land
-    /// inside it. A live recomputation is therefore a lower bound on what was true at snapshot time, not an exact
-    /// match.
+    /// live tranches and asserts it never exceeds the round's recorded `totalStake`. This invariant recomputes the
+    /// bounds independently in the harness — deriving `lo`/`hi` from the round's stored `snapshotEpoch` and
+    /// `groupId` exactly as `_criteriaWindowFor` specifies, rather than calling into the distributor's internal
+    /// helper — and sums every bounded actor's live `HOOK.tranchesOf` weight against those bounds.
+    /// @dev This guards only the denominator path: it holds by construction whenever `minWeeks >= 1`, regardless
+    /// of any bug in the claim-time window (`_windowStakeOf`), because live tranches can only ever be a subset of
+    /// what existed at the round's snapshot. It does NOT read the contract's per-actor numerator at all, so a
+    /// deliberately widened claim filter (e.g. reading `lo - 1`) would sail through this check untouched —
+    /// `potSolvency`'s `assertGe(amount, claimedAmount)` wouldn't catch it either, since it's tautological
+    /// (`_claimRewardRoundFor` already clamps every claim to `amount - claimedAmount`). Numerator/window agreement
+    /// coverage lives in `invariant_criteriaClaimEntitlement`, which is the check that actually compares the
+    /// contract's materialized claim against an independent per-actor entitlement.
+    /// @dev `<=`, not `==`, for the denominator check itself: live tranches can only have shrunk since the round's
+    /// snapshot (partial or full unstakes reduce a holder's own tranches), never grown into an already-frozen
+    /// window — `minWeeks >= 1` keeps the current, still-open epoch out of every valid window, so nothing staked
+    /// after the snapshot can land inside it. A live recomputation is therefore a lower bound on what was true at
+    /// snapshot time, not an exact match.
     function invariant_criteriaWindowSolvency() public view {
         uint256 roundsLength = handler.touchedCriteriaRoundsLength();
         for (uint256 i; i < roundsLength; i++) {
             (address hookAddr, uint256 groupId, uint256 round) = handler.touchedCriteriaRoundAt(i);
             _assertCriteriaRoundWindowSolvency({hookAddr: hookAddr, groupId: groupId, round: round});
         }
+    }
+
+    /// @notice For every criteria claim the handler drove through a single-pending-round precondition, asserts the
+    /// contract materialized exactly the vesting entry an independent, harness-derived per-actor entitlement
+    /// predicted — including that a harness-computed zero-weight claim produced no entry at all. This is the check
+    /// that closes the gap `invariant_criteriaWindowSolvency` cannot: a claim-time window reading past the
+    /// fund-time denominator's bounds would show up here as a nonzero `ghost_worstEntitlementMismatch` (an
+    /// over/under-paid actor) or a `ghost_entitlementCountMismatch` (an entry appearing where the harness predicted
+    /// none, or the reverse) — neither of which any conservation invariant can see, since `_claimRewardRoundFor`'s
+    /// pot-remainder clamp converts a too-wide window into misdistribution among claimers, not a solvency breach.
+    /// @dev Reads ghost state the handler populated in `_recordCriteriaEntitlement` rather than asserting inline in
+    /// the handler action that observes it — see that ghost state's own natspec for why an inline assertion would
+    /// not actually fail this suite under `fail_on_revert = false`.
+    function invariant_criteriaClaimEntitlement() public view {
+        assertEq(handler.ghost_worstEntitlementMismatch(), 0);
+        assertFalse(handler.ghost_entitlementCountMismatch());
     }
 
     /// @notice Independently recomputes one touched criteria round's live window-stake sum and asserts it against
