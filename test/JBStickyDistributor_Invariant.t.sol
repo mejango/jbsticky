@@ -519,6 +519,10 @@ contract JBStickyDistributorHandler is Test {
         view
         returns (bool checkEntitlement, uint256 expectedShare, uint256 vestingCountBefore)
     {
+        // Only a single unclaimed round is attributable to one vesting entry. Pinning the check to the round just
+        // completed also keeps it clear of the expiry path: `CLAIM_DURATION` exceeds `ROUND_DURATION` in this
+        // fixture, so that round's deadline cannot pass while the next one is still current, and the claim always
+        // resolves through `_claimRewardRoundFor` rather than a recycle.
         if (groupId == 0 || round == 0 || round - firstRound != 1) return (false, 0, 0);
 
         (uint208 amount,, uint208 claimedAmount,, uint208 totalStake, uint48 snapshotEpoch) =
