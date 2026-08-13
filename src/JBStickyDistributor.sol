@@ -1168,6 +1168,33 @@ contract JBStickyDistributor is IJBStickyDistributor {
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
+    /// @notice A holder's live tranche amount old enough for a round's criteria.
+    /// @dev Live tranches are safe: they're append-only with now-timestamps (nothing staked after the snapshot can
+    /// reach an epoch <= snapshotEpoch - k with k >= 1), and LIFO unstaking means post-snapshot exits only reduce
+    /// the exiting holder's own weight. You must still be staked to claim.
+    /// @param tranches The holder's tranches, oldest first — fetched once by the caller and reused across every
+    /// round in a claim walk, since only `snapshotEpoch` (and so the cutoff) varies per round.
+    /// @param snapshotEpoch The round's pinned epoch.
+    /// @param weeksRequired The criteria threshold in epochs.
+    /// @return amount The holder's aged stake.
+    function _agedStakeOf(
+        JBStickyTranche[] memory tranches,
+        uint256 snapshotEpoch,
+        uint256 weeksRequired
+    )
+        internal
+        view
+        returns (uint256 amount)
+    {
+        if (snapshotEpoch < weeksRequired) return 0;
+        uint256 cutoff = snapshotEpoch - weeksRequired;
+        for (uint256 i; i < tranches.length; i++) {
+            // Tranches are oldest-first with nondecreasing timestamps; stop at the first too-young one.
+            if (uint256(tranches[i].timestamp) / EPOCH_DURATION > cutoff) break;
+            amount += tranches[i].amount;
+        }
+    }
+
     /// @notice The total still-held stake at least `weeksRequired` epochs old, read at current bucket values.
     /// @param hook The sticky token whose project's buckets are read.
     /// @param snapshotEpoch The epoch being snapshotted.
@@ -1198,33 +1225,6 @@ contract JBStickyDistributor is IJBStickyDistributor {
         }
     }
 
-    /// @notice A holder's live tranche amount old enough for a round's criteria.
-    /// @dev Live tranches are safe: they're append-only with now-timestamps (nothing staked after the snapshot can
-    /// reach an epoch <= snapshotEpoch - k with k >= 1), and LIFO unstaking means post-snapshot exits only reduce
-    /// the exiting holder's own weight. You must still be staked to claim.
-    /// @param tranches The holder's tranches, oldest first — fetched once by the caller and reused across every
-    /// round in a claim walk, since only `snapshotEpoch` (and so the cutoff) varies per round.
-    /// @param snapshotEpoch The round's pinned epoch.
-    /// @param weeksRequired The criteria threshold in epochs.
-    /// @return amount The holder's aged stake.
-    function _agedStakeOf(
-        JBStickyTranche[] memory tranches,
-        uint256 snapshotEpoch,
-        uint256 weeksRequired
-    )
-        internal
-        view
-        returns (uint256 amount)
-    {
-        if (snapshotEpoch < weeksRequired) return 0;
-        uint256 cutoff = snapshotEpoch - weeksRequired;
-        for (uint256 i; i < tranches.length; i++) {
-            // Tranches are oldest-first with nondecreasing timestamps; stop at the first too-young one.
-            if (uint256(tranches[i].timestamp) / EPOCH_DURATION > cutoff) break;
-            amount += tranches[i].amount;
-        }
-    }
-
     /// @notice Check if the account matches the staker address encoded in the token ID.
     /// @dev The token ID encodes the staker address as `uint256(uint160(stakerAddress))`.
     /// @param hook Unused — access is determined by the tokenId encoding.
@@ -1233,17 +1233,6 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @return canClaim True if the account matches the encoded address.
     function _canClaim(address hook, uint256 tokenId, address account) internal pure returns (bool canClaim) {
         canClaim = _claimBeneficiaryOf({hook: hook, tokenId: tokenId}) == account;
-    }
-
-    /// @notice The deadline for a reward round using this distributor's immutable claim duration.
-    /// @param round The reward round.
-    /// @return claimDeadline The deadline timestamp. Zero means no expiration.
-    function _claimDeadlineFor(uint256 round) internal view returns (uint48 claimDeadline) {
-        // A zero claim duration means the round never expires.
-        if (CLAIM_DURATION == 0) return 0;
-
-        // Start the window at the next round boundary, when the funded round first becomes claimable.
-        claimDeadline = _toUint48(roundStartTimestamp(round + 1) + CLAIM_DURATION);
     }
 
     /// @notice The encoded staker address that receives permissionless collections.
@@ -1257,6 +1246,17 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // The high bits were checked above, so this cast recovers the encoded address.
         // forge-lint: disable-next-line(unsafe-typecast)
         beneficiary = address(uint160(tokenId));
+    }
+
+    /// @notice The deadline for a reward round using this distributor's immutable claim duration.
+    /// @param round The reward round.
+    /// @return claimDeadline The deadline timestamp. Zero means no expiration.
+    function _claimDeadlineFor(uint256 round) internal view returns (uint48 claimDeadline) {
+        // A zero claim duration means the round never expires.
+        if (CLAIM_DURATION == 0) return 0;
+
+        // Start the window at the next round boundary, when the funded round first becomes claimable.
+        claimDeadline = _toUint48(roundStartTimestamp(round + 1) + CLAIM_DURATION);
     }
 
     /// @notice The collectable (unlocked, uncollected) amount for a token ID in a specific reward group.
