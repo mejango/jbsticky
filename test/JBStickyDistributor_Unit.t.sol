@@ -497,17 +497,32 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
     }
 
     function test_fundAcceptsValidCriteriaGroups() public {
-        uint256[5] memory validGroups = [uint256(0), 4000, 1004, 4008, 520_520];
+        uint256[4] memory validGroups = [uint256(0), 4000, 1004, 4008];
 
         vm.roll(vm.getBlockNumber() + 1); // group 0 needs a past block for its votes snapshot
 
-        reward.mint(funder, 5e18);
+        reward.mint(funder, 4e18);
         vm.startPrank(funder);
-        reward.approve(address(distributor), 5e18);
+        reward.approve(address(distributor), 4e18);
         for (uint256 i; i < validGroups.length; i++) {
             distributor.fund(address(stickyToken), reward, 1e18, validGroups[i]);
         }
         vm.stopPrank();
+
+        // 520520 is the largest valid encoding (minWeeks == maxWeeks == MAX_CRITERIA_WEEKS). At epoch 5 the
+        // window's top bound (5 - 520) is far below zero, so it's empty and the denominator is zero — a funded,
+        // claimable-only-once-aged-into round, not a revert.
+        vm.warp(5 weeks + 1);
+        reward.mint(funder, 1e18);
+        vm.startPrank(funder);
+        reward.approve(address(distributor), 1e18);
+        distributor.fund(address(stickyToken), reward, 1e18, 520_520);
+        vm.stopPrank();
+
+        (uint208 amount,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 520_520, reward, distributor.currentRound());
+        assertEq(amount, 1e18);
+        assertEq(totalStake, 0);
     }
 
     function test_fundRejectsInvalidCriteriaGroups() public {
@@ -530,8 +545,8 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
     }
 
     function test_oldEncodingGroupIdsFailClosed() public {
-        // Every previously-valid bare-k criteria value (1-520) decodes to minWeeks == 0 under the new encoding,
-        // which is invalid — a stale config reverts rather than being silently reinterpreted as a different window.
+        // A groupId in [1, 520] decodes to minWeeks == 0, which is invalid — a stale config reverts rather than
+        // being silently reinterpreted as a different window.
         reward.mint(funder, 10e18);
         vm.startPrank(funder);
         reward.approve(address(distributor), 10e18);
@@ -846,5 +861,47 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 4});
         (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
         assertEq(amount, 10e18);
+    }
+
+    function test_singleBucketWindowMatchesExactlyOneEpoch() public {
+        vm.warp(15 weeks + 1);
+        _stake(alice, 100e18); // epoch 15 — one epoch before the single-bucket window
+        vm.warp(16 weeks + 1);
+        _stake(bob, 100e18); // epoch 16 — exactly the single-bucket window at snapshot epoch 20
+        vm.warp(17 weeks + 1);
+        _stake(carol, 100e18); // epoch 17 — one epoch after the window
+        vm.warp(20 weeks + 1);
+
+        _fundGroup(30e18, 4004); // minWeeks == maxWeeks == 4: a window that matches exactly epoch 16
+        (,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 4004, reward, distributor.currentRound());
+        assertEq(totalStake, 100e18); // only bob's epoch-16 bucket matches
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 4004);
+        _beginVestingGroupFor(bob, 4004);
+        _beginVestingGroupFor(carol, 4004);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        assertEq(_collectGroupFor(alice, 4004), 0); // one epoch too old
+        assertEq(_collectGroupFor(bob, 4004), 30e18);
+        assertEq(_collectGroupFor(carol, 4004), 0); // one epoch too fresh
+    }
+
+    function test_maxWeeksClampsToZeroWhenSnapshotIsBelowIt() public {
+        vm.warp(1 weeks + 1);
+        _stake(alice, 100e18); // epoch 1
+
+        // At snapshot epoch 3, maxWeeks (8) exceeds the snapshot epoch itself: lo clamps to 0 instead of
+        // underflowing or computing snapshotEpoch - maxWeeks, so the window is [0, 2].
+        vm.warp(3 weeks + 1);
+        _fundGroup(10e18, 1008); // (minWeeks 1, maxWeeks 8)
+        (,,,, uint208 totalStake,) =
+            distributor.rewardRoundOf(address(stickyToken), 1008, reward, distributor.currentRound());
+        assertEq(totalStake, 100e18); // alice's epoch-1 bucket falls inside [0, 2]
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingGroupFor(alice, 1008);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        assertEq(_collectGroupFor(alice, 1008), 10e18);
     }
 }

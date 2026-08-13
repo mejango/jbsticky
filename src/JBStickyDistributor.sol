@@ -88,7 +88,10 @@ contract JBStickyDistributor is IJBStickyDistributor {
     uint256 public constant override CRITERIA_BASE = 1000;
 
     /// @notice The highest value either the `minWeeks` or `maxWeeks` parameter of a criteria group ID can take.
-    /// Values above this are reserved for future curve-based criteria and are rejected until implemented.
+    /// @dev A `minWeeks` above this bound is reserved for future curve-based criteria — the `curveId << 240` band
+    /// decodes to a `minWeeks` far past it, so it's rejected by the same check. A `maxWeeks` above this bound isn't
+    /// part of that reservation; it's just out of range, leaving `maxWeeks` values in `[521, 999]` an intentionally
+    /// unused hole in the `CRITERIA_BASE = 1000` encoding.
     uint256 public constant override MAX_CRITERIA_WEEKS = 520;
 
     /// @notice The number of shares that represent 100%.
@@ -353,11 +356,11 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @dev The sticky token being funded is read from `context.split.beneficiary`.
     /// @dev Stick-time criteria come from `context.split.lockedUntil`, never from `context.groupId`. The latter is the
     /// key the caller looked the split group up under — `uint256(uint160(token))` for payouts,
-    /// `JBSplitGroupIds.RESERVED_TOKENS` for reserved tokens — so it is fixed by the distribution path rather than
-    /// chosen per split. Reading criteria from it would make every reserved-token split resolve to a 1-week tenure
-    /// window, since `RESERVED_TOKENS == 1` falls inside the criteria range, and would offer no way to run two
-    /// criteria off one payout token. `lockedUntil` is per-split and every valid criteria encoding sits within ~6
-    /// days of the Unix epoch, permanently inert to a real lock timestamp, so it carries the criteria instead.
+    /// `JBSplitGroupIds.RESERVED_TOKENS` for reserved tokens — so it is shared by every split in the group rather
+    /// than chosen per split: it couldn't tell two splits on the same payout token apart, and a reserved-token
+    /// split would always read the same fixed `RESERVED_TOKENS` value regardless of which criteria a project
+    /// actually wants funded. `lockedUntil` is per-split and every valid criteria encoding sits within ~6 days of
+    /// the Unix epoch, permanently inert to a real lock timestamp, so it carries the criteria instead.
     /// @param context The split hook context from the terminal or controller.
     function processSplitWith(JBSplitHookContext calldata context) external payable override {
         // Only terminals and controllers for the project can call this.
@@ -1303,8 +1306,8 @@ contract JBStickyDistributor is IJBStickyDistributor {
         uint256 minWeeks = groupId / CRITERIA_BASE;
         uint256 maxWeeks = groupId % CRITERIA_BASE;
 
-        // minWeeks == 0 is the encoding this generalization retires — every previously-valid bare-k criteria value
-        // (1-520) decodes to minWeeks == 0 here, so stale configs fail closed instead of being reinterpreted.
+        // minWeeks == 0 would put the snapshot epoch inside the window — see `_criteriaWindowFor` — so it's
+        // rejected along with any minWeeks or maxWeeks past the supported range.
         if (minWeeks == 0 || minWeeks > MAX_CRITERIA_WEEKS || maxWeeks > MAX_CRITERIA_WEEKS) return false;
         if (maxWeeks != 0 && maxWeeks < minWeeks) return false;
 
@@ -1490,11 +1493,18 @@ contract JBStickyDistributor is IJBStickyDistributor {
         (uint256 lo, uint256 hi, bool isEmpty) = _criteriaWindowFor({snapshotEpoch: snapshotEpoch, groupId: groupId});
         if (isEmpty) return 0;
 
-        for (uint256 i; i < tranches.length; i++) {
-            uint256 epoch = uint256(tranches[i].timestamp) / EPOCH_DURATION;
+        uint256 length = tranches.length;
 
-            // Tranches are oldest-first with nondecreasing timestamps.
-            if (epoch < lo) continue; // older than the window; keep scanning
+        // Tranches are oldest-first with nondecreasing timestamps: fast-forward past everything older than the
+        // window before accumulating, so the loop below only pays the single `> hi` break check per tranche — a
+        // tenure window (lo == 0) fast-forwards zero tranches, matching the shape of an unbounded-below scan.
+        uint256 i;
+        while (i < length && uint256(tranches[i].timestamp) / EPOCH_DURATION < lo) {
+            i++;
+        }
+
+        for (; i < length; i++) {
+            uint256 epoch = uint256(tranches[i].timestamp) / EPOCH_DURATION;
             if (epoch > hi) break; // younger than the window, and so is everything after it
 
             amount += tranches[i].amount;
