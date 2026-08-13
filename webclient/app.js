@@ -143,17 +143,23 @@ const txAccount = () => walletAccount ?? $("account").value;
 // once after loading; unlike the earlier attempt, nothing snaps or rewrites scrolling afterward.
 const TOP_FOLD_HEIGHT = 50;
 const foldWalletControl = document.querySelector("header .right");
+// Own the initial scroll so mobile browsers don't restore 0 after load and leave the whole logo
+// below the fold — we want its lower half flush with the top, like desktop.
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 function syncTopFoldControls() {
   foldWalletControl.classList.toggle("top-fold-fixed", window.scrollY < TOP_FOLD_HEIGHT);
 }
 function setInitialTopFold() {
-  if (window.scrollY === 0) window.scrollTo(0, TOP_FOLD_HEIGHT);
+  if (window.scrollY < TOP_FOLD_HEIGHT) window.scrollTo(0, TOP_FOLD_HEIGHT);
   syncTopFoldControls();
 }
 window.addEventListener("scroll", syncTopFoldControls, { passive: true });
 syncTopFoldControls();
 requestAnimationFrame(setInitialTopFold);
 window.addEventListener("load", () => requestAnimationFrame(setInitialTopFold), { once: true });
+// Mobile: catch the post-load scroll reset and the address-bar height settling.
+window.addEventListener("pageshow", () => requestAnimationFrame(setInitialTopFold));
+setTimeout(setInitialTopFold, 150);
 
 async function rpc(method, params) {
   if (window.__DEMO_RPC) return window.__DEMO_RPC(method, params);
