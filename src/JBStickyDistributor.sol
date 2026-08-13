@@ -348,6 +348,12 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @notice Receives tokens from a Juicebox payout split.
     /// @dev Only callable by a terminal or controller for the project in the context.
     /// @dev The sticky token being funded is read from `context.split.beneficiary`.
+    /// @dev Stick-time criteria come from `context.split.lockedUntil`, never from `context.groupId`. The latter is the
+    /// key the caller looked the split group up under — `uint256(uint160(token))` for payouts,
+    /// `JBSplitGroupIds.RESERVED_TOKENS` for reserved tokens — so it is fixed by the distribution path rather than
+    /// chosen per split. Reading criteria from it would make every reserved-token split resolve to `k = 1` week, since
+    /// `RESERVED_TOKENS == 1` falls inside the criteria range, and would offer no way to run two criteria off one
+    /// payout token. `lockedUntil` is per-split and inert below 521, so it carries the criteria instead.
     /// @param context The split hook context from the terminal or controller.
     function processSplitWith(JBSplitHookContext calldata context) external payable override {
         // Only terminals and controllers for the project can call this.

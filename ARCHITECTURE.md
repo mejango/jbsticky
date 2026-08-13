@@ -53,6 +53,8 @@ The package owns three contracts: a deployer that launches locked staking projec
 
 This overload is collision-free by construction: core stores `lockedUntil` verbatim and the lock only engages when `block.timestamp < lockedUntil`, so values ≤ 520 are 1970-era timestamps that never lock anything, while genuine lock timestamps are ≥ ~1.7e9 and route to group 0. The field only gains meaning when the split's hook is this distributor. Accepted trade: a split cannot be genuinely locked *and* criteria-carrying — locked splits fund the everyone-pool.
 
+**Why not `context.groupId`.** The split hook context carries its own `groupId`, but it is JB's split-group lookup key, not a per-split payload: payout distributions query `splitsOf(projectId, rulesetId, uint256(uint160(token)))` and reserved-token distributions query `JBSplitGroupIds.RESERVED_TOKENS`, so the value is fixed by the distribution path and echoed back. A split group whose ID were set to a criteria value would never be looked up at all — the split would silently never distribute. Two further problems: `RESERVED_TOKENS == 1` sits inside the criteria range, so every reserved-token split would resolve to `k = 1` week; and a group ID is shared by every split in the group, which would rule out running (say) a 4-week pot and an everyone-pool off the same payout token. `lockedUntil` is per-split and carries no meaning below 521, so it is the field with room for this.
+
 ## Data Flow
 
 **Stake**: holder (or granter) → `JBMultiTerminal.
