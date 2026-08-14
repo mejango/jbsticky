@@ -497,14 +497,14 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(amount, 10e18);
     }
 
-    function test_splitLockedCriteriaFundsCriteriaPotAndPreservesLock() public {
+    function test_splitLockedCriteriaFundsCriteriaPot() public {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);
         vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
 
-        // The split is genuinely locked (a real future timestamp core would enforce) AND carries criteria in
-        // `projectId`. Locking no longer forces the everyone-pool: `_isLockedSplitIncluded` preserves `projectId`
-        // alongside `lockedUntil`, so a locked split can commit to both a fixed share and a fixed window at once.
+        // A genuinely locked split (a real future `lockedUntil` core would enforce) still resolves its criteria
+        // from `projectId`, funding the criteria pot rather than the everyone-pool. Lock preservation on a
+        // rewrite is exercised end-to-end against real `JBSplits` storage in the integration suite.
         uint48 futureLock = uint48(vm.getBlockTimestamp() + 365 days);
         address terminal = address(jbMultiTerminal());
         reward.mint({to: terminal, amount: 10e18});
@@ -522,12 +522,12 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(snapshotEpoch, 14);
     }
 
-    function test_splitStaleCarrierInLockedUntilFallsToGroupZero() public {
+    function test_splitCriteriaValueInLockedUntilIsIgnored() public {
         _stake(alice, 100e18);
         vm.roll(vm.getBlockNumber() + 1);
 
-        // Criteria sits in `lockedUntil` (the old carrier) while `projectId` — the field actually read — stays
-        // zero. Nothing reads `lockedUntil` for criteria anymore, so this funds the everyone-pool, not group 4008.
+        // Only `projectId` is read as criteria. A criteria-shaped value sitting in `lockedUntil`, with
+        // `projectId` at its default zero, has no effect — this funds the everyone-pool, not group 4008.
         address terminal = address(jbMultiTerminal());
         reward.mint({to: terminal, amount: 10e18});
         vm.startPrank(terminal);
