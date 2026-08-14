@@ -5,5 +5,4 @@ broadcast/
 .env
 deployments-local/
 webclient/config.js
-node_modules
 lib/lib
