@@ -44,6 +44,56 @@ Nobody can change behavior after deployment. The deployer contract owns every st
 
 `minWeeks` and `maxWeeks` each range over `[0, MAX_CRITERIA_WEEKS]` (520). `minWeeks >= 1` is required for every criteria pot — this is the single safety rule the encoding enforces: it keeps the current, still-incomplete epoch out of every window, so a criteria pot's stake buckets can never grow after the funding transaction (see ARCHITECTURE for why that matters). When `maxWeeks != 0` it must be `>= minWeeks`. The largest valid criteria `groupId` is `520520`. `groupId == 0` stays the everyone-pool, votes-weighted, unrelated to any window.
 
+### Writing the number
+
+`maxWeeks` occupies exactly the last three digits. So the reliable procedure is:
+
+1. Pick `minWeeks` (1–520) and `maxWeeks` (`0` for unbounded, otherwise `minWeeks`–520).
+2. Write `maxWeeks` as **three digits, zero-padded**.
+3. Write `minWeeks` in front of it.
+
+| Intent | `minWeeks` | `maxWeeks` | padded | `groupId` |
+| --- | --- | --- | --- | --- |
+| stake aged 4+ weeks | 4 | 0 (unbounded) | `000` | `4000` |
+| the last 4 completed weeks | 1 | 4 | `004` | `1004` |
+| deposits 4 to 8 weeks old | 4 | 8 | `008` | `4008` |
+| deposits 4 to 80 weeks old | 4 | 80 | `080` | `4080` |
+| deposits 40 to 80 weeks old | 40 | 80 | `080` | `40080` |
+| deposits exactly 4 weeks old | 4 | 4 | `004` | `4004` |
+| stake aged 26+ weeks | 26 | 0 (unbounded) | `000` | `26000` |
+| the widest window there is | 1 | 0 (unbounded) | `000` | `1000` |
+| the largest legal value | 520 | 520 | `520` | `520520` |
+
+**Do not concatenate the two numbers.** "40 to 80 weeks" is not `4080`. `4080` decodes to `minWeeks = 4`, `maxWeeks = 80` — a perfectly valid window, just not the one intended, so nothing reverts and nothing warns. Zero-padding `maxWeeks` to three digits is what prevents this: `40080`.
+
+### Reading a number
+
+Split the last three digits off. Those are `maxWeeks` (`000` means unbounded); everything to their left is `minWeeks`. `40080` → `minWeeks = 40`, `maxWeeks = 80`. `4000` → `minWeeks = 4`, unbounded above.
+
+A value is a valid criteria group if and only if all of these hold:
+
+- `minWeeks` is in `[1, 520]`
+- `maxWeeks` is in `[0, 520]`
+- `maxWeeks` is `0`, or `maxWeeks >= minWeeks`
+
+(`groupId == 0` is separately valid and means the everyone-pool.) Note the valid values are **sparse** inside `1000`–`520520`, not a contiguous run — the last three digits must be `000` or land between `minWeeks` and `520`. Common rejects: `4` and `520` (`minWeeks == 0`; also what a bare week count looks like), `480` (a mis-concatenated "4 to 80"), `8004` (`maxWeeks < minWeeks`), `4999` (`maxWeeks` over 520), `521000` (`minWeeks` over 520).
+
+### What every value does
+
+| Value | Decodes to | Result |
+| --- | --- | --- |
+| `0` | — | Everyone-pool (votes-weighted). Also the default for any split with no lock. |
+| `1`–`999` | `minWeeks == 0` | Invalid. Reverts on direct `fund`; funds the everyone-pool on the split path. |
+| `1000`–`520520` | `minWeeks >= 1` | A criteria pot, if the validity rules above hold. Otherwise treated as invalid. |
+| `520521`–`520999` | `maxWeeks > 520` | Invalid. |
+| `521000` and above | `minWeeks > 520` | Invalid. On a split this also includes every real lock timestamp. |
+
+`minWeeks == 0` is rejected because such a window would reach the snapshot epoch itself, letting stake added after the funding transaction claim against a denominator recorded before it existed. That rule is about solvency, not about any previous encoding; bare week counts are simply values that happen to fall inside the range it already rejects.
+
+### Confirming a pot before you rely on it
+
+Do the arithmetic check first: `groupId / 1000` and `groupId % 1000` must be the two numbers intended. After funding, read `rewardRoundOf(stickyToken, groupId, rewardToken, currentRound())` and confirm `amount` and `snapshotEpoch` are non-zero. On a split-funded pot this is the only way to distinguish "the criteria pot was funded" from "the value was invalid and the money went to group 0" — the read on group 0 will show the amount instead, and no event distinguishes the two.
+
 Two funding paths:
 
 - **Direct funding:** call `fund(hook, token, amount, groupId)`, where `hook` is the sticky token address and `groupId` is the encoded window (or `0` for the everyone-pool, identical mechanics to the deployed `JBTokenDistributor`). An invalid `groupId` reverts (`JBStickyDistributor_InvalidCriteria`). The 3-arg `fund(hook, token, amount)` overload always targets group 0. For native ETH, send `msg.value` and pass `JBConstants.NATIVE_TOKEN` as `token`.
