@@ -25,8 +25,8 @@
   "dependencies": {
     "@bananapus/721-hook-v6": "^1.0.0",
     "@bananapus/buyback-hook-v6": "^1.3.1",
-    "@bananapus/core-v6": "file:../../nana-core-v6",
-    "@bananapus/distributor-v6": "file:../../nana-distributor-v6",
+    "@bananapus/core-v6": "^1.2.0",
+    "@bananapus/distributor-v6": "^1.0.0",
     "@bananapus/ownable-v6": "^1.0.0",
     "@bananapus/permission-ids-v6": "^1.0.0",
     "@bananapus/suckers-v6": "^1.1.2",

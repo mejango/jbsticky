@@ -82,7 +82,7 @@ A value is a valid criteria group if and only if all of these hold:
 
 | Value | Decodes to | Result |
 | --- | --- | --- |
-| `0` | — | Everyone-pool (votes-weighted). Also the default for any split with no lock. |
+| `0` | — | Everyone-pool (votes-weighted). Also the default for any split that names no project. |
 | `1`–`999` | `minWeeks == 0` | Invalid. Reverts on direct `fund`; funds the everyone-pool on the split path. |
 | `1000`–`520520` | `minWeeks >= 1` | A criteria pot, if the validity rules above hold. Otherwise treated as invalid. |
 | `520521`–`520999` | `maxWeeks > 520` | Invalid. |
