@@ -5,10 +5,13 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
+import {JBSplits} from "@bananapus/core-v6/src/JBSplits.sol";
 import {IJBRulesetApprovalHook} from "@bananapus/core-v6/src/interfaces/IJBRulesetApprovalHook.sol";
 import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
-import {JBSplits} from "@bananapus/core-v6/src/JBSplits.sol";
+import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
+import {JBCurrencyAmount} from "@bananapus/core-v6/src/structs/JBCurrencyAmount.sol";
+import {JBFundAccessLimitGroup} from "@bananapus/core-v6/src/structs/JBFundAccessLimitGroup.sol";
 import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
 import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
@@ -992,7 +995,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: lockedGroup});
 
         // A rewrite keeping the split's percent, beneficiary, and hook, but dropping its criteria (`projectId` ->
-        // 0) no longer matches the locked split's immutable fields — core rejects the whole table, not just the
+        // 0), does not match the locked split's immutable fields — core rejects the whole table, not just the
         // one split, even though the lock itself would otherwise still be honored (`lockedUntil` unchanged).
         JBSplit[] memory rewriteSplits = new JBSplit[](1);
         rewriteSplits[0] = JBSplit({
@@ -1011,5 +1014,169 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
             abi.encodeWithSelector(JBSplits.JBSplits_PreviousLockedSplitsNotIncluded.selector, splitProjectId, 0)
         );
         jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: rewriteGroup});
+
+        // Positive control: a rewrite that preserves `projectId` (here, alongside an extended `lockedUntil`,
+        // which core always permits) succeeds — isolating the prior revert to the dropped `projectId`.
+        JBSplit[] memory preservingSplits = new JBSplit[](1);
+        preservingSplits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 4008,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: lockedUntil + 1,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory preservingGroup = new JBSplitGroup[](1);
+        preservingGroup[0] = JBSplitGroup({groupId: uint256(uint160(address(art))), splits: preservingSplits});
+
+        vm.prank(splitOwner);
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: preservingGroup});
+
+        JBSplit[] memory storedSplits =
+            jbSplits().splitsOf({projectId: splitProjectId, rulesetId: 0, groupId: uint256(uint160(address(art)))});
+        assertEq(storedSplits.length, 1);
+        assertEq(storedSplits[0].projectId, 4008);
+        assertEq(storedSplits[0].lockedUntil, lockedUntil + 1);
+    }
+
+    /// @notice Launch a project with a native-token terminal and a generous payout limit, owned by
+    /// `splitOwner`, so a real payout split can actually be distributed through `sendPayoutsOf`.
+    function _launchPayoutSplitProject(address splitOwner) internal returns (uint256 splitProjectId) {
+        JBRulesetMetadata memory metadata = JBRulesetMetadata({
+            reservedPercent: 0,
+            cashOutTaxRate: 0,
+            baseCurrency: uint32(uint160(JBConstants.NATIVE_TOKEN)),
+            pausePay: false,
+            pauseCreditTransfers: false,
+            allowOwnerMinting: false,
+            allowSetCustomToken: false,
+            allowTerminalMigration: false,
+            allowSetTerminals: false,
+            ownerMustSendPayouts: false,
+            allowSetController: false,
+            allowAddAccountingContext: false,
+            allowAddPriceFeed: false,
+            holdFees: false,
+            scopeCashOutsToLocalBalances: false,
+            useDataHookForPay: false,
+            useDataHookForCashOut: false,
+            dataHook: address(0),
+            metadata: 0
+        });
+
+        JBCurrencyAmount[] memory payoutLimits = new JBCurrencyAmount[](1);
+        payoutLimits[0] = JBCurrencyAmount({amount: 1000e18, currency: uint32(uint160(JBConstants.NATIVE_TOKEN))});
+        JBFundAccessLimitGroup[] memory fundAccessLimitGroups = new JBFundAccessLimitGroup[](1);
+        fundAccessLimitGroups[0] = JBFundAccessLimitGroup({
+            terminal: address(jbMultiTerminal()),
+            token: JBConstants.NATIVE_TOKEN,
+            payoutLimits: payoutLimits,
+            surplusAllowances: new JBCurrencyAmount[](0)
+        });
+
+        JBRulesetConfig[] memory rulesetConfig = new JBRulesetConfig[](1);
+        rulesetConfig[0].mustStartAtOrAfter = 0;
+        rulesetConfig[0].duration = 0;
+        rulesetConfig[0].weight = 0;
+        rulesetConfig[0].weightCutPercent = 0;
+        rulesetConfig[0].approvalHook = IJBRulesetApprovalHook(address(0));
+        rulesetConfig[0].metadata = metadata;
+        rulesetConfig[0].fundAccessLimitGroups = fundAccessLimitGroups;
+
+        JBAccountingContext[] memory tokensToAccept = new JBAccountingContext[](1);
+        tokensToAccept[0] = JBAccountingContext({
+            token: JBConstants.NATIVE_TOKEN, decimals: 18, currency: uint32(uint160(JBConstants.NATIVE_TOKEN))
+        });
+        JBTerminalConfig[] memory terminalConfigurations = new JBTerminalConfig[](1);
+        terminalConfigurations[0] =
+            JBTerminalConfig({terminal: jbMultiTerminal(), accountingContextsToAccept: tokensToAccept});
+
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        splitProjectId = jbController().launchProjectFor{value: fee}({
+            owner: splitOwner,
+            projectUri: "",
+            rulesetConfigurations: rulesetConfig,
+            terminalConfigurations: terminalConfigurations,
+            memo: ""
+        });
+    }
+
+    /// @notice Proves the storage round-trip the whole change rests on: `setSplitGroupsOf` packs `projectId`
+    /// into `JBSplits` storage (bits 32-95), and a real `sendPayoutsOf` distribution unpacks it back out into
+    /// `context.split.projectId` — not a hand-built context, and not `processSplitWith` called directly.
+    function test_integration_realPayoutSplitFundsCriteriaPotThroughSplitsStorage() public {
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+
+        // Exempt the distributor from the protocol fee so the payout that reaches `processSplitWith` is
+        // exactly the amount requested — this test is about the `projectId` round-trip, not fee arithmetic.
+        vm.prank(multisig());
+        jbFeelessAddresses().setFeelessAddress({addr: address(distributor), flag: true});
+
+        address splitOwner = makeAddr("payout-split-owner");
+        uint256 splitProjectId = _launchPayoutSplitProject(splitOwner);
+
+        // A criteria split (4008: "4 to 8 weeks") paying native ETH — the recipe from ADMINISTRATION, set
+        // through the real `JBSplits` path rather than a hand-built `JBSplitHookContext`.
+        JBSplit[] memory splits = new JBSplit[](1);
+        splits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 4008,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: 0,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory splitGroup = new JBSplitGroup[](1);
+        splitGroup[0] = JBSplitGroup({groupId: uint256(uint160(JBConstants.NATIVE_TOKEN)), splits: splits});
+
+        vm.prank(splitOwner);
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: splitGroup});
+
+        // Alice's sticky stake lands in epoch 14, inside the (4, 8) window at snapshot epoch 20.
+        address alice = makeAddr("payout-split-alice");
+        vm.warp(14 weeks + 1);
+        _stakeArt(alice, 100e6);
+        vm.warp(20 weeks + 1);
+
+        // Fund the payout project's balance, then distribute.
+        vm.deal(address(this), 10e18);
+        jbMultiTerminal().pay{value: 10e18}({
+            projectId: splitProjectId,
+            token: JBConstants.NATIVE_TOKEN,
+            amount: 10e18,
+            beneficiary: address(this),
+            minReturnedTokens: 0,
+            memo: "",
+            metadata: bytes("")
+        });
+
+        jbMultiTerminal()
+            .sendPayoutsOf({
+            projectId: splitProjectId,
+            token: JBConstants.NATIVE_TOKEN,
+            amount: 10e18,
+            currency: uint32(uint160(JBConstants.NATIVE_TOKEN)),
+            minTokensPaidOut: 0
+        });
+
+        (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) = distributor.rewardRoundOf(
+            address(token), 4008, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound()
+        );
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18);
+        assertEq(snapshotEpoch, 20);
+
+        // Landed in the criteria pot, not the everyone-pool — the real storage round-trip resolved
+        // `projectId`, it didn't fall back to group 0.
+        (uint208 groupZeroAmount,,,,,) =
+            distributor.rewardRoundOf(address(token), 0, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound());
+        assertEq(groupZeroAmount, 0);
     }
 }
