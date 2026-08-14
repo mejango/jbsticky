@@ -354,13 +354,14 @@ contract JBStickyDistributor is IJBStickyDistributor {
     /// @notice Receives tokens from a Juicebox payout split.
     /// @dev Only callable by a terminal or controller for the project in the context.
     /// @dev The sticky token being funded is read from `context.split.beneficiary`.
-    /// @dev Stick-time criteria come from `context.split.lockedUntil`, never from `context.groupId`. The latter is the
+    /// @dev Stick-time criteria come from `context.split.projectId`, never from `context.groupId`. The latter is the
     /// key the caller looked the split group up under — `uint256(uint160(token))` for payouts,
     /// `JBSplitGroupIds.RESERVED_TOKENS` for reserved tokens — so it is shared by every split in the group rather
     /// than chosen per split: it couldn't tell two splits on the same payout token apart, and a reserved-token
     /// split would always read the same fixed `RESERVED_TOKENS` value regardless of which criteria a project
-    /// actually wants funded. `lockedUntil` is per-split and every valid criteria encoding sits within ~6 days of
-    /// the Unix epoch, permanently inert to a real lock timestamp, so it carries the criteria instead.
+    /// actually wants funded. `projectId` is per-split and free to repurpose here: core reads it only in the branch
+    /// that pays a project directly, and that branch never runs while this split's `hook` is set to this
+    /// distributor. A split can therefore carry a genuine `lockedUntil` and criteria at the same time.
     /// @param context The split hook context from the terminal or controller.
     function processSplitWith(JBSplitHookContext calldata context) external payable override {
         // Only terminals and controllers for the project can call this.
@@ -372,12 +373,12 @@ contract JBStickyDistributor is IJBStickyDistributor {
         // The target sticky token is the split's beneficiary.
         address hook = address(context.split.beneficiary);
 
-        // Small lockedUntil values are 1970-era timestamps that can never lock a split, so the field
-        // doubles as the split's stick-time criteria. Real lock timestamps route to the everyone-pool;
-        // out-of-band values also fall to group 0 rather than reverting, because a split-hook revert
-        // soft-lands the funds back into the project silently.
-        uint256 lockedUntil = context.split.lockedUntil;
-        uint256 groupId = _isValidGroup(lockedUntil) ? lockedUntil : 0;
+        // This split's hook is this distributor, so core's pay-a-project branch — the one that would otherwise
+        // read `projectId` — never runs; the field is free to carry the split's stick-time criteria instead.
+        // Out-of-band values fall to group 0 rather than reverting, because a split-hook revert soft-lands the
+        // funds back into the project silently.
+        uint256 criteria = context.split.projectId;
+        uint256 groupId = _isValidGroup(criteria) ? criteria : 0;
 
         // Native splits must conserve the terminal's stated context amount exactly.
         if (context.token == JBConstants.NATIVE_TOKEN) {

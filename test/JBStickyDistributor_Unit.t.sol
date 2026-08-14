@@ -144,14 +144,30 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
 
     /// @notice A payout-split context routing `amount` of `token` to the sticky token's stakers.
     function _splitContext(address token, uint256 amount) internal view returns (JBSplitHookContext memory context) {
-        context = _splitContext({token: token, amount: amount, lockedUntil: 0});
+        context = _splitContext({token: token, amount: amount, criteria: 0});
     }
 
     /// @notice A payout-split context routing `amount` of `token` to the sticky token's stakers, carrying
-    /// `lockedUntil` on the split (the criteria-selection field under test).
+    /// `criteria` on the split's `projectId` (the criteria-selection field under test).
     function _splitContext(
         address token,
         uint256 amount,
+        uint64 criteria
+    )
+        internal
+        view
+        returns (JBSplitHookContext memory context)
+    {
+        context = _splitContext({token: token, amount: amount, criteria: criteria, lockedUntil: 0});
+    }
+
+    /// @notice A payout-split context routing `amount` of `token` to the sticky token's stakers, carrying
+    /// `criteria` on the split's `projectId` and a genuine `lockedUntil` on the split itself — the shape a locked
+    /// criteria split takes.
+    function _splitContext(
+        address token,
+        uint256 amount,
+        uint64 criteria,
         uint48 lockedUntil
     )
         internal
@@ -166,7 +182,7 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
             groupId: uint256(uint160(token)),
             split: JBSplit({
                 percent: 0,
-                projectId: 0,
+                projectId: criteria,
                 beneficiary: payable(address(stickyToken)),
                 preferAddToBalance: false,
                 lockedUntil: lockedUntil,
@@ -175,14 +191,14 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         });
     }
 
-    /// @notice Route `amount` of the reward token through a payout split carrying `lockedUntil`, pranking the
+    /// @notice Route `amount` of the reward token through a payout split carrying `criteria`, pranking the
     /// registered terminal as the caller.
-    function _processSplitWithLockedUntil(uint256 amount, uint48 lockedUntil) internal {
+    function _processSplitWithCriteria(uint256 amount, uint64 criteria) internal {
         address terminal = address(jbMultiTerminal());
         reward.mint({to: terminal, amount: amount});
         vm.startPrank(terminal);
         reward.approve({spender: address(distributor), value: amount});
-        distributor.processSplitWith(_splitContext({token: address(reward), amount: amount, lockedUntil: lockedUntil}));
+        distributor.processSplitWith(_splitContext({token: address(reward), amount: amount, criteria: criteria}));
         vm.stopPrank();
     }
 
@@ -459,25 +475,68 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(distributor.balanceOf(address(stickyToken), IERC20(JBConstants.NATIVE_TOKEN)), 25e18);
     }
 
-    function test_splitLockedUntilSelectsCriteriaGroup() public {
+    function test_splitProjectIdSelectsCriteriaGroup() public {
         vm.warp(10 weeks + 1);
         _stake(alice, 100e18);
         vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
 
-        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 3000}); // lockedUntil = 3000 => min = 3 weeks
+        _processSplitWithCriteria({amount: 10e18, criteria: 3000}); // criteria = 3000 => min = 3 weeks
         (uint208 amount,,,, uint208 totalStake,) =
             distributor.rewardRoundOf(address(stickyToken), 3000, reward, distributor.currentRound());
         assertEq(amount, 10e18);
         assertEq(totalStake, 100e18);
     }
 
-    function test_splitRealLockTimestampFallsToGroupZero() public {
+    function test_splitOutOfRangeCriteriaFallsToGroupZero() public {
         _stake(alice, 100e18);
         vm.roll(vm.getBlockNumber() + 1);
 
-        // A genuine future lock timestamp is far outside the valid criteria-window range and must not be mistaken
-        // for a criteria window.
-        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: uint48(vm.getBlockTimestamp() + 365 days)});
+        // A value this large is far outside the valid criteria-window range and must not be mistaken for one.
+        _processSplitWithCriteria({amount: 10e18, criteria: uint64(vm.getBlockTimestamp() + 365 days)});
+        (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
+    }
+
+    function test_splitLockedCriteriaFundsCriteriaPotAndPreservesLock() public {
+        vm.warp(10 weeks + 1);
+        _stake(alice, 100e18);
+        vm.warp(14 weeks + 1); // alice's tranche is 4 epochs old
+
+        // The split is genuinely locked (a real future timestamp core would enforce) AND carries criteria in
+        // `projectId`. Locking no longer forces the everyone-pool: `_isLockedSplitIncluded` preserves `projectId`
+        // alongside `lockedUntil`, so a locked split can commit to both a fixed share and a fixed window at once.
+        uint48 futureLock = uint48(vm.getBlockTimestamp() + 365 days);
+        address terminal = address(jbMultiTerminal());
+        reward.mint({to: terminal, amount: 10e18});
+        vm.startPrank(terminal);
+        reward.approve({spender: address(distributor), value: 10e18});
+        distributor.processSplitWith(
+            _splitContext({token: address(reward), amount: 10e18, criteria: 3000, lockedUntil: futureLock})
+        );
+        vm.stopPrank();
+
+        (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) =
+            distributor.rewardRoundOf(address(stickyToken), 3000, reward, distributor.currentRound());
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18);
+        assertEq(snapshotEpoch, 14);
+    }
+
+    function test_splitStaleCarrierInLockedUntilFallsToGroupZero() public {
+        _stake(alice, 100e18);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // Criteria sits in `lockedUntil` (the old carrier) while `projectId` — the field actually read — stays
+        // zero. Nothing reads `lockedUntil` for criteria anymore, so this funds the everyone-pool, not group 4008.
+        address terminal = address(jbMultiTerminal());
+        reward.mint({to: terminal, amount: 10e18});
+        vm.startPrank(terminal);
+        reward.approve({spender: address(distributor), value: 10e18});
+        distributor.processSplitWith(
+            _splitContext({token: address(reward), amount: 10e18, criteria: 0, lockedUntil: 4008})
+        );
+        vm.stopPrank();
+
         (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
         assertEq(amount, 10e18);
     }
@@ -840,25 +899,25 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         assertEq(aliceClaim + bobClaim, 100e18); // sum of claims never exceeds the pot
     }
 
-    function test_splitLockedUntilSelectsCohortGroup() public {
+    function test_splitProjectIdSelectsCohortGroup() public {
         vm.warp(14 weeks + 1);
         _stake(alice, 100e18); // epoch 14 — inside a (4, 8) window at snapshot epoch 20
         vm.warp(20 weeks + 1);
 
-        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 4008});
+        _processSplitWithCriteria({amount: 10e18, criteria: 4008});
         (uint208 amount,,,, uint208 totalStake,) =
             distributor.rewardRoundOf(address(stickyToken), 4008, reward, distributor.currentRound());
         assertEq(amount, 10e18);
         assertEq(totalStake, 100e18); // alice's epoch-14 tranche falls inside [12, 16]
     }
 
-    function test_splitStaleEncodingFallsToGroupZero() public {
+    function test_splitInvalidProjectIdCriteriaFallsToGroupZero() public {
         _stake(alice, 100e18);
         vm.roll(vm.getBlockNumber() + 1);
 
-        // lockedUntil = 4 is the old bare-k encoding, which decodes to minWeeks == 0 and is invalid — it must fall
-        // to group 0 rather than reverting, same as a real lock timestamp.
-        _processSplitWithLockedUntil({amount: 10e18, lockedUntil: 4});
+        // criteria = 4 is the old bare-k encoding, which decodes to minWeeks == 0 and is invalid — it must fall
+        // to group 0 rather than reverting, same as any other out-of-band value.
+        _processSplitWithCriteria({amount: 10e18, criteria: 4});
         (uint208 amount,,,,,) = distributor.rewardRoundOf(address(stickyToken), 0, reward, distributor.currentRound());
         assertEq(amount, 10e18);
     }

@@ -5,9 +5,16 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
+import {IJBRulesetApprovalHook} from "@bananapus/core-v6/src/interfaces/IJBRulesetApprovalHook.sol";
 import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
+import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
+import {JBSplits} from "@bananapus/core-v6/src/JBSplits.sol";
+import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
 import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
+import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
 import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
+import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
@@ -759,13 +766,14 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
     }
 
     /// @notice Fund a criteria group's pot for `hookAddr` through a payout split, pranking the registered terminal
-    /// as the caller — the same pattern the unit tests use for `processSplitWith`.
+    /// as the caller — the same pattern the unit tests use for `processSplitWith`. `criteria` lands on the split's
+    /// `projectId`, the field `processSplitWith` reads.
     function _fundGroupViaSplit(
         JBStickyDistributor distributor_,
         address hookAddr,
         MockRwd token_,
         uint256 amount,
-        uint48 lockedUntil
+        uint64 criteria
     )
         internal
     {
@@ -782,10 +790,10 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
                 groupId: uint256(uint160(address(token_))),
                 split: JBSplit({
                     percent: 0,
-                    projectId: 0,
+                    projectId: criteria,
                     beneficiary: payable(hookAddr),
                     preferAddToBalance: false,
-                    lockedUntil: lockedUntil,
+                    lockedUntil: 0,
                     hook: IJBSplitHook(address(distributor_))
                 })
             })
@@ -861,7 +869,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.warp(14 weeks + 1);
 
         // Fund a min = 2 ("stuck >= 2 weeks") pot through both entry paths: a direct fund in ART, and a payout
-        // split carrying lockedUntil = 2000 in a second reward token.
+        // split carrying criteria = 2000 in its `projectId`, in a second reward token.
         _fundArtGroup(distributor, address(token), 90e6, 2000);
         _fundGroupViaSplit(distributor, address(token), reward2, 60e18, 2000);
 
@@ -906,5 +914,102 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
             distributor.rewardRoundOf(address(token), 2000, IERC20(address(art)), distributor.currentRound());
         assertEq(freshAmount, 100e6);
         assertEq(freshTotalStake, 300e18);
+    }
+
+    /// @notice Launch a minimal project — distinct from the deployer-owned sticky project, which exposes no owner
+    /// able to call `setSplitGroupsOf` — owned by `splitOwner`, with no rulesets or terminals beyond the launch
+    /// defaults. Only its default split table (`rulesetId` 0) is exercised.
+    function _launchSplitProject(address splitOwner) internal returns (uint256 splitProjectId) {
+        JBRulesetMetadata memory metadata = JBRulesetMetadata({
+            reservedPercent: 0,
+            cashOutTaxRate: 0,
+            baseCurrency: uint32(uint160(JBConstants.NATIVE_TOKEN)),
+            pausePay: false,
+            pauseCreditTransfers: false,
+            allowOwnerMinting: false,
+            allowSetCustomToken: false,
+            allowTerminalMigration: false,
+            allowSetTerminals: false,
+            ownerMustSendPayouts: false,
+            allowSetController: false,
+            allowAddAccountingContext: false,
+            allowAddPriceFeed: false,
+            holdFees: false,
+            scopeCashOutsToLocalBalances: false,
+            useDataHookForPay: false,
+            useDataHookForCashOut: false,
+            dataHook: address(0),
+            metadata: 0
+        });
+        JBRulesetConfig[] memory rulesetConfig = new JBRulesetConfig[](1);
+        rulesetConfig[0].mustStartAtOrAfter = 0;
+        rulesetConfig[0].duration = 0;
+        rulesetConfig[0].weight = 0;
+        rulesetConfig[0].weightCutPercent = 0;
+        rulesetConfig[0].approvalHook = IJBRulesetApprovalHook(address(0));
+        rulesetConfig[0].metadata = metadata;
+
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        splitProjectId = jbController().launchProjectFor{value: fee}({
+            owner: splitOwner,
+            projectUri: "",
+            rulesetConfigurations: rulesetConfig,
+            terminalConfigurations: new JBTerminalConfig[](0),
+            memo: ""
+        });
+    }
+
+    /// @notice A locked criteria split — the capability this change exists for: `lockedUntil` freezes the split's
+    /// share the way it always has, and now `projectId` (the criteria carrier) is frozen alongside it, since
+    /// `_isLockedSplitIncluded` requires a replacement split to preserve `projectId` too.
+    function test_integration_lockedCriteriaSplitRejectsRewriteDroppingProjectId() public {
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+
+        address splitOwner = makeAddr("split-owner");
+        uint256 splitProjectId = _launchSplitProject(splitOwner);
+
+        uint48 lockedUntil = uint48(vm.getBlockTimestamp() + 365 days);
+        JBSplit[] memory lockedSplits = new JBSplit[](1);
+        lockedSplits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 4008,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: lockedUntil,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory lockedGroup = new JBSplitGroup[](1);
+        lockedGroup[0] = JBSplitGroup({groupId: uint256(uint160(address(art))), splits: lockedSplits});
+
+        vm.prank(splitOwner);
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: lockedGroup});
+
+        // A rewrite keeping the split's percent, beneficiary, and hook, but dropping its criteria (`projectId` ->
+        // 0) no longer matches the locked split's immutable fields — core rejects the whole table, not just the
+        // one split, even though the lock itself would otherwise still be honored (`lockedUntil` unchanged).
+        JBSplit[] memory rewriteSplits = new JBSplit[](1);
+        rewriteSplits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 0,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: lockedUntil,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory rewriteGroup = new JBSplitGroup[](1);
+        rewriteGroup[0] = JBSplitGroup({groupId: uint256(uint160(address(art))), splits: rewriteSplits});
+
+        vm.prank(splitOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(JBSplits.JBSplits_PreviousLockedSplitsNotIncluded.selector, splitProjectId, 0)
+        );
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: rewriteGroup});
     }
 }
