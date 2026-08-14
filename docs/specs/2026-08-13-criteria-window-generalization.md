@@ -1,5 +1,10 @@
 # Criteria windows — generalizing stick-time gating to (min, max)
 
+> **Superseded.** References to the `lockedUntil` channel below (including `_isValidGroup(lockedUntil)` and
+> the split example using `lockedUntil = 4008`) describe the carrier this spec was written against. Criteria
+> now travels in `split.projectId` — see `2026-08-14-criteria-carrier-projectid.md`. The (minWeeks, maxWeeks)
+> encoding and window math this spec introduces are unchanged and current.
+
 **Date:** 2026-08-13
 **Status:** Approved design, pre-implementation
 **Supersedes:** the "Criteria encoding" section of `2026-08-12-sticky-distributor-design.md`. Everything

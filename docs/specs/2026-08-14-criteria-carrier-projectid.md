@@ -20,14 +20,24 @@ criteria-carrying, never both. Moving criteria to `projectId` frees `lockedUntil
 split therefore freezes both its share and its window — a project can commit "10% of reserved issuance
 to deposits aged 4 to 8 weeks, unchangeable for a year" as one immutable promise.
 
-**The failure mode improves.** If a split's `hook` is ever cleared, the priority chain
-(`hook > projectId > beneficiary`) resolves differently under each scheme:
+**The failure mode improves on the payout path only.** If a split's `hook` is ever cleared, the priority
+chain (`hook > projectId > beneficiary`) resolves differently under each scheme, but the two distribution
+paths that read `projectId` diverge from each other:
 
-- Criteria in `lockedUntil`: `projectId` is 0, so payouts fall through to `beneficiary` — the sticky
-  token contract, which has no rescue path. Silent, permanent loss.
-- Criteria in `projectId`: the pay-a-project branch runs. With no terminal for that token the
-  distribution reverts loudly (`JBMultiTerminal_RecipientProjectTerminalNotFound`); with one, funds
-  reach a live project, misrouted but recoverable in principle.
+- **Payout path** (`sendPayoutsOf` → `JBPayoutSplitGroupLib`): with criteria in `lockedUntil`, `projectId`
+  is 0 and the payout falls through to `beneficiary` — the sticky token contract, which has no rescue path.
+  Silent, permanent loss. With criteria in `projectId`, the pay-a-project branch runs instead; `executePayout`
+  is called inside a `try`/`catch` (`JBPayoutSplitGroupLib.sol:216-231`), so a missing terminal for the
+  destination project doesn't revert the distribution — the failure is swallowed, `PayoutReverted` is
+  emitted, and `store.recordAddedBalanceFor` returns the funds to the *source* project's own balance.
+  Genuinely better: recoverable by the project, not lost.
+- **Reserved-token path** (`sendReservedTokensToSplitsOf` → `JBController`): no improvement. With no
+  terminal for the destination project, `JBController.sol:1200-1204` falls to `_sendTokens({recipient:
+  beneficiary, ...})` — the same sticky token contract as `beneficiary`, the same no-rescue-path outcome as
+  the old carrier. Both strand.
+
+The primary justification for this change is the locked-criteria capability above; this failure-mode
+improvement is real but only applies to payouts, not reserved-token distributions.
 
 ## Why the field is free
 
