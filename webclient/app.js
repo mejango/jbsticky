@@ -49,6 +49,8 @@ const SEL = {
   predictPocketOf: "0x7780193e",
   settleFor: "0x85713bc6",
   ensReverseWithGateways: "0xb7d6ca64",
+  handleOf: "0xd9b0da2d",
+  ownerOf: "0x6352211e",
   isGranterOf: "0xb9f2a2ba",
   asConfigOf: "0x7f1a9379",
   asStatusOf: "0x57cf5a31",
@@ -215,6 +217,52 @@ function reverseEns(address) {
     })());
   }
   return ensNameCache.get(key);
+}
+
+// JBProjectHandles lives on Ethereum and re-checks the ENS `juicebox` text record inside
+// handleOf, so a non-empty answer is already proof the name names this exact project.
+const JB_PROJECT_HANDLES = "0x726f4a3dfd2fb8297f8ab98d215b42a92d8eefe8";
+const projectHandleCache = new Map();
+const handleRouteCache = new Map();
+
+function verifiedHandleOf(projectId) {
+  const key = `${ctx.chainId}:${projectId}`;
+  if (!projectHandleCache.has(key)) {
+    projectHandleCache.set(key, (async () => {
+      try {
+        const projects = decAddress(await view(ctx.controller, SEL.PROJECTS));
+        // ponytail: the owner is the setter for every sticky project today. Read the
+        // revnet operator here too if a sticky token is ever launched on one.
+        const owner = decAddress(await view(projects, SEL.ownerOf, word(projectId)));
+        const result = await ensRpc("eth_call", [{
+          to: JB_PROJECT_HANDLES,
+          data: SEL.handleOf + word(ctx.chainId) + word(projectId) + word(owner),
+        }, "latest"]);
+        return result && result !== "0x" ? (decString(result) || null) : null;
+      } catch {
+        return null;
+      }
+    })());
+  }
+  return projectHandleCache.get(key);
+}
+
+// @handle -> the sticky token of the project that published it. Only this deployer's projects
+// are considered, which is the whole question being asked: a project without a sticky token has
+// nothing to route to.
+async function projectIdForHandle(handle) {
+  const wanted = String(handle || "").replace(/^@/, "").replace(/\.eth$/i, "").toLowerCase();
+  if (!wanted) return null;
+  // Only a match is remembered, so a handle published after this page loaded still resolves.
+  if (handleRouteCache.has(wanted)) return handleRouteCache.get(wanted);
+  const ids = await projectIds();
+  // ponytail: one cached mainnet read per sticky token. Swap in a forward ENS text lookup
+  // (which needs a local namehash, so keccak) once the list outgrows one screen.
+  const handles = await Promise.all(ids.map(verifiedHandleOf));
+  const index = handles.findIndex((name) => (name || "").toLowerCase() === wanted);
+  if (index === -1) return null;
+  handleRouteCache.set(wanted, ids[index]);
+  return ids[index];
 }
 
 const call = async (to, data) => rpc("eth_call", [{ to, data }, "latest"]);
@@ -503,6 +551,7 @@ const ctx = {
   controller: null,
   projects: {}, // projectId -> {stakedToken, symbol, decimals, name, stToken, stSymbol, stName, reward}
   currentId: null,
+  alias: null, // the verified @handle the current project was reached through, if any
   homeChartCleanup: null,
 };
 
@@ -519,6 +568,7 @@ async function loadDeployer() {
   } catch {}
   ctx.loaded = true;
   ctx.projects = {};
+  handleRouteCache.clear();
   // Re-resolve the fund-origin default now that the connected chain is known.
   originKey = null;
   renderOriginPills();
@@ -1280,7 +1330,8 @@ async function renderProject(projectId) {
   ctx.currentId = projectId;
   $("view-home").classList.add("hide");
   $("view-project").classList.remove("hide");
-  const projectRoute = `#/project/${projectId}`;
+  // A verified handle stays in the address bar while tabs change and across post-transaction refreshes.
+  const projectRoute = ctx.alias ? `#/${ctx.alias}` : `#/project/${projectId}`;
   $("tab-btn-overview").href = projectRoute;
   $("tab-btn-owners").href = `${projectRoute}/tokens`;
   $("tab-btn-rewards").href = `${projectRoute}/airdrops`;
@@ -2898,11 +2949,24 @@ function route() {
     return;
   }
   $("view-account").classList.add("hide");
+  const handleMatch = location.hash.match(/^#\/@([^/]+)(?:\/(overview|tokens|airdrops))?\/?$/);
+  if (handleMatch) {
+    const handle = decodeURIComponent(handleMatch[1]);
+    const tab = { overview: "overview", tokens: "owners", airdrops: "rewards" }[handleMatch[2] || "overview"];
+    setTab(tab);
+    projectIdForHandle(handle).then((projectId) => {
+      if (projectId === null) throw new Error(`no sticky token is published at @${handle}`);
+      ctx.alias = `@${handle}`;
+      return renderProject(projectId);
+    }).catch((e) => status(e.message, "err"));
+    return;
+  }
   const match = location.hash.match(/^#\/project\/(\d+)(?:\/(overview|tokens|airdrops))?\/?$/);
   if (match) {
     const projectId = BigInt(match[1]);
     const tab = { overview: "overview", tokens: "owners", airdrops: "rewards" }[match[2] || "overview"];
     setTab(tab);
+    ctx.alias = null;
     renderProject(projectId).catch((e) => status(e.message, "err"));
   }
   else {

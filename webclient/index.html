@@ -60,6 +60,10 @@
   .mut { color: var(--muted); }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; position: relative; }
   section h2 { font-size: 13px; letter-spacing: 1.5px; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  section.glow {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent), 0 4px 20px -4px color-mix(in srgb, var(--accent) 25%, transparent);
+  }
   label { display: block; color: var(--muted); font-size: 13px; margin: 8px 0 2px; letter-spacing: 1px; }
   input {
     width: 100%; background: #fdffff; border: 1px solid var(--line); border-radius: 4px;
@@ -627,7 +631,7 @@
 
     <div class="proj-grid">
       <div>
-        <section>
+        <section class="glow">
           <h2 id="stake-title">Stick</h2>
           <div>
             <div style="display:flex;gap:8px;align-items:stretch">
@@ -969,6 +973,6 @@
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
 <script src="config.js?v=106"></script>
-<script src="app.js?v=125"></script>
+<script src="app.js?v=126"></script>
 </body>
 </html>
