@@ -1,0 +1,34 @@
+# Sticky
+
+> Sticky turns a Juicebox project token into a streak. Stick tokens to start a clock;
+> unstick and the clock resets to zero and a configured share of what you withdraw stays
+> behind, backing everyone still stuck. There is no lockup and no admin: the terms are
+> fixed by the hook the project deployed.
+
+## How to read this site as an agent
+
+The app is hash-routed and renders in the browser, so fetching any route returns the
+same shell. There is no server-rendered per-project page and no JSON API — every number
+comes from direct JSON-RPC reads the browser makes against the project's chain.
+
+## Routes (hash fragments, resolved in the browser)
+
+- `#/` — sticky tokens ranked by amount stuck.
+- `#/project/<projectId>` — one sticky token: what is stuck, who is streaking, the bonus
+  left behind by unsticking. Child routes `#/project/<id>/tokens` and `#/project/<id>/airdrops`.
+- `#/@<handle>` — the same sticky token by the project's verified ENS handle. The handle
+  resolves only when the JBProjectHandles registry confirms the project's owner claimed
+  it, so it names exactly one project.
+- `#/account/<address>` — one account's streaks across sticky tokens.
+
+## Vocabulary
+
+- **Stick / unstick** — deposit or withdraw the project token. Unsticking is newest tranche first.
+- **Streak** — how long an account has held a non-zero stuck balance. It resets only at zero.
+- **Bonus** — the share of each unstick that stays in the pool, raising what every remaining
+  sticky token is backed by.
+
+## Source
+
+- Hook and distributor contracts: https://github.com/mejango/jbsticky
+- Protocol contracts: https://github.com/Bananapus/version-6
