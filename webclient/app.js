@@ -808,17 +808,6 @@ const formatUsd = (value) => {
   return `$${dollars.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${fraction}`;
 };
 
-const compactUsd = (value) => {
-  const numeric = Number(value) / Number(USD_SCALE);
-  if (!Number.isFinite(numeric)) return formatUsd(value);
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    currencyDisplay: "narrowSymbol",
-    notation: numeric >= 1_000 ? "compact" : "standard",
-    maximumFractionDigits: numeric >= 10 ? 1 : 2,
-  }).format(numeric);
-};
 
 function configuredUsdPrice(card) {
   const entries = Object.entries(window.STICKY_CONFIG?.usdPriceOverrides || {});
@@ -992,8 +981,6 @@ function mountHomeSecuredChart(series) {
 
   const defaultLabel = `${series.hasValue ? formatUsd(series.total) : "USD value unavailable"} secured by Sticky`;
   container.innerHTML = `<div class="home-secured-plot" tabindex="0" role="img" aria-label="${esc(defaultLabel)}">`
-    + `<span class="home-secured-axis home-secured-y-max">${esc(compactUsd(max))}</span>`
-    + `<span class="home-secured-axis home-secured-y-zero">$0</span>`
     + `<div class="home-secured-bars" aria-hidden="true">${bars}</div>`
     + `<span class="home-secured-axis home-secured-x-start">${esc(date(start))}</span>`
     + `<span class="home-secured-axis home-secured-x-end">${esc(date(end))}</span>`
