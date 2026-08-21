@@ -1,5 +1,9 @@
 # JBStickyDistributor — stick-time-gated reward distribution
 
+> **Superseded.** The `lockedUntil` channel this spec describes for split-funded criteria was replaced by
+> `split.projectId` — see `2026-08-14-criteria-carrier-projectid.md`. Everything else here (epoch buckets,
+> fund-time denominator, lazy claims) stands; this is a dated design record, not current behavior.
+
 **Date:** 2026-08-12
 **Status:** Approved design, pre-implementation
 **Decisions by:** jango (weighting, age basis, cadence, claim model, epoch size)

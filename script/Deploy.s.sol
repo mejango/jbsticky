@@ -6,14 +6,11 @@ import {CoreDeployment, CoreDeploymentLib} from "@bananapus/core-v6/script/helpe
 import {Sphinx} from "@sphinx-labs/contracts/contracts/foundry/SphinxPlugin.sol";
 import {Script} from "forge-std/Script.sol";
 
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
-
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 
 import {JBStickyAutoStick} from "src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "src/JBStickyDistributor.sol";
 import {JBStickyRewardPockets} from "src/JBStickyRewardPockets.sol";
 
 contract DeployScript is Script, Sphinx {
@@ -48,15 +45,13 @@ contract DeployScript is Script, Sphinx {
             new JBStickyDeployer{salt: stickyDeployer}({controller: core.controller, terminal: core.terminal});
 
         // Deploy a rewards distributor tuned for sticky tokens: weekly rounds, fully unlocked after 4 rounds,
-        // 3-year claim window (effectively forever, but still finite so abandoned rewards can recycle). Loans off.
-        JBTokenDistributor distributor = new JBTokenDistributor{salt: stickyDeployer}({
+        // 28-day claim window before unclaimed rewards recycle to the current round.
+        JBStickyDistributor distributor = new JBStickyDistributor{salt: stickyDeployer}({
             directory: core.directory,
-            controller: core.controller,
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            stickyHook: deployer.HOOK(),
             initialRoundDuration: 7 days,
             initialVestingRounds: 4,
-            initialClaimDuration: 3 * 365 days
+            initialClaimDuration: 28 days
         });
 
         // Deploy the reward pockets factory. Its address is chain-identical, so pocket addresses predicted on any

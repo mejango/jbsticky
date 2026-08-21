@@ -10,14 +10,11 @@ import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
-
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 
 import {JBStickyAutoStick} from "src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "src/JBStickyDistributor.sol";
 import {JBStickyRewardPockets} from "src/JBStickyRewardPockets.sol";
 
 /// @notice A test token to stake on a local fork.
@@ -65,15 +62,13 @@ contract DeployLocalScript is Script {
         MockBan ban = new MockBan();
         JBStickyDeployer deployer = new JBStickyDeployer({controller: controller, terminal: terminal});
 
-        // A demo rewards distributor with fast rounds: 10-minute rounds, vested after 2 rounds, 7-day claims.
-        JBTokenDistributor distributor = new JBTokenDistributor({
+        // A demo rewards distributor with fast rounds: 10-minute rounds, vested after 4 rounds, 40-minute claims.
+        JBStickyDistributor distributor = new JBStickyDistributor({
             directory: IJBDirectory(address(controller.DIRECTORY())),
-            controller: controller,
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            stickyHook: deployer.HOOK(),
             initialRoundDuration: 600,
-            initialVestingRounds: 2,
-            initialClaimDuration: 7 days
+            initialVestingRounds: 4,
+            initialClaimDuration: 2400
         });
 
         JBStickyAutoStick autoStick =
@@ -118,7 +113,7 @@ contract DeployLocalScript is Script {
         console2.log("JBStickyHook", address(deployer.HOOK()));
         console2.log("projectId", projectId);
         console2.log("banProjectId", banProjectId);
-        console2.log("JBTokenDistributor", address(distributor));
+        console2.log("JBStickyDistributor", address(distributor));
         console2.log("JBStickyAutoStick", address(autoStick));
         console2.log("JBStickyRewardPockets", address(pockets));
     }

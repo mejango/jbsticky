@@ -58,7 +58,19 @@ Pay the sticky project with `beneficiary` set to the holder. The payer must be o
 
 Predict the pocket: `JBStickyRewardPockets.predictPocketOf(stickyToken)` — the factory is deployed at the same address on every chain, so the prediction is valid everywhere. Bridge the reward token through its own sucker with the pocket as the claim beneficiary. Once the claim lands on the sticky project's chain, anyone (funder, keeper, frontend) calls `settleFor(stickyToken, rewardToken)`; the arrival funds the current reward round. Constraints: the reward token must be sucker-mapped between the two chains (the sticky project needs no suckers), and the reward lands in whatever round is current at settlement.
 
-## Journey 6: Build a reward program on streak data
+## Journey 6: Claim a stick-time-gated reward
+
+**Actor:** holder.
+
+**Intent:** collect their pro-rata share of a `JBStickyDistributor` reward pot they qualify for.
+
+Call `beginVesting(hook, groupId, tokenIds, tokens)` to materialize unclaimed past rounds into vesting entries, then `collectVestedRewards(hook, groupId, tokenIds, tokens, beneficiary)` to transfer out whatever has since unlocked — or skip straight to `collectVestedRewards`, which begins vesting on the caller's behalf first. `hook` is the sticky token address; `tokenIds` encode staker addresses; `groupId` selects the pot — `0` is the everyone-pool (votes-weighted, no criteria); a criteria pot encodes `minWeeks * 1000 + maxWeeks`, e.g. `4000` for "stuck 4+ weeks" (tenure), `1004` for "the last 4 completed weeks" (recency), or `4008` for "stuck 4 to 8 weeks" (cohort). Preview unlocked amounts first with `collectableFor(hook, groupId, tokenId, token)`.
+
+**A bounded window (recency or cohort) pays whatever you deposited in that stretch, not your whole position.** If you top up your stake regularly, your tranches spread across many epoch buckets; a `1004` or `4008` pot only pays the slice of your stake that lands inside its window at the round's snapshot. A `4000`-style tenure pot (unbounded above) is the only shape that pays your entire aged position.
+
+**You must still be stuck to collect.** A criteria round's weight is computed from the holder's *live* tranches at claim time — the ones whose epoch falls inside the round's window. LIFO unstaking consumes newest tranches first: for a tenure pot this shields your aged weight (fresh stake gets consumed before anything the pot cares about), but for a recency pot it's the opposite — the pot's eligible tranches ARE your newest ones, so any partial unstake immediately cuts what you can still claim. Unstaking deep enough to consume an in-window tranche after a round's snapshot forfeits that tranche's weight for that round, permanently — claims read live state, not a checkpoint. Claimed rewards vest linearly over `VESTING_ROUNDS` rounds (4 in production) and can be collected as they unlock. Unclaimed rounds expire after `CLAIM_DURATION` (28 days in production) and recycle into the same group's current round with a fresh denominator — a late unstaker only shares in the recycled amount if they still qualify at the new snapshot.
+
+## Journey 7: Build a reward program on streak data
 
 **Actor:** indexer / reward engine.
 

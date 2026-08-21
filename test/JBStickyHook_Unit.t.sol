@@ -295,6 +295,87 @@ contract JBStickyHookUnitTest is Test {
         assertEq(hook.hasMintPermissionFor(PROJECT_ID, ruleset, holder), false);
     }
 
+    function test_bucketsTrackStakeByEpoch() public {
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        assertEq(hook.netStakedIn(PROJECT_ID, 10), 100e18);
+        assertEq(hook.firstStakeEpochPlusOneOf(PROJECT_ID), 11);
+
+        vm.warp(12 weeks + 1);
+        _pay(holder, 50e18);
+        assertEq(hook.netStakedIn(PROJECT_ID, 12), 50e18);
+        // First-stake marker doesn't move.
+        assertEq(hook.firstStakeEpochPlusOneOf(PROJECT_ID), 11);
+    }
+
+    function test_bucketsDecrementByConsumedTrancheEpoch() public {
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        vm.warp(12 weeks + 1);
+        _pay(holder, 50e18);
+
+        // Unstake 120: LIFO consumes the epoch-12 tranche fully (50) and 70 of the epoch-10 tranche.
+        _cashOut(holder, 120e18);
+        assertEq(hook.netStakedIn(PROJECT_ID, 12), 0);
+        assertEq(hook.netStakedIn(PROJECT_ID, 10), 30e18);
+    }
+
+    function test_bucketConservation() public {
+        address holder2 = makeAddr("holder2");
+
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        vm.warp(11 weeks + 1);
+        _pay(holder2, 40e18);
+        _cashOut(holder, 25e18);
+        assertEq(
+            hook.netStakedIn(PROJECT_ID, 10) + hook.netStakedIn(PROJECT_ID, 11),
+            hook.stakedBalanceOf(PROJECT_ID, holder) + hook.stakedBalanceOf(PROJECT_ID, holder2)
+        );
+    }
+
+    function test_netStakedInEpochsRange() public {
+        vm.warp(10 weeks + 1);
+        _pay(holder, 100e18);
+        vm.warp(12 weeks + 1);
+        _pay(holder, 50e18);
+
+        uint256[] memory amounts = hook.netStakedInEpochs(PROJECT_ID, 10, 12);
+        assertEq(amounts.length, 3);
+        assertEq(amounts[0], 100e18);
+        assertEq(amounts[1], 0);
+        assertEq(amounts[2], 50e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyHook.JBStickyHook_InvalidEpochRange.selector, 12, 10)
+        );
+        hook.netStakedInEpochs(PROJECT_ID, 12, 10);
+    }
+
+    function test_recordTransfer_zeroAmountCreatesNoTrancheAndStartsNoStreak() public {
+        address token = makeAddr("token");
+        vm.prank(deployer);
+        hook.setTokenFor({projectId: PROJECT_ID, token: token});
+
+        // Holder already has a position; a zero-value transfer must not touch it.
+        _pay(holder, 10e18);
+        uint256 streakStart = hook.streakStartOf(PROJECT_ID, holder);
+
+        address receiver = makeAddr("receiver");
+        vm.prank(token);
+        hook.recordTransfer({projectId: PROJECT_ID, from: holder, to: receiver, amount: 0});
+
+        // The sender's position is untouched.
+        assertEq(hook.trancheCountOf(PROJECT_ID, holder), 1);
+        assertEq(hook.stakedBalanceOf(PROJECT_ID, holder), 10e18);
+        assertEq(hook.streakStartOf(PROJECT_ID, holder), streakStart);
+
+        // The receiver gets nothing: no tranche, no streak, no balance.
+        assertEq(hook.trancheCountOf(PROJECT_ID, receiver), 0);
+        assertEq(hook.streakStartOf(PROJECT_ID, receiver), 0);
+        assertEq(hook.stakedBalanceOf(PROJECT_ID, receiver), 0);
+    }
+
     function _beforePayContext(uint256 value) internal view returns (JBBeforePayRecordedContext memory) {
         return JBBeforePayRecordedContext({
             terminal: terminal,

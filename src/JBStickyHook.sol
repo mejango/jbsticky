@@ -37,12 +37,22 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Thrown when a transfer report comes from an address that isn't the project's registered token.
     error JBStickyHook_CallerNotToken(address caller, address token);
 
+    /// @notice Thrown when an epoch range's bounds are inverted.
+    error JBStickyHook_InvalidEpochRange(uint256 fromEpoch, uint256 toEpoch);
+
     /// @notice Thrown when a payer stakes to a beneficiary who hasn't trusted them, without being one of the
     /// project's granters.
     error JBStickyHook_SenderNotTrusted(address payer, address beneficiary);
 
     /// @notice Thrown when an address other than the deployer attempts to set a project's granters.
     error JBStickyHook_Unauthorized(address caller, address deployer);
+
+    //*********************************************************************//
+    // ------------------------- public constants ------------------------ //
+    //*********************************************************************//
+
+    /// @notice The duration of one stick-age epoch. Stick-time criteria are quantized to these epochs.
+    uint256 public constant override EPOCH_DURATION = 1 weeks;
 
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
@@ -58,9 +68,10 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
-    /// @notice The sticky token allowed to report transfers for a project.
+    /// @notice One more than the first epoch in which a project's token was staked, or 0 if never staked.
+    /// @dev Stored plus-one so an unset entry can't alias epoch 0.
     /// @custom:param projectId The ID of the sticky project.
-    mapping(uint256 projectId => address) public override tokenOf;
+    mapping(uint256 projectId => uint256) public override firstStakeEpochPlusOneOf;
 
     /// @notice Whether an address can airdrop stakes to any holder of a sticky project.
     /// @custom:param projectId The ID of the sticky project the granter can airdrop to.
@@ -75,6 +86,12 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         public
         override isTrustedSenderOf;
 
+    /// @notice The net amount staked during each epoch that is still held, per project.
+    /// @dev Increases when a tranche is created in an epoch; decreases when that tranche is later consumed.
+    /// @custom:param projectId The ID of the sticky project.
+    /// @custom:param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
+    mapping(uint256 projectId => mapping(uint256 epoch => uint256)) public override netStakedIn;
+
     /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
     /// @custom:param projectId The ID of the sticky project the balance belongs to.
     /// @custom:param holder The address the balance belongs to.
@@ -85,6 +102,10 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @custom:param projectId The ID of the sticky project the streak belongs to.
     /// @custom:param holder The address the streak belongs to.
     mapping(uint256 projectId => mapping(address holder => uint256)) public override streakStartOf;
+
+    /// @notice The sticky token allowed to report transfers for a project.
+    /// @custom:param projectId The ID of the sticky project.
+    mapping(uint256 projectId => address) public override tokenOf;
 
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
@@ -325,6 +346,28 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         return current > longestCompleted ? current : longestCompleted;
     }
 
+    /// @notice The net still-held stake for each epoch in an inclusive range.
+    /// @param projectId The ID of the sticky project.
+    /// @param fromEpoch The first epoch to read.
+    /// @param toEpoch The last epoch to read.
+    /// @return amounts The net staked amount for each epoch, in order.
+    function netStakedInEpochs(
+        uint256 projectId,
+        uint256 fromEpoch,
+        uint256 toEpoch
+    )
+        external
+        view
+        override
+        returns (uint256[] memory amounts)
+    {
+        if (fromEpoch > toEpoch) revert JBStickyHook_InvalidEpochRange({fromEpoch: fromEpoch, toEpoch: toEpoch});
+        amounts = new uint256[](toEpoch - fromEpoch + 1);
+        for (uint256 i; i < amounts.length; i++) {
+            amounts[i] = netStakedIn[projectId][fromEpoch + i];
+        }
+    }
+
     /// @notice The number of tranches a holder has.
     /// @param projectId The ID of the sticky project to check the tranches of.
     /// @param holder The address to check the tranches of.
@@ -375,10 +418,18 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param count The number of tokens joining, as a fixed point number with 18 decimals.
     /// @return stakedBalance The holder's staked balance after the addition.
     function _addTo(uint256 projectId, address holder, uint256 count) internal returns (uint256 stakedBalance) {
+        // Nothing joined the position: no tranche, no bucket credit, no streak start.
+        if (count == 0) return stakedBalanceOf[projectId][holder];
+
         // Record a new tranche with its own timestamp.
         _tranchesOf[projectId][holder].push(
             JBStickyTranche({amount: SafeCast.toUint208(count), timestamp: SafeCast.toUint48(block.timestamp)})
         );
+
+        // Track the stake in its epoch bucket so distributors can total aged stake without checkpoints.
+        uint256 epoch = block.timestamp / EPOCH_DURATION;
+        netStakedIn[projectId][epoch] += count;
+        if (firstStakeEpochPlusOneOf[projectId] == 0) firstStakeEpochPlusOneOf[projectId] = epoch + 1;
 
         // Store the holder's new staked balance.
         stakedBalance = stakedBalanceOf[projectId][holder] + count;
@@ -399,6 +450,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param count The number of tokens leaving, as a fixed point number with 18 decimals.
     /// @return stakedBalance The holder's staked balance after the consumption.
     function _consumeFrom(uint256 projectId, address holder, uint256 count) internal returns (uint256 stakedBalance) {
+        // Nothing left the position: no tranche touched, no streak ended.
+        if (count == 0) return stakedBalanceOf[projectId][holder];
+
         // Keep a reference to the number of tokens left to consume from tranches.
         uint256 remaining = count;
 
@@ -419,9 +473,11 @@ contract JBStickyHook is ERC165, IJBStickyHook {
                 // casting to 'uint208' is safe because `remaining` is less than `tranche.amount`, a uint208.
                 // forge-lint: disable-next-line(unsafe-typecast)
                 tranches[numberOfTranches - 1].amount = tranche.amount - uint208(remaining);
+                netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= remaining;
                 remaining = 0;
             } else {
                 // Otherwise consume the whole tranche and move on to the next-newest.
+                netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= tranche.amount;
                 remaining -= tranche.amount;
                 tranches.pop();
                 numberOfTranches--;

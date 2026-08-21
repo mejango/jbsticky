@@ -5,6 +5,19 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
+import {JBSplits} from "@bananapus/core-v6/src/JBSplits.sol";
+import {IJBRulesetApprovalHook} from "@bananapus/core-v6/src/interfaces/IJBRulesetApprovalHook.sol";
+import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
+import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
+import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
+import {JBCurrencyAmount} from "@bananapus/core-v6/src/structs/JBCurrencyAmount.sol";
+import {JBFundAccessLimitGroup} from "@bananapus/core-v6/src/structs/JBFundAccessLimitGroup.sol";
+import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
+import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
+import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
+import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
+import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
@@ -15,6 +28,7 @@ import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../src/JBStickyHook.sol";
 import {JBStickyToken} from "../src/JBStickyToken.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
@@ -28,6 +42,15 @@ contract MockArt is ERC20 {
     function decimals() public pure override returns (uint8) {
         return 6;
     }
+
+    function mint(address to, uint256 amount) external {
+        _mint({account: to, value: amount});
+    }
+}
+
+/// @notice An 18-decimal reward token routed through a payout split in the criteria-pot integration test.
+contract MockRwd is ERC20 {
+    constructor() ERC20("Reward", "RWD") {}
 
     function mint(address to, uint256 amount) external {
         _mint({account: to, value: amount});
@@ -693,9 +716,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.approve({spender: address(adapter), value: type(uint256).max});
         adapter.setConfigFor({projectId: projectId, enabled: false, minimumAmount: 1e6, cooldown: 1 days});
         vm.stopPrank();
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user)
-        );
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user));
         adapter.compoundFor({projectId: projectId, holder: user});
 
         vm.prank(user);
@@ -716,5 +737,446 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // The soulbound tokens can still be unstaked.
         uint256 reclaimed = _unstake(user, 10e18);
         assertEq(reclaimed, 10e6);
+    }
+
+    //*********************************************************************//
+    // --------------------- criteria pot integration --------------------- //
+    //*********************************************************************//
+
+    /// @notice Mint, approve, and stake `amount` of ART for a fresh holder.
+    function _stakeArt(address holder, uint256 amount) internal {
+        art.mint({to: holder, amount: amount});
+        vm.prank(holder);
+        art.approve({spender: address(jbMultiTerminal()), value: amount});
+        _stake(holder, holder, amount);
+    }
+
+    /// @notice Directly fund a criteria group's ART pot for `hookAddr`, matching `JBStickyDistributor.fund`.
+    function _fundArtGroup(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        uint256 amount,
+        uint256 groupId
+    )
+        internal
+    {
+        address funder = makeAddr("criteria-funder");
+        art.mint({to: funder, amount: amount});
+        vm.startPrank(funder);
+        art.approve({spender: address(distributor_), value: amount});
+        distributor_.fund({hook: hookAddr, token: IERC20(address(art)), amount: amount, groupId: groupId});
+        vm.stopPrank();
+    }
+
+    /// @notice Fund a criteria group's pot for `hookAddr` through a payout split, pranking the registered terminal
+    /// as the caller — the same pattern the unit tests use for `processSplitWith`. `criteria` lands on the split's
+    /// `projectId`, the field `processSplitWith` reads.
+    function _fundGroupViaSplit(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        MockRwd token_,
+        uint256 amount,
+        uint64 criteria
+    )
+        internal
+    {
+        address terminal = address(jbMultiTerminal());
+        token_.mint({to: terminal, amount: amount});
+        vm.startPrank(terminal);
+        token_.approve({spender: address(distributor_), value: amount});
+        distributor_.processSplitWith(
+            JBSplitHookContext({
+                token: address(token_),
+                amount: amount,
+                decimals: 18,
+                projectId: projectId,
+                groupId: uint256(uint160(address(token_))),
+                split: JBSplit({
+                    percent: 0,
+                    projectId: criteria,
+                    beneficiary: payable(hookAddr),
+                    preferAddToBalance: false,
+                    lockedUntil: 0,
+                    hook: IJBSplitHook(address(distributor_))
+                })
+            })
+        );
+        vm.stopPrank();
+    }
+
+    /// @notice Begin vesting `holder`'s unclaimed rewards in a specific criteria group and reward token.
+    function _beginVestingGroupFor(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        address holder,
+        uint256 groupId,
+        IERC20 token_
+    )
+        internal
+    {
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = uint256(uint160(holder));
+        IERC20[] memory tokens = new IERC20[](1);
+        tokens[0] = token_;
+        distributor_.beginVesting({hook: hookAddr, groupId: groupId, tokenIds: tokenIds, tokens: tokens});
+    }
+
+    /// @notice Collect everything unlocked for `holder` in a specific criteria group and reward token.
+    function _collectGroupFor(
+        JBStickyDistributor distributor_,
+        address hookAddr,
+        address holder,
+        uint256 groupId,
+        IERC20 token_
+    )
+        internal
+        returns (uint256 collected)
+    {
+        uint256 balanceBefore = token_.balanceOf(holder);
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = uint256(uint160(holder));
+        IERC20[] memory tokens = new IERC20[](1);
+        tokens[0] = token_;
+        distributor_.collectVestedRewards({
+            hook: hookAddr, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: holder
+        });
+        collected = token_.balanceOf(holder) - balanceBefore;
+    }
+
+    function test_integration_criteriaPotEndToEnd() public {
+        address alice = makeAddr("criteria-alice");
+        address bob = makeAddr("criteria-bob");
+        address carol = makeAddr("criteria-carol");
+
+        // Deploy the distributor the way the deploy scripts do: directory + the project's sticky hook, no
+        // controller/revLoans/revOwner wiring.
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+        MockRwd reward2 = new MockRwd();
+
+        // Wiring sanity check: an out-of-range criteria group reverts through the real deploy-shaped distributor.
+        // The full boundary sweep (521 and 1 << 240) is covered at the unit level.
+        vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 521));
+        distributor.fund({hook: address(token), token: IERC20(address(art)), amount: 1e6, groupId: 521});
+
+        // Two holders stake a week apart.
+        vm.warp(10 weeks + 1);
+        _stakeArt(alice, 100e6);
+        vm.warp(13 weeks + 1);
+        _stakeArt(bob, 100e6);
+        vm.warp(14 weeks + 1);
+
+        // Fund a min = 2 ("stuck >= 2 weeks") pot through both entry paths: a direct fund in ART, and a payout
+        // split carrying criteria = 2000 in its `projectId`, in a second reward token.
+        _fundArtGroup(distributor, address(token), 90e6, 2000);
+        _fundGroupViaSplit(distributor, address(token), reward2, 60e18, 2000);
+
+        // Complete the funding round and fully vest.
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _beginVestingGroupFor(distributor, address(token), alice, 2000, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), bob, 2000, IERC20(address(art)));
+        _beginVestingGroupFor(distributor, address(token), alice, 2000, IERC20(address(reward2)));
+        _beginVestingGroupFor(distributor, address(token), bob, 2000, IERC20(address(reward2)));
+        vm.warp(vm.getBlockTimestamp() + 2 days);
+
+        // Bob's tranche is one week too fresh for min = 2 at the funding snapshot: he carries no aged weight in
+        // either pot, and alice — the only aged staker — claims each pot in full.
+        assertEq(_collectGroupFor(distributor, address(token), alice, 2000, IERC20(address(art))), 90e6);
+        assertEq(_collectGroupFor(distributor, address(token), bob, 2000, IERC20(address(art))), 0);
+        assertEq(_collectGroupFor(distributor, address(token), alice, 2000, IERC20(address(reward2))), 60e18);
+        assertEq(_collectGroupFor(distributor, address(token), bob, 2000, IERC20(address(reward2))), 0);
+
+        // A later ART pot: bob has now aged into the criteria too, so he shares it with alice — but carol, who
+        // stakes right as this round is funded, is still too fresh to count.
+        vm.warp(60 weeks + 1);
+        _stakeArt(carol, 100e6);
+        _fundArtGroup(distributor, address(token), 200e6, 2000);
+        uint256 expiredRound = distributor.currentRound();
+
+        // Complete the round so the funded round becomes claimable, then only alice claims before the round's
+        // claim window closes; bob's half is left to expire.
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _beginVestingGroupFor(distributor, address(token), alice, 2000, IERC20(address(art)));
+
+        // Past the claim deadline, carol's tranche has aged into the criteria too — recycling re-walks the
+        // denominator at the CURRENT epoch and buckets rather than reusing the expired round's stale total.
+        vm.warp(vm.getBlockTimestamp() + 40 days);
+        uint256[] memory rounds = new uint256[](1);
+        rounds[0] = expiredRound;
+        uint256 recycled = distributor.recycleExpiredRewards({
+            hook: address(token), groupId: 2000, token: IERC20(address(art)), rounds: rounds
+        });
+        assertEq(recycled, 100e6);
+
+        (uint208 freshAmount,,,, uint208 freshTotalStake,) =
+            distributor.rewardRoundOf(address(token), 2000, IERC20(address(art)), distributor.currentRound());
+        assertEq(freshAmount, 100e6);
+        assertEq(freshTotalStake, 300e18);
+    }
+
+    /// @notice Launch a minimal project — distinct from the deployer-owned sticky project, which exposes no owner
+    /// able to call `setSplitGroupsOf` — owned by `splitOwner`, with no rulesets or terminals beyond the launch
+    /// defaults. Only its default split table (`rulesetId` 0) is exercised.
+    function _launchSplitProject(address splitOwner) internal returns (uint256 splitProjectId) {
+        JBRulesetMetadata memory metadata = JBRulesetMetadata({
+            reservedPercent: 0,
+            cashOutTaxRate: 0,
+            baseCurrency: uint32(uint160(JBConstants.NATIVE_TOKEN)),
+            pausePay: false,
+            pauseCreditTransfers: false,
+            allowOwnerMinting: false,
+            allowSetCustomToken: false,
+            allowTerminalMigration: false,
+            allowSetTerminals: false,
+            ownerMustSendPayouts: false,
+            allowSetController: false,
+            allowAddAccountingContext: false,
+            allowAddPriceFeed: false,
+            holdFees: false,
+            scopeCashOutsToLocalBalances: false,
+            useDataHookForPay: false,
+            useDataHookForCashOut: false,
+            dataHook: address(0),
+            metadata: 0
+        });
+        JBRulesetConfig[] memory rulesetConfig = new JBRulesetConfig[](1);
+        rulesetConfig[0].mustStartAtOrAfter = 0;
+        rulesetConfig[0].duration = 0;
+        rulesetConfig[0].weight = 0;
+        rulesetConfig[0].weightCutPercent = 0;
+        rulesetConfig[0].approvalHook = IJBRulesetApprovalHook(address(0));
+        rulesetConfig[0].metadata = metadata;
+
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        splitProjectId = jbController().launchProjectFor{value: fee}({
+            owner: splitOwner,
+            projectUri: "",
+            rulesetConfigurations: rulesetConfig,
+            terminalConfigurations: new JBTerminalConfig[](0),
+            memo: ""
+        });
+    }
+
+    /// @notice A locked criteria split — the capability this change exists for: `lockedUntil` freezes the split's
+    /// share the way it always has, and now `projectId` (the criteria carrier) is frozen alongside it, since
+    /// `_isLockedSplitIncluded` requires a replacement split to preserve `projectId` too.
+    function test_integration_lockedCriteriaSplitRejectsRewriteDroppingProjectId() public {
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+
+        address splitOwner = makeAddr("split-owner");
+        uint256 splitProjectId = _launchSplitProject(splitOwner);
+
+        uint48 lockedUntil = uint48(vm.getBlockTimestamp() + 365 days);
+        JBSplit[] memory lockedSplits = new JBSplit[](1);
+        lockedSplits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 4008,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: lockedUntil,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory lockedGroup = new JBSplitGroup[](1);
+        lockedGroup[0] = JBSplitGroup({groupId: uint256(uint160(address(art))), splits: lockedSplits});
+
+        vm.prank(splitOwner);
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: lockedGroup});
+
+        // A rewrite keeping the split's percent, beneficiary, and hook, but dropping its criteria (`projectId` ->
+        // 0), does not match the locked split's immutable fields — core rejects the whole table, not just the
+        // one split, even though the lock itself would otherwise still be honored (`lockedUntil` unchanged).
+        JBSplit[] memory rewriteSplits = new JBSplit[](1);
+        rewriteSplits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 0,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: lockedUntil,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory rewriteGroup = new JBSplitGroup[](1);
+        rewriteGroup[0] = JBSplitGroup({groupId: uint256(uint160(address(art))), splits: rewriteSplits});
+
+        vm.prank(splitOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(JBSplits.JBSplits_PreviousLockedSplitsNotIncluded.selector, splitProjectId, 0)
+        );
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: rewriteGroup});
+
+        // Positive control: a rewrite that preserves `projectId` (here, alongside an extended `lockedUntil`,
+        // which core always permits) succeeds — isolating the prior revert to the dropped `projectId`.
+        JBSplit[] memory preservingSplits = new JBSplit[](1);
+        preservingSplits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 4008,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: lockedUntil + 1,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory preservingGroup = new JBSplitGroup[](1);
+        preservingGroup[0] = JBSplitGroup({groupId: uint256(uint160(address(art))), splits: preservingSplits});
+
+        vm.prank(splitOwner);
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: preservingGroup});
+
+        JBSplit[] memory storedSplits =
+            jbSplits().splitsOf({projectId: splitProjectId, rulesetId: 0, groupId: uint256(uint160(address(art)))});
+        assertEq(storedSplits.length, 1);
+        assertEq(storedSplits[0].projectId, 4008);
+        assertEq(storedSplits[0].lockedUntil, lockedUntil + 1);
+    }
+
+    /// @notice Launch a project with a native-token terminal and a generous payout limit, owned by
+    /// `splitOwner`, so a real payout split can actually be distributed through `sendPayoutsOf`.
+    function _launchPayoutSplitProject(address splitOwner) internal returns (uint256 splitProjectId) {
+        JBRulesetMetadata memory metadata = JBRulesetMetadata({
+            reservedPercent: 0,
+            cashOutTaxRate: 0,
+            baseCurrency: uint32(uint160(JBConstants.NATIVE_TOKEN)),
+            pausePay: false,
+            pauseCreditTransfers: false,
+            allowOwnerMinting: false,
+            allowSetCustomToken: false,
+            allowTerminalMigration: false,
+            allowSetTerminals: false,
+            ownerMustSendPayouts: false,
+            allowSetController: false,
+            allowAddAccountingContext: false,
+            allowAddPriceFeed: false,
+            holdFees: false,
+            scopeCashOutsToLocalBalances: false,
+            useDataHookForPay: false,
+            useDataHookForCashOut: false,
+            dataHook: address(0),
+            metadata: 0
+        });
+
+        JBCurrencyAmount[] memory payoutLimits = new JBCurrencyAmount[](1);
+        payoutLimits[0] = JBCurrencyAmount({amount: 1000e18, currency: uint32(uint160(JBConstants.NATIVE_TOKEN))});
+        JBFundAccessLimitGroup[] memory fundAccessLimitGroups = new JBFundAccessLimitGroup[](1);
+        fundAccessLimitGroups[0] = JBFundAccessLimitGroup({
+            terminal: address(jbMultiTerminal()),
+            token: JBConstants.NATIVE_TOKEN,
+            payoutLimits: payoutLimits,
+            surplusAllowances: new JBCurrencyAmount[](0)
+        });
+
+        JBRulesetConfig[] memory rulesetConfig = new JBRulesetConfig[](1);
+        rulesetConfig[0].mustStartAtOrAfter = 0;
+        rulesetConfig[0].duration = 0;
+        rulesetConfig[0].weight = 0;
+        rulesetConfig[0].weightCutPercent = 0;
+        rulesetConfig[0].approvalHook = IJBRulesetApprovalHook(address(0));
+        rulesetConfig[0].metadata = metadata;
+        rulesetConfig[0].fundAccessLimitGroups = fundAccessLimitGroups;
+
+        JBAccountingContext[] memory tokensToAccept = new JBAccountingContext[](1);
+        tokensToAccept[0] = JBAccountingContext({
+            token: JBConstants.NATIVE_TOKEN, decimals: 18, currency: uint32(uint160(JBConstants.NATIVE_TOKEN))
+        });
+        JBTerminalConfig[] memory terminalConfigurations = new JBTerminalConfig[](1);
+        terminalConfigurations[0] =
+            JBTerminalConfig({terminal: jbMultiTerminal(), accountingContextsToAccept: tokensToAccept});
+
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        splitProjectId = jbController().launchProjectFor{value: fee}({
+            owner: splitOwner,
+            projectUri: "",
+            rulesetConfigurations: rulesetConfig,
+            terminalConfigurations: terminalConfigurations,
+            memo: ""
+        });
+    }
+
+    /// @notice Proves the storage round-trip the whole change rests on: `setSplitGroupsOf` packs `projectId`
+    /// into `JBSplits` storage (bits 32-95), and a real `sendPayoutsOf` distribution unpacks it back out into
+    /// `context.split.projectId` — not a hand-built context, and not `processSplitWith` called directly.
+    function test_integration_realPayoutSplitFundsCriteriaPotThroughSplitsStorage() public {
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+
+        // Exempt the distributor from the protocol fee so the payout that reaches `processSplitWith` is
+        // exactly the amount requested — this test is about the `projectId` round-trip, not fee arithmetic.
+        vm.prank(multisig());
+        jbFeelessAddresses().setFeelessAddress({addr: address(distributor), flag: true});
+
+        address splitOwner = makeAddr("payout-split-owner");
+        uint256 splitProjectId = _launchPayoutSplitProject(splitOwner);
+
+        // A criteria split (4008: "4 to 8 weeks") paying native ETH — the recipe from ADMINISTRATION, set
+        // through the real `JBSplits` path rather than a hand-built `JBSplitHookContext`.
+        JBSplit[] memory splits = new JBSplit[](1);
+        splits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            projectId: 4008,
+            beneficiary: payable(address(token)),
+            preferAddToBalance: false,
+            lockedUntil: 0,
+            hook: IJBSplitHook(address(distributor))
+        });
+        JBSplitGroup[] memory splitGroup = new JBSplitGroup[](1);
+        splitGroup[0] = JBSplitGroup({groupId: uint256(uint160(JBConstants.NATIVE_TOKEN)), splits: splits});
+
+        vm.prank(splitOwner);
+        jbController().setSplitGroupsOf({projectId: splitProjectId, rulesetId: 0, splitGroups: splitGroup});
+
+        // Alice's sticky stake lands in epoch 14, inside the (4, 8) window at snapshot epoch 20.
+        address alice = makeAddr("payout-split-alice");
+        vm.warp(14 weeks + 1);
+        _stakeArt(alice, 100e6);
+        vm.warp(20 weeks + 1);
+
+        // Fund the payout project's balance, then distribute.
+        vm.deal(address(this), 10e18);
+        jbMultiTerminal().pay{value: 10e18}({
+            projectId: splitProjectId,
+            token: JBConstants.NATIVE_TOKEN,
+            amount: 10e18,
+            beneficiary: address(this),
+            minReturnedTokens: 0,
+            memo: "",
+            metadata: bytes("")
+        });
+
+        jbMultiTerminal()
+            .sendPayoutsOf({
+            projectId: splitProjectId,
+            token: JBConstants.NATIVE_TOKEN,
+            amount: 10e18,
+            currency: uint32(uint160(JBConstants.NATIVE_TOKEN)),
+            minTokensPaidOut: 0
+        });
+
+        (uint208 amount,,,, uint208 totalStake, uint48 snapshotEpoch) = distributor.rewardRoundOf(
+            address(token), 4008, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound()
+        );
+        assertEq(amount, 10e18);
+        assertEq(totalStake, 100e18);
+        assertEq(snapshotEpoch, 20);
+
+        // Landed in the criteria pot, not the everyone-pool — the real storage round-trip resolved
+        // `projectId`, it didn't fall back to group 0.
+        (uint208 groupZeroAmount,,,,,) =
+            distributor.rewardRoundOf(address(token), 0, IERC20(JBConstants.NATIVE_TOKEN), distributor.currentRound());
+        assertEq(groupZeroAmount, 0);
     }
 }
