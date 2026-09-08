@@ -422,7 +422,7 @@ async function resolveProjectMetadata(addr) {
 async function resolveTokenLogoUrl(addr) {
   const key = addr.toLowerCase();
   const override = window.STICKY_CONFIG?.logoOverrides?.[key];
-  if (override) return (logoCache[key] = ipfsUrl(override));
+  if (override) return (logoCache[key] = StickyRuntime.assetUrl(override, true));
   if (key in logoCache) return logoCache[key];
   return (logoCache[key] = (async () => {
     const metadata = await resolveProjectMetadata(addr);

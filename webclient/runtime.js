@@ -11,8 +11,9 @@
     if (typeof value !== "string" || !ADDRESS.test(value) || ZERO.test(value)) throw new Error("A valid deployed contract address is required.");
     return value.toLowerCase();
   }
-  function assetUrl(value) {
+  function assetUrl(value, allowLocal = false) {
     if (typeof value !== "string" || value.length > 8192) return null;
+    if (allowLocal && /^(?:\.\/)?[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:png|jpe?g|webp|gif|avif)$/i.test(value)) return value;
     const expanded = value.startsWith("ipfs://") ? "https://ipfs.io/ipfs/" + value.slice(7).replace(/^ipfs\//, "") : value;
     try {
       const url = new URL(expanded);

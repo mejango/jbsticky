@@ -81,8 +81,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
     function _stake(address payer, address beneficiary, uint256 amount) internal returns (uint256) {
         vm.prank(payer);
-        return jbMultiTerminal()
-            .pay({
+        return jbMultiTerminal().pay({
             projectId: projectId,
             token: address(art),
             amount: amount,
@@ -95,8 +94,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
     function _unstake(address holder, uint256 count) internal returns (uint256) {
         vm.prank(holder);
-        return jbMultiTerminal()
-            .cashOutTokensOf({
+        return jbMultiTerminal().cashOutTokensOf({
             holder: holder,
             projectId: projectId,
             cashOutCount: count,
@@ -128,8 +126,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.mint({to: granter, amount: 10e6});
         vm.startPrank(granter);
         art.approve({spender: address(jbMultiTerminal()), value: 10e6});
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: projectId,
             token: address(art),
             amount: 10e6,
@@ -195,8 +192,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.mint({to: granter, amount: 10e6});
         vm.startPrank(granter);
         art.approve({spender: address(jbMultiTerminal()), value: 10e6});
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: projectId,
             token: address(art),
             amount: 10e6,
@@ -248,8 +244,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.mint({to: granter, amount: 10e6});
         vm.startPrank(granter);
         art.approve({spender: address(jbMultiTerminal()), value: 10e6});
-        jbMultiTerminal()
-            .addToBalanceOf({
+        jbMultiTerminal().addToBalanceOf({
             projectId: projectId,
             token: address(art),
             amount: 10e6,
@@ -303,8 +298,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.mint({to: granter, amount: 10e6});
         vm.startPrank(granter);
         art.approve({spender: address(jbMultiTerminal()), value: 10e6});
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: rewardProjectId,
             token: address(art),
             amount: 10e6,
@@ -315,8 +309,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         });
         vm.stopPrank();
         vm.prank(user);
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: rewardProjectId,
             token: address(art),
             amount: 10e6,
@@ -329,8 +322,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // The leaver's reclaim follows the bonding curve — proportional 10, taxed to 7.5 — minus the 2.5% protocol
         // fee that applies to taxed cash outs.
         vm.prank(user);
-        uint256 leaverReclaim = jbMultiTerminal()
-            .cashOutTokensOf({
+        uint256 leaverReclaim = jbMultiTerminal().cashOutTokensOf({
             holder: user,
             projectId: rewardProjectId,
             cashOutCount: 10e18,
@@ -343,8 +335,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
         // The stayer's eventual unwind collects more than they put in: the leaver's forfeited share stayed behind.
         vm.prank(granter);
-        uint256 stayerReclaim = jbMultiTerminal()
-            .cashOutTokensOf({
+        uint256 stayerReclaim = jbMultiTerminal().cashOutTokensOf({
             holder: granter,
             projectId: rewardProjectId,
             cashOutCount: 10e18,
@@ -410,8 +401,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // Stake two tranches a month apart.
         uint256 start = vm.getBlockTimestamp();
         vm.prank(user);
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: openProjectId,
             token: address(art),
             amount: 10e6,
@@ -422,8 +412,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         });
         vm.warp(start + 30 days);
         vm.prank(user);
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: openProjectId,
             token: address(art),
             amount: 5e6,
@@ -452,8 +441,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
         // The receiver can unwind what they received.
         vm.prank(granter);
-        uint256 reclaimed = jbMultiTerminal()
-            .cashOutTokensOf({
+        uint256 reclaimed = jbMultiTerminal().cashOutTokensOf({
             holder: granter,
             projectId: openProjectId,
             cashOutCount: 7e18,
@@ -483,8 +471,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.mint({to: granter, amount: 10e6});
         vm.startPrank(granter);
         art.approve({spender: address(jbMultiTerminal()), value: 10e6});
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: projectId,
             token: address(art),
             amount: 10e6,
@@ -593,8 +580,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // The holder stakes and enables auto-stick WITHOUT a trust tx: just allowance + config.
         art.mint({to: user, amount: 20e6});
         vm.startPrank(user);
-        jbMultiTerminal()
-            .pay({
+        jbMultiTerminal().pay({
             projectId: granterProjectId,
             token: address(art),
             amount: 20e6,

@@ -36,6 +36,8 @@ jobs:
         run: npm ci --omit=dev
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.1
       - name: Run tests
         run: forge test --fail-fast --summary --detailed --skip "*/script/**"
       - name: Check contract sizes
