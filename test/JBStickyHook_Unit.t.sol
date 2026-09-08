@@ -83,6 +83,12 @@ contract JBStickyHookUnitTest is Test {
     }
 
     function _cashOut(address account, uint256 count) internal {
+        // The token reports a burn before reducing its supply, so the hook reads the pre-burn total.
+        vm.mockCall({
+            callee: token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(reportedSupply)
+        });
+        vm.prank(token);
+        hook.recordBurn({projectId: PROJECT_ID, holder: account, amount: count});
         reportedSupply -= count;
         vm.mockCall({
             callee: token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(reportedSupply)
@@ -92,8 +98,6 @@ contract JBStickyHookUnitTest is Test {
             data: abi.encodePacked(IJBTerminal.currentSurplusOf.selector),
             returnData: abi.encode(reportedSupply)
         });
-        vm.prank(token);
-        hook.recordBurn({projectId: PROJECT_ID, holder: account, amount: count});
     }
 
     //*********************************************************************//

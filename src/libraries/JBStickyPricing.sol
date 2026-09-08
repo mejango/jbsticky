@@ -16,6 +16,12 @@ library JBStickyPricing {
     // ----------------------- internal constants ------------------------ //
     //*********************************************************************//
 
+    /// @notice The smallest non-zero share supply, in share atoms: one millionth of a whole underlying token.
+    /// @dev A bootstrap must issue at least this many atoms and burns cannot leave fewer without leaving zero. A
+    /// sole holder could otherwise pin the supply at one atom, donate backing, and make every later deposit below
+    /// ten thousand share atoms revert unless it was an exact multiple of the inflated atom price.
+    uint256 internal constant MIN_SUPPLY = 1e12;
+
     /// @notice One basis point of ideal share issuance is the largest permitted rounding loss.
     uint256 internal constant _ROUNDING_DENOMINATOR = 10_000;
 
@@ -45,7 +51,8 @@ library JBStickyPricing {
     {
         if (decimals > 36) revert JBStickyPricing_UnsupportedDecimals(decimals);
         uint256 scale = 10 ** decimals;
-        if (supply == 0) {
+        bool bootstrap = supply == 0;
+        if (bootstrap) {
             // Apply the same precision protection to initial decimal-normalized issuance. These values only
             // define the initial exchange rate; no virtual shares or backing enter the project's accounting.
             supply = 1e18;
@@ -55,6 +62,10 @@ library JBStickyPricing {
         }
         weight = supply;
         uint256 issuedCount = Math.mulDiv({x: amount, y: supply, denominator: backing});
+
+        // A bootstrap below the supply floor would let its sole holder set an arbitrarily coarse atom price.
+        if (bootstrap && issuedCount < MIN_SUPPLY) return 0;
+
         uint256 idealCount = Math.mulDiv({x: amount, y: supply, denominator: backing, rounding: Math.Rounding.Ceil});
 
         // Using the ceiling also rejects payments whose ideal issuance is only slightly above one share atom.

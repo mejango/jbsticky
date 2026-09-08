@@ -646,7 +646,7 @@ The handler exposes `worstRound()` (tracks the (group, round) with the highest c
 
 **Interfaces:**
 - Consumes: constructor `(directory, stickyHook, roundDuration, vestingRounds, claimDuration)`.
-- Produces: prod params `7 days / 4 / 28 days`; local params `600 / 4 / 2400` (bucket epochs stay `1 weeks` regardless — local demos warp).
+- Produces: prod params `7 days / 4 / 3 years` (the same claim window the shipped `JBTokenDistributor` uses; an earlier draft said 28 days); local params `600 / 4 / 2400` (bucket epochs stay `1 weeks` regardless — local demos warp).
 
 - [ ] **Step 1: Swap the deployment** in both scripts (constructor args only — drop controller/revLoans/revOwner args, add the hook address the script already has in scope; keep deployments inside `startBroadcast`/`stopBroadcast`).
 - [ ] **Step 2: Append an end-to-end integration test** mirroring the existing distributor demo: deploy via the script path, two holders stake in different weeks, warp, fund `k=2` via direct `fund` AND via a payout split with `lockedUntil = 2`, verify only aged weight claims in both pots, verify a `k=0` direct fund reverts, verify an expired criteria pot recycles into the same group with a fresh denominator.

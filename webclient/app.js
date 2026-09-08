@@ -2500,13 +2500,15 @@ async function renderRewards() {
   const known = (rewardTokens[key] ??= new Set([info.stakedToken.toLowerCase()]));
   // Native funding has no ERC-20 Transfer event, so always check it, including after a reload.
   known.add(NATIVE_REWARD_TOKEN);
-  // Discover reward tokens from ERC-20 transfers into the distributor.
+  // Discover reward tokens from ERC-20 transfers into the distributor. The distributor emits no funding event, so
+  // this address-less scan is the only on-chain source; the chunked reader keeps hosted RPC range limits from
+  // silently hiding funded tokens.
   try {
-    const logs = await rpc("eth_getLogs", [
-      { topics: [TOPIC.Transfer, null, "0x" + encAddress(distributor())], fromBlock: fromBlock(), toBlock: "latest" },
-    ]);
+    const logs = await getLogs(undefined, [TOPIC.Transfer, null, "0x" + encAddress(distributor())]);
     for (const log of logs) known.add(log.address.toLowerCase());
-  } catch {}
+  } catch (error) {
+    console.error("reward token discovery failed", error);
+  }
   // Cross-chain pocket: show the selected destination token's arrivals, including rewards other than the backing token.
   const pocketsAddr = stickyDeploymentFor(ctx.chainId).pockets;
   if (pocketsAddr) {
@@ -3252,7 +3254,7 @@ function renderUnstickQuote() {
     return;
   }
   const bonus = (pool.sigma * count) / pool.supply - gross;
-  el.textContent = `you get ≈ ${amt(net)} · ${amt(bonus)} stays with stickers · ${amt(gross - net)} protocol fee`;
+  el.textContent = `you get ≈ ${amt(net)}, ${amt(bonus)} stays with stickers, ${amt(gross - net)} protocol fee`;
 }
 
 async function unstake() {
@@ -4195,7 +4197,7 @@ function renderCurve() {
     note.textContent = r === 1
       ? "At 100%, unsticking returns no underlying tokens. This setting is permanent."
       : r > 0
-        ? `For a small unstick at 1:1 backing, 100${sym} returns approximately ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. The actual reclaim depends on backing, supply and fee eligibility; review the live quote before unsticking.`
+        ? `For a small unstick when each sticky token is backed by one${sym}, 100${sym} returns approximately ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. The actual reclaim depends on backing, supply and fee eligibility; review the live quote before unsticking.`
         : "No cash out tax: unsticks return a proportional share of the pool. Donations can increase backing.";
   }
   $("d-fee-details")?.classList.toggle("hide", r === 0);

@@ -59,6 +59,18 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         if (newcomerExitsFirst) {
             newcomerReclaim = _cashOut({holder: _newcomer, count: newcomerShares});
             incumbentReclaim = _cashOut({holder: _incumbent, count: incumbentShares});
+        } else if (newcomerShares < 1e12) {
+            // An enormous donation can price the newcomer's whole deposit below the supply floor. The incumbent
+            // then cannot be the one to leave a positive dust supply behind, but nobody's backing is lost: the
+            // newcomer exits in full and the incumbent follows.
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    JBStickyHook.JBStickyHook_SupplyBelowMinimum.selector, _projectId, newcomerShares, 1e12
+                )
+            );
+            _cashOut({holder: _incumbent, count: incumbentShares});
+            newcomerReclaim = _cashOut({holder: _newcomer, count: newcomerShares});
+            incumbentReclaim = _cashOut({holder: _incumbent, count: incumbentShares});
         } else {
             incumbentReclaim = _cashOut({holder: _incumbent, count: incumbentShares});
             newcomerReclaim = _cashOut({holder: _newcomer, count: newcomerShares});
@@ -136,11 +148,23 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function test_bootstrapRoundingProtectionHasOneBasisPointBoundary() public {
         _underlying = new JBStickyPricingToken(24);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // Bootstrap one whole token so later deposits are priced at the same one-to-one rate.
+        assertEq(_stake({holder: _incumbent, amount: 1e24, minimum: 1e18}), 1e18);
         // A loss of almost one share atom is too large for 9,999 ideal atoms, but within tolerance for 10,000.
         assertEq(_preview({holder: _newcomer, amount: 9_998_999_999}), 0);
-        assertEq(_preview({holder: _incumbent, amount: 9_999_999_999}), 9999);
-        assertEq(_stake({holder: _incumbent, amount: 9_999_999_999, minimum: 9999}), 9999);
-        assertEq(_cashOut({holder: _incumbent, count: 9999}), 9_999_999_999);
+        assertEq(_preview({holder: _newcomer, amount: 9_999_999_999}), 9999);
+        assertEq(_stake({holder: _newcomer, amount: 9_999_999_999, minimum: 9999}), 9999);
+        uint256 reclaim = _cashOut({holder: _newcomer, count: 9999});
+        assertGe(reclaim, 9_999_000_000);
+        assertLe(reclaim, 9_999_999_999);
+    }
+
+    function test_bootstrapBelowSupplyFloorPreviewsZeroAndRevertsAtomically() public {
+        _underlying = new JBStickyPricingToken(18);
+        _projectId = _deploy({underlying: _underlying, tax: 0});
+        assertEq(_preview({holder: _newcomer, amount: 1e12 - 1}), 0);
+        _assertZeroIssuanceRevertsAtomically(1e12 - 1);
+        assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
     }
 
     function test_decimals0RoundTrip() public {
@@ -250,23 +274,27 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function test_roundingLossAboveOneBasisPointPreviewsZeroAndRevertsAtomically() public {
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
-        _stake({holder: _incumbent, amount: 1, minimum: 1});
-        _donate(1);
+        _stake({holder: _incumbent, amount: 1e12, minimum: 1e12});
+        _donate(1e12);
         // Three underlying atoms should buy 1.5 share atoms; accepting one would sacrifice a third of their value.
         assertEq(_preview({holder: _newcomer, amount: 3}), 0);
         _assertZeroIssuanceRevertsAtomically(3);
-        assertEq(_cashOut({holder: _incumbent, count: 1}), 2);
+        assertEq(_cashOut({holder: _incumbent, count: 1e12}), 2e12);
+    }
+
+    function test_eighteenDecimalsFirstMintBoundary() public {
+        _exerciseFirstMintBoundary(18);
     }
 
     function test_thirtySixDecimalsFirstMintBoundary() public {
         _exerciseFirstMintBoundary(36);
     }
 
-    function test_tinySupplyAndOneTokenDonationStillAllowsExactShareIssuance() public {
+    function test_tinySupplyAndOneTokenDonationStillPricesInexactDeposits() public {
         _exerciseTinySupplyDonation(1e18);
     }
 
-    function test_tinySupplyAndTwentyTokenDonationStillAllowsExactShareIssuance() public {
+    function test_tinySupplyAndTwentyTokenDonationStillPricesInexactDeposits() public {
         _exerciseTinySupplyDonation(20e18);
     }
 
@@ -274,18 +302,44 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         _exerciseFirstMintBoundary(24);
     }
 
-    function test_voluntaryBurnDownToOneAtomCannotDisableAllFutureStaking() public {
+    function test_soleHolderDonationCannotForceExactMultipleDeposits() public {
+        _underlying = new JBStickyPricingToken(18);
+        _projectId = _deploy({underlying: _underlying, tax: 0});
+        // The smallest allowed bootstrap plus a large donation is the coarsest atom price a sole holder can set.
+        assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
+        _donate(1000e18);
+        uint256 quote = _preview({holder: _newcomer, amount: 100e18 + 1});
+        assertGt(quote, 0);
+        // A one-wei donation front-run changes the price by less than the rounding tolerance.
+        _donate(1);
+        uint256 shares = _stake({holder: _newcomer, amount: 100e18 + 1, minimum: quote - 1});
+        assertGe(shares, quote - 1);
+        assertLe(_cashOut({holder: _newcomer, count: shares}), 100e18 + 1);
+    }
+
+    function test_voluntaryBurnCannotLeaveSupplyBelowFloor() public {
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         _stake({holder: _incumbent, amount: 1e18, minimum: 1e18});
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyHook.JBStickyHook_SupplyBelowMinimum.selector, _projectId, 1, 1e12)
+        );
         _burn({holder: _incumbent, count: 1e18 - 1});
+        _burn({holder: _incumbent, count: 1e18 - 1e12});
+        assertEq(_shares().totalSupply(), 1e12);
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyHook.JBStickyHook_SupplyBelowMinimum.selector, _projectId, 1e12 - 1, 1e12)
+        );
+        _burn({holder: _incumbent, count: 1});
         _donate(20e18);
-        assertEq(_shares().totalSupply(), 1);
-        assertEq(_preview({holder: _newcomer, amount: 21e18}), 1);
-        assertEq(_stake({holder: _newcomer, amount: 21e18, minimum: 1}), 1);
-        assertEq(_cashOut({holder: _newcomer, count: 1}), 21e18);
-        assertEq(_cashOut({holder: _incumbent, count: 1}), 21e18);
-        assertEq(_backing(), 0);
+        // Deposits that are not whole multiples of the atom price still issue shares.
+        uint256 quote = _preview({holder: _newcomer, amount: 21e18 + 3});
+        assertGt(quote, 0);
+        assertEq(_stake({holder: _newcomer, amount: 21e18 + 3, minimum: quote}), quote);
+        // Emptying the supply entirely remains allowed.
+        _cashOut({holder: _newcomer, count: quote});
+        _burn({holder: _incumbent, count: 1e12});
+        assertEq(_shares().totalSupply(), 0);
     }
 
     //*********************************************************************//
@@ -357,11 +411,20 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         _underlying = new JBStickyPricingToken(decimals);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         uint256 oneShareAtom = 10 ** (decimals - 18);
-        assertEq(_preview({holder: _newcomer, amount: oneShareAtom - 1}), 0);
-        _assertZeroIssuanceRevertsAtomically(oneShareAtom - 1);
-        uint256 shares = _stake({holder: _incumbent, amount: oneShareAtom, minimum: 1});
-        assertEq(shares, 1);
-        assertEq(_cashOut({holder: _incumbent, count: shares}), oneShareAtom);
+        // The bootstrap must reach the supply floor; one atom short previews zero and reverts atomically.
+        uint256 floorAmount = oneShareAtom * 1e12;
+        assertEq(_preview({holder: _newcomer, amount: floorAmount - 1}), 0);
+        _assertZeroIssuanceRevertsAtomically(floorAmount - 1);
+        assertEq(_stake({holder: _incumbent, amount: floorAmount, minimum: 1e12}), 1e12);
+        // Once bootstrapped, a single share atom is the smallest deposit at the one-to-one rate. A zero payment is
+        // not a rounding case, so only precisions above 18 have an amount just short of one atom.
+        if (oneShareAtom > 1) {
+            assertEq(_preview({holder: _newcomer, amount: oneShareAtom - 1}), 0);
+            _assertZeroIssuanceRevertsAtomically(oneShareAtom - 1);
+        }
+        assertEq(_stake({holder: _newcomer, amount: oneShareAtom, minimum: 1}), 1);
+        assertEq(_cashOut({holder: _newcomer, count: 1}), oneShareAtom);
+        assertEq(_cashOut({holder: _incumbent, count: 1e12}), floorAmount);
     }
 
     function _exercisePrecision(uint8 decimals) internal {
@@ -381,16 +444,18 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function _exerciseTinySupplyDonation(uint256 donation) internal {
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
-        assertEq(_stake({holder: _incumbent, amount: 1, minimum: 1}), 1);
+        assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
         _donate(donation);
-        uint256 backing = donation + 1;
+        uint256 backing = donation + 1e12;
 
-        // Rounding an exchange rate before multiplication previously made every payment return zero here.
-        // The exact backing denominator allows a complete share to be purchased without minting extra claims.
-        assertEq(_preview({holder: _newcomer, amount: backing}), 1);
-        assertEq(_stake({holder: _newcomer, amount: backing, minimum: 1}), 1);
-        assertEq(_cashOut({holder: _newcomer, count: 1}), backing);
-        assertEq(_cashOut({holder: _incumbent, count: 1}), backing);
+        // Rounding an exchange rate before multiplication previously made every payment return zero here. The exact
+        // backing denominator and the supply floor let a deposit that is not a whole multiple of the atom price buy
+        // shares without minting extra claims.
+        uint256 quote = _preview({holder: _newcomer, amount: backing + 7});
+        assertGt(quote, 0);
+        assertEq(_stake({holder: _newcomer, amount: backing + 7, minimum: quote}), quote);
+        assertLe(_cashOut({holder: _newcomer, count: quote}), backing + 7);
+        assertGe(_cashOut({holder: _incumbent, count: 1e12}), backing);
         assertEq(_backing(), 0);
         assertEq(_shares().totalSupply(), 0);
     }

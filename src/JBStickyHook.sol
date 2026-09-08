@@ -61,6 +61,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// project's granters.
     error JBStickyHook_SenderNotTrusted(address payer, address beneficiary);
 
+    /// @notice A burn cannot leave a positive share supply below the floor that keeps atom pricing fine-grained.
+    error JBStickyHook_SupplyBelowMinimum(uint256 projectId, uint256 remainingSupply, uint256 minimumSupply);
+
     /// @notice Thrown when an address other than the deployer attempts to set a project's granters.
     error JBStickyHook_Unauthorized(address caller, address deployer);
 
@@ -268,7 +271,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     }
 
     /// @notice Consume the newest tranches for every token burn, including burns that reclaim no backing.
-    /// @dev Only the project's registered sticky token can report burns. Zero burns leave accounting unchanged.
+    /// @dev Only the project's registered sticky token can report burns. Zero burns leave accounting unchanged. A
+    /// burn may empty the supply, but cannot leave it positive below the floor: a sole holder could otherwise burn
+    /// down to one atom, donate, and price every later deposit in whole atoms worth more than a newcomer can pay.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose tokens were burned.
     /// @param amount The number of tokens burned, as a fixed point number with 18 decimals.
@@ -277,6 +282,14 @@ contract JBStickyHook is ERC165, IJBStickyHook {
             revert JBStickyHook_CallerNotToken({caller: msg.sender, token: tokenOf[projectId]});
         }
         if (amount == 0) return;
+
+        // The token reports before it burns, so its supply still includes the amount leaving.
+        uint256 remainingSupply = IJBToken(msg.sender).totalSupply() - amount;
+        if (remainingSupply != 0 && remainingSupply < JBStickyPricing.MIN_SUPPLY) {
+            revert JBStickyHook_SupplyBelowMinimum({
+                projectId: projectId, remainingSupply: remainingSupply, minimumSupply: JBStickyPricing.MIN_SUPPLY
+            });
+        }
 
         uint256 stakedBalance = _consumeFrom({projectId: projectId, holder: holder, count: amount});
         emit Unstaked({

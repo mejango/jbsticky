@@ -168,7 +168,7 @@ re-running distribution with more gas.
 | `src/JBStickyHook.sol` | `netStakedIn` bucket updates in `_addTo`/`_consumeFrom`, `firstStakeEpochOf`, `netStakedInEpochs` view. |
 | `src/interfaces/IJBStickyDistributor.sol` | New. |
 | `src/interfaces/IJBStickyHook.sol` | Add the new view/storage getters. |
-| `script/Deploy*.s.sol` | Deploy `JBStickyDistributor` (7d rounds, 4 vesting rounds, 28d claim duration, matching the current sticky-tuned distributor params; 600s rounds in DeployLocal — note: bucket epochs stay 1 week even on local fork; local demos use warp). |
+| `script/Deploy*.s.sol` | Deploy `JBStickyDistributor` (7d rounds, 4 vesting rounds, 3-year claim duration, matching the shipped sticky-tuned `JBTokenDistributor` params; 600s rounds in DeployLocal — note: bucket epochs stay 1 week even on local fork; local demos use warp). |
 
 Distributor package (`@bananapus/distributor-v6`) is untouched. The deployed
 `JBTokenDistributor` keeps working for anything already wired to it.
