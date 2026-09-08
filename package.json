@@ -4,9 +4,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Bananapus/nana-sticky-v6.git"
+    "url": "git+https://github.com/mejango/jbsticky.git"
   },
   "files": [
+    "DEPLOYMENT.md",
     "deployments/",
     "foundry.toml",
     "remappings.txt",
@@ -19,8 +20,11 @@
   "scripts": {
     "test": "forge test",
     "coverage": "forge coverage --match-path \"./src/*.sol\" --report lcov --report summary",
-    "deploy:mainnets": "source ./.env && npx sphinx propose ./script/Deploy.s.sol --networks mainnets",
-    "deploy:testnets": "source ./.env && npx sphinx propose ./script/Deploy.s.sol --networks testnets"
+    "deploy:mainnets": "set -a; if [ -f ./.env ]; then . ./.env || exit; fi; set +a; FOUNDRY_PROFILE=deploy sphinx propose ./script/Deploy.s.sol --networks mainnets",
+    "deploy:testnets": "set -a; if [ -f ./.env ]; then . ./.env || exit; fi; set +a; FOUNDRY_PROFILE=deploy sphinx propose ./script/Deploy.s.sol --networks testnets",
+    "deploy:rehearse": "FOUNDRY_PROFILE=deploy forge script script/Rehearse.s.sol:Rehearse",
+    "deploy:verify": "FOUNDRY_PROFILE=deploy forge script script/Verify.s.sol:Verify",
+    "test:deployment": "forge test --match-path \"test/deployment/*.t.sol\" && node --test test/deployment/config.test.cjs"
   },
   "dependencies": {
     "@bananapus/721-hook-v6": "^1.0.0",

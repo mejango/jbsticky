@@ -20,7 +20,10 @@ const SEL = {
   cashOutTaxRateOf: "0x7aac1c6f",
   STORE: "0x507f1465",
   storeBalanceOf: "0x467f4cb9",
+  orphanedBalanceOf: "0x325fcad5",
   tranchesOf: "0x8cc1b370",
+  trancheCountOf: "0x56dbba3b",
+  tranchesRangeOf: "0xc964d0f3",
   stakedBalanceOf: "0x7bd208b2",
   streakStartOf: "0xac609038",
   longestStreakOf: "0x62a82139",
@@ -35,6 +38,7 @@ const SEL = {
   projectIdOf: "0x0f85421b",
   uriOf: "0xa312889b",
   pay: "0xfef43257",
+  previewPayFor: "0x0aff0c31",
   cashOutTokensOf: "0x13da8317",
   mint: "0x40c10f19",
   fund: "0xbe899c89",
@@ -709,9 +713,10 @@ async function activityItems(logs, includeProject) {
     let html;
     if (log.topics[0] === TOPIC.Staked) {
       const autoStuck = decAddress(log.data, 0).toLowerCase() === (autoStickAdapter() || "").toLowerCase();
-      html = `<span class="addr">${holder}</span> <span class="verb">${autoStuck ? "auto-stuck" : "locked"}</span> ${formatUnits(decUint(log.data, 1), 18)} ${esc(info.symbol)}`;
+      html = `<span class="addr">${holder}</span> <span class="verb">${autoStuck ? "auto-stuck" : "received"}</span> ${formatUnits(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
     } else if (log.topics[0] === TOPIC.Unstaked) {
-      html = `<span class="addr">${holder}</span> <span class="verb out">unlocked</span> ${formatUnits(decUint(log.data, 0), 18)} ${esc(info.symbol)}`;
+      // Burns and outgoing transfers reduce the position too; this event does not prove an underlying payout.
+      html = `<span class="addr">${holder}</span> <span class="verb out">removed</span> ${formatUnits(decUint(log.data, 0), 18)} ${esc(info.stSymbol)} from their position`;
     } else if (log.topics[0] === TOPIC.StreakStarted) {
       html = `<span class="addr">${holder}</span> <span class="verb">got sticky</span>`;
     } else {
@@ -752,7 +757,7 @@ async function airdropItems(logs) {
       `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}`
       + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>`
       + `<div><span class="link" onclick="location.hash='#/project/${id}'">${esc(stickyLabel(info))}</span></div>`
-      + `<div><span class="addr">${addressLabel(holder)}${self}</span> received ${amount} ${esc(info.symbol)}`
+      + `<div><span class="addr">${addressLabel(holder)}${self}</span> received ${amount} ${esc(info.stSymbol)}`
       + ` from <span class="addr">${addressLabel(payer)}</span></div></div></div></div>`,
     );
   }
@@ -986,12 +991,15 @@ function homeSecuredSeries(logs, cards, prices) {
         if (point.ts > ts) break;
         amount = point.value;
       }
-      value += amount * history.price / 10n ** 18n;
+      // Historical share quantities valued at today's backing per share and token price; this is an estimate,
+      // not a reconstruction of past donations, cash out fees, or market prices.
+      if (history.card.totalStaked > 0n) value += amount * history.card.pool.sigma * history.price
+        / history.card.totalStaked / 10n ** BigInt(history.card.info.decimals);
     }
     return { ts, value };
   });
   const total = valuedCards.reduce(
-    (sum, card) => sum + card.totalStaked * prices.get(card.id.toString()) / 10n ** 18n,
+    (sum, card) => sum + card.pool.sigma * prices.get(card.id.toString()) / 10n ** BigInt(card.info.decimals),
     0n,
   );
   points[points.length - 1] = { ts: now, value: total };
@@ -1014,7 +1022,7 @@ function mountHomeSecuredChart(series) {
   value.textContent = series.hasValue ? formatUsd(series.total) : "$—";
   value.title = series.missing.length
     ? `Could not price ${series.missing.map((card) => card.info.symbol).join(", ")}`
-    : "USD value of the tokens backing Sticky tokens";
+    : "Current claimable backing at today's token price. History estimates past shares at today's backing per share and price.";
   const date = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, {
     month: "short", day: "numeric", year: "numeric",
   });
@@ -1033,7 +1041,7 @@ function mountHomeSecuredChart(series) {
   const max = samples.reduce((highest, sample) => sample.value > highest ? sample.value : highest, 1n);
   const bars = samples.map((sample, i) => {
     const height = sample.value <= 0n ? 0 : Math.max(1, Number((sample.value * 10_000n) / max) / 100);
-    const label = `${date(sample.ts)}: ${formatUsd(sample.value)}`;
+    const label = `${date(sample.ts)}: ${formatUsd(sample.value)} (current backing and price estimate)`;
     return `<span class="home-secured-bar" data-index="${i}" style="height:${height.toFixed(2)}%" title="${esc(label)}"></span>`;
   }).join("");
 
@@ -1054,7 +1062,7 @@ function mountHomeSecuredChart(series) {
     barElements.forEach((bar, i) => bar.classList.toggle("active", i === active));
     container.classList.add("is-inspecting");
     dateValue.textContent = date(sample.ts);
-    hoverValue.textContent = formatUsd(sample.value);
+    hoverValue.textContent = `≈ ${formatUsd(sample.value)}`;
     hover.classList.remove("hide");
     plot.setAttribute("aria-label", `${date(sample.ts)}: ${formatUsd(sample.value)} secured by Sticky`);
   };
@@ -1177,7 +1185,7 @@ function chartSvg(logs, info, projectId) {
     <path d="${path(yStreaks, "streaks")}" fill="none" stroke="#2fb3c7" stroke-width="2"/>
     <text x="${PAD - 6}" y="${yStreaks(maxStreaks) + 4}" fill="#64808a" font-size="10" text-anchor="end">${maxStreaks}</text>
     <text x="${PAD - 6}" y="${H - 21}" fill="#64808a" font-size="10" text-anchor="end">0</text>
-    <text x="${W - 10}" y="16" fill="#1c2d33" font-size="10" text-anchor="end">max ${formatUnits(maxStaked, 18, 0)} ${esc(info.symbol)}</text>
+    <text x="${W - 10}" y="16" fill="#1c2d33" font-size="10" text-anchor="end">max ${formatUnits(maxStaked, 18, 0)} ${esc(info.stSymbol)}</text>
     <text x="${PAD}" y="${H - 8}" fill="#64808a" font-size="10">${date(t0)}</text>
     <text x="${W - 10}" y="${H - 8}" fill="#64808a" font-size="10" text-anchor="end">now</text>
     <g id="chart-hover" style="display:none;pointer-events:none">
@@ -1228,7 +1236,7 @@ function chartSvg(logs, info, projectId) {
         card.setAttribute("transform", `translate(${cardX} 25)`);
         dateLabel.textContent = date(ts);
         streaksLabel.textContent = `${point.streaks} active stick${point.streaks === 1 ? "" : "s"}`;
-        lockedLabel.textContent = `${formatUnits(point.staked, 18, 2)} ${info.symbol} stuck`;
+        lockedLabel.textContent = `${formatUnits(point.staked, 18, 2)} ${info.stSymbol}`;
         chart.setAttribute("aria-label", `${date(ts)}: ${streaksLabel.textContent}; ${lockedLabel.textContent}`);
         hover.style.display = "";
       };
@@ -1272,7 +1280,7 @@ function pieSvg(active, symbol, tokenSupply) {
       <text class="owner-pie-wallet" x="70" y="60"></text>
       <text class="owner-pie-balance" x="70" y="77"></text>
       <text class="owner-pie-percent" x="70" y="94"></text>
-    </g></svg><div class="owner-pie-total"><b>${formatUnits(total, 18)}</b> Sticky ${esc(symbol)}
+    </g></svg><div class="owner-pie-total"><b>${formatUnits(total, 18)}</b> ${esc(symbol)}
       <span class="owner-pie-separator" aria-hidden="true">|</span> <b>${totalPercent.toFixed(2)}%</b> of all ${esc(symbol)}</div>
     <span class="sr-only owner-pie-live" aria-live="polite"></span></div>`;
 
@@ -1337,9 +1345,8 @@ async function renderHome() {
         try {
           const info = await projectInfo(id);
           const projectLogs = logs.filter((log) => decUint(log.topics[1]) === id);
-          const rows = await holderRows(id, projectLogs);
-          const totalStaked = await view(info.stToken, SEL.totalSupply).then(decUint);
-          return { id, info, totalStaked, sticks: rows.filter((r) => r.staked > 0n).length };
+          const [rows, pool] = await Promise.all([holderRows(id, projectLogs), poolBacking(id, info)]);
+          return { id, info, pool, totalStaked: pool.supply, sticks: rows.filter((r) => r.staked > 0n).length };
         } catch {
           return null;
         }
@@ -1355,7 +1362,7 @@ async function renderHome() {
         `<div class="card-item${card.demo ? "" : " pickc"}"${card.demo ? "" : ` onclick="location.hash='#/project/${card.id}'"`}><div class="card-head">` +
         `<span class="rank">${i + 1}</span>${tokenLogo(card.info.stakedToken, card.info.symbol, 26)}` +
         `<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(stickyLabel(card.info))} <span class="mut">#${card.id}</span></div>` +
-        `<div class="kv"><span class="mut">Stuck:</span> ${formatUnits(card.totalStaked, 18)} ${esc(card.info.symbol)}</div>` +
+        `<div class="kv"><span class="mut">Backing:</span> ${formatUnits(card.pool?.sigma ?? card.totalStaked, card.info.decimals ?? 18)} ${esc(card.info.symbol)}</div>` +
         `<div class="kv"><span class="mut">Sticks:</span> ${card.sticks}</div>` +
         `<div class="kv"><span class="mut">Bonus:</span> ${pct(card.info.reward)}</div>` +
         `</div></div></div>`,
@@ -1387,21 +1394,20 @@ async function renderProject(projectId) {
   $("h-symbol").textContent = stickyLabel(info);
   $("h-name").textContent = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.name;
   hydrateProjectName(projectId, info).catch(() => {});
-  $("tranches-amount-head").textContent = `AMOUNT (${info.symbol})`;
+  $("tranches-amount-head").textContent = `AMOUNT (${info.stSymbol})`;
   $("stake-title").textContent = `Stick ${info.symbol}`;
   $("stake-symbol").textContent = info.symbol;
-  $("unstake-symbol").textContent = info.symbol;
+  $("unstake-symbol").textContent = info.stSymbol;
   $("unstake-hint").textContent = info.reward > 0n
     ? `cash out tax: ${pct(info.reward)} | reclaim depends on your share of the pool | newest tranche first | streak resets only at zero`
-    : `unwind your share of the backing fee-free | newest tranche first | streak resets only at zero`;
+    : `no cash out tax | review the exact reclaim and any fees | newest tranche first | streak resets only at zero`;
 
   const logs = await hookLogs(projectId);
-  const [totalStaked, tokenSupply, rows, pool] = await Promise.all([
-    view(info.stToken, SEL.totalSupply).then(decUint),
-    view(info.stakedToken, SEL.totalSupply).then(decUint),
+  const [rows, pool] = await Promise.all([
     holderRows(projectId, logs),
     poolBacking(projectId, info),
   ]);
+  const totalStaked = pool.supply;
   ctx.pool = pool;
   renderUnstickQuote();
   renderStickQuote();
@@ -1419,7 +1425,7 @@ async function renderProject(projectId) {
     });
   }
   const active = rows.filter((row) => row.staked > 0n).sort((a, b) => (b.staked > a.staked ? 1 : -1));
-  $("h-staked").textContent = `${formatUnits(totalStaked, 18)} ${info.symbol}`;
+  $("h-staked").textContent = `${formatUnits(totalStaked, 18)} ${info.stSymbol}`;
   $("h-streakers").textContent = active.length;
   const averageActive = active.length
     ? Math.floor(active.reduce((total, row) => total + row.current, 0) / active.length)
@@ -1442,11 +1448,11 @@ async function renderProject(projectId) {
   } catch {}
   const transferMode = info.soulbound ? "No" : "Yes";
   const transferRule = info.soulbound
-    ? "Transfers are disabled. Sticky tokens are minted by sticking and burned by unsticking."
+    ? "Transfers are disabled. Sticky tokens are minted by sticking. Unsticking burns them; a voluntary burn returns no backing."
     : "Transfers move the sender's newest tranches first. The recipient receives a fresh tranche; existing streaks keep running unless the sender transfers everything.";
   const bonusRule = info.reward > 0n
     ? `Cash out tax is ${pct(info.reward)}. The reclaim depends on pool backing and the portion of total supply unstuck.`
-    : "Unsticking returns your proportional share of the backing without a cash out fee.";
+    : "Unsticking returns your proportional share of the backing with no cash out tax. Any applicable terminal fees are included in the final quote.";
   // The auto-stick adapter is presented as its own pre-approval, not as a generic airdrop sender.
   const adapterGranter = granters.some((g) => g.toLowerCase() === (autoStickAdapter() || "").toLowerCase());
   const humanGranters = granters.filter((g) => g.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
@@ -1467,15 +1473,16 @@ async function renderProject(projectId) {
       + `</div>`
     + `<div class="token-meta-row">`
       + meta("Sticks", `${esc(info.name)} (${copySymbol(info.symbol, info.stakedToken)})`)
-      + meta("Total stuck", `${formatUnits(totalStaked, 18)} ${copySymbol(info.symbol, info.stakedToken)}`)
+      + meta("Sticky supply", `${formatUnits(totalStaked, 18)} ${copySymbol(info.stSymbol, info.stToken)}`)
+      + meta("Pool backing", `${formatUnits(pool.sigma, info.decimals)} ${copySymbol(info.symbol, info.stakedToken)}`)
+      + (pool.orphaned > 0n ? meta("Unowned backing", `${formatUnits(pool.orphaned, info.decimals)} ${esc(info.symbol)}`,
+        "Funds left when no Sticky shares existed are excluded from issuance and redemption; a new depositor cannot claim them.") : "")
       + meta("Stickiness bonus", pct(info.reward), bonusRule)
       + (pool.supply > 0n
         ? meta(
             "Backing",
             `1 ${esc(info.stSymbol)} ≈ ${formatUnits((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${esc(info.symbol)}`,
-            info.reward > 0n
-              ? "Unsticks can add backing for remaining holders. New sticks mint one for one and can dilute accumulated bonuses."
-              : "Sticks mint one for one. Donations can increase the backing available when unsticking.",
+            "New sticks are priced against current backing. Donations, burns, and cash out taxes can change the number of Sticky tokens issued per underlying token.",
           )
         : "")
       + meta("Transferable", transferMode, transferRule)
@@ -1496,9 +1503,9 @@ async function renderProject(projectId) {
     });
   }
 
-  const pie = pieSvg(active, info.symbol, tokenSupply);
+  const pie = pieSvg(active, info.stSymbol, totalStaked);
   $("pie").innerHTML = pie.svg;
-  ctx.board = { rows: active, symbol: info.symbol, total: totalStaked };
+  ctx.board = { rows: active, symbol: info.stSymbol, total: totalStaked };
   renderBoard();
   pie.bind?.($("pie"));
 
@@ -1508,21 +1515,30 @@ async function renderProject(projectId) {
   hydrateLogos().catch(() => {});
 }
 
+let positionSequence = 0;
 async function refreshPosition() {
+  const request = ++positionSequence;
   if (ctx.currentId === null || !account()) return;
-  const info = await projectInfo(ctx.currentId);
-  const args = word(ctx.currentId) + encAddress(account());
-  const [staked, streakStart, longest, wallet, tranches] = await Promise.all([
-    view(info.stToken, SEL.balanceOf, encAddress(account())).then(decUint),
+  const projectId = ctx.currentId, holder = account(), chainId = ctx.chainId;
+  const info = await projectInfo(projectId);
+  if (request !== positionSequence || ctx.currentId !== projectId || ctx.chainId !== chainId || account() !== holder) return;
+  const pageKey = `${chainId}:${projectId}:${holder.toLowerCase()}`;
+  if (ctx.tranchePageKey !== pageKey) { ctx.tranchePageKey = pageKey; ctx.tranchePage = 0n; }
+  const args = word(projectId) + encAddress(holder);
+  const [staked, streakStart, longest, wallet, tranchePage] = await Promise.all([
+    view(info.stToken, SEL.balanceOf, encAddress(holder)).then(decUint),
     view(ctx.hook, SEL.streakStartOf, args).then(decUint),
     view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
-    view(info.stakedToken, SEL.balanceOf, encAddress(account())).then(decUint),
-    view(ctx.hook, SEL.tranchesOf, args).then(decTranches),
+    view(info.stakedToken, SEL.balanceOf, encAddress(holder)).then(decUint),
+    readTranchePage(projectId, holder, ctx.tranchePage),
   ]);
+  if (request !== positionSequence || ctx.currentId !== projectId || ctx.chainId !== chainId || account() !== holder) return;
+  const { tranches, total, page, start } = tranchePage;
+  ctx.tranchePage = page;
   // Compute the active streak against the wall clock so it ticks between blocks (the on-chain view
   // only moves with block.timestamp).
   const current = streakStart === 0n ? 0n : BigInt(Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart)));
-  $("p-balance").textContent = `${formatUnits(staked, 18)} ${info.symbol}`;
+  $("p-balance").textContent = `${formatUnits(staked, 18)} ${info.stSymbol}`;
   $("p-current").textContent = formatDuration(current);
   $("p-longest").textContent = formatDuration(longest > current ? longest : current);
   $("p-wallet").textContent = `${formatUnits(wallet, info.decimals)} ${info.symbol}`;
@@ -1546,6 +1562,29 @@ async function refreshPosition() {
       `<td>${formatDuration(Math.max(0, now - tranche.timestamp))}</td>`;
     tbody.appendChild(row);
   });
+  $("tranches-page").textContent = total === 0n ? "No active tranches" : `Tranches ${start + 1n}–${start + BigInt(tranches.length)} of ${total}`;
+  $("tranches-newer").disabled = page === 0n;
+  $("tranches-older").disabled = start === 0n;
+  $("tranches-pagination").classList.toggle("hide", total <= 50n);
+}
+
+// Never fetch an unbounded holder array: incoming dust must not prevent the account page or exit controls loading.
+// Pin count and slice to one block so a concurrent burn cannot shift the range between these reads.
+async function readTranchePage(projectId, holder, requestedPage = 0n) {
+  const hook = ctx.hook;
+  const block = await rpc("eth_blockNumber", []);
+  if (!/^0x[0-9a-fA-F]+$/.test(block || "")) throw new Error("The RPC returned an invalid tranche block.");
+  const args = word(projectId) + encAddress(holder);
+  const read = (selector, tail = "") => rpc("eth_call", [{ to: hook, data: selector + args + tail }, block]);
+  const total = decUint(await read(SEL.trancheCountOf));
+  if (total === 0n) return { tranches: [], total, page: 0n, start: 0n };
+  const lastPage = (total - 1n) / 50n;
+  const page = requestedPage < 0n ? 0n : requestedPage > lastPage ? lastPage : requestedPage;
+  const end = total - page * 50n;
+  const start = end > 50n ? end - 50n : 0n;
+  const tranches = decTranches(await read(SEL.tranchesRangeOf, word(start) + word(end - start)));
+  if (BigInt(tranches.length) !== end - start) throw new Error("The RPC returned an incomplete tranche page.");
+  return { tranches, total, page, start };
 }
 
 // ---------------------------------------------------------- confirm dialog
@@ -2506,7 +2545,7 @@ async function renderRewards() {
     // payer (creator pre-approval or personal trust); every other reward token keeps normal claiming.
     let action = `<button class="ghost" style="margin:0;padding:4px 10px" onclick="claimRewardFor('${tokenAddr}')">Claim</button>`;
     const as = ctx.autoStick;
-    const canStick = as && info.decimals <= 18 && (as.projectGranter || as.personallyTrusted);
+    const canStick = as && (as.projectGranter || as.personallyTrusted);
     if (tokenAddr === info.stakedToken.toLowerCase() && canStick && collectable > 0n) {
       action = `<button style="margin:0;padding:4px 10px" onclick="claimAndStickNow()">Claim &amp; stick</button>`
         + `<div style="margin-top:2px"><span class="link" style="font-size:12px" onclick="claimRewardFor('${tokenAddr}')">Claim only</span></div>`;
@@ -2588,7 +2627,7 @@ window.claimRewardFor = (tokenAddr) => guard(() => claimReward(tokenAddr))({ cur
 // immutable JBStickyAutoStick adapter. Permission truth always comes from chain reads, never from events.
 const AS_STATUS = {
   READY: 0, DISABLED: 1, INVALID_PROJECT: 2, COOLDOWN: 3, BELOW_MINIMUM: 4, NOT_TRUSTED: 5,
-  INSUFFICIENT_ALLOWANCE: 6,
+  INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7,
 };
 const UNLIMITED = (1n << 256n) - 1n;
 
@@ -2650,9 +2689,6 @@ async function autoStickState() {
 
 function asStatusLine(state) {
   const { info } = state;
-  if (state.enabled && stickMintOf(info, state.minimum) === 0n) {
-    return "Update the minimum in settings before auto-sticking these rewards";
-  }
   const now = Math.floor(Date.now() / 1000);
   switch (state.status) {
     case AS_STATUS.READY:
@@ -2666,6 +2702,8 @@ function asStatusLine(state) {
       return "Permission removed | repair setup";
     case AS_STATUS.INSUFFICIENT_ALLOWANCE:
       return "Allowance exhausted | renew";
+    case AS_STATUS.ZERO_ISSUANCE:
+      return "Wait for more rewards: the current amount is too small to mint a Sticky token unit";
     default:
       return "";
   }
@@ -2692,6 +2730,7 @@ async function renderAutoStick() {
     `Allow anyone to collect your unlocked ${info.symbol} rewards into your ${stickyLabel(info)} position under your settings. `
     + `Each auto-stick creates a new stick starting at that time.`
     + " Execution needs a keeper transaction; you can also use Stick now when rewards are ready."
+    + " Someone can collect to your wallet first; those rewards remain yours and can be stuck manually."
     + (schedule ? ` ${schedule}` : "");
   $("as-toggle").textContent = state.enabled ? "Turn off auto-stick" : "Turn on auto-stick";
 
@@ -2768,9 +2807,6 @@ function asConfigTx(info, enabled, minimum, cooldown) {
     throw new Error("the auto-stick minimum must fit in uint128 and be greater than zero");
   }
   if (cooldown < 86400n || cooldown > 2592000n) throw new Error("auto-stick cooldown must be between 1 and 30 days");
-  if (enabled && stickMintOf(info, minimum) === 0n) {
-    throw new Error("the auto-stick minimum is too small to mint a sticky token unit");
-  }
   return {
     label: enabled
       ? `Auto-stick unlocked ${info.symbol} rewards when at least ${formatUnits(minimum, info.decimals, info.decimals)} `
@@ -2901,8 +2937,7 @@ async function autoStickNow() {
   if (!state) return;
   if (state.status !== AS_STATUS.READY) throw new Error("auto-stick is not ready; refresh its settings and reward balance");
   const { info } = state;
-  if (stickMintOf(info, state.minimum) === 0n) throw new Error("update the auto-stick minimum so each compound can mint a sticky token unit");
-  if (stickMintOf(info, state.collectable) === 0n) throw new Error("these rewards are too small to mint a sticky token unit");
+  const expectedMint = await previewStickMint(ctx.currentId, info, state.collectable, holder, autoStickAdapter());
   const txs = [{
     label: "Stick ready rewards now",
     to: autoStickAdapter(),
@@ -2911,6 +2946,8 @@ async function autoStickNow() {
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
       ["HOLDER", holder],
       ["READY", `${formatUnits(state.collectable, info.decimals)} ${info.symbol}`],
+      ["ESTIMATED STICKY TOKENS", `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
+      ["ISSUANCE", "uses the current backing price when executed; a zero-token mint reverts"],
       ["EFFECT", `collects your unlocked ${info.symbol} rewards and sticks them for you in a new tranche`],
     ],
     data: SEL.asCompoundFor + word(ctx.currentId) + encAddress(holder),
@@ -2955,17 +2992,17 @@ async function claimAndStick() {
   ctx.autoStick = state;
   if (!state) return;
   const { info } = state;
-  // This adapter's one-step method has no caller-specified minimum. For higher-decimal tokens, another claim
-  // and a newly unlocked dust reward could change the amount after review and still mint zero. Separate claims
-  // remain available, and normal staking protects its exact nonzero mint on chain.
-  if (info.decimals > 18) throw new Error("claim these rewards first, then stick them; one-step claim-and-stick is unavailable for tokens with more than 18 decimals");
   const collectable = decUint(await view(
     distributor(),
     SEL.collectableFor,
     encAddress(info.stToken) + encAddress(holder) + encAddress(info.stakedToken),
   ));
   if (collectable === 0n) throw new Error("nothing claimable yet — rewards unlock after the round ends");
-  if (stickMintOf(info, collectable) === 0n) throw new Error("these rewards are too small to mint a sticky token unit");
+  // A pending trust step cannot be assumed by a read-only preview. The adapter itself quotes after setup and
+  // rejects zero issuance atomically; show a numeric estimate only when the actual payer can preview now.
+  const expectedMint = state.projectGranter || state.personallyTrusted
+    ? await previewStickMint(ctx.currentId, info, collectable, holder, autoStickAdapter())
+    : null;
   const pretty = `${formatUnits(collectable, info.decimals, info.decimals)} ${info.symbol}`;
   const txs = await tokenApprovalTxs(info.stakedToken, autoStickAdapter(), collectable, info, {
     ...asApproveTx(info, collectable), label: `Allow the auto-stick contract to move this claim of ${pretty}`,
@@ -2978,11 +3015,16 @@ async function claimAndStick() {
     args: [
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
       ["CLAIM", pretty],
+      ["ISSUANCE", "uses the current backing price when executed; a zero-token mint reverts"],
       ["EFFECT", `your unlocked ${info.symbol} rewards stick for you in a new tranche, in the same transaction`],
     ],
     data: SEL.asStickRewardsFor + word(ctx.currentId),
   });
-  if (!(await reviewAction(action, `Claim & stick ${pretty}`, txs, [["Claim", pretty], ["It becomes", `${formatUnits(collectable, info.decimals)} ${info.stSymbol}, sticking now`]]))) return;
+  if (!(await reviewAction(action, `Claim & stick ${pretty}`, txs, [
+    ["Claim", pretty],
+    ["Estimated Sticky tokens", expectedMint === null ? "quoted on chain after your trust step" : `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
+    ["Rate", "current backing price at execution; the amount can change before confirmation"],
+  ]))) return;
   txStatus("Rewards claimed and stuck", "ok");
   await renderProject(ctx.currentId);
 }
@@ -3079,8 +3121,7 @@ async function stake() {
       throw new Error("this holder must trust your address before you can stick for them");
     }
   }
-  const expectedMint = stickMintOf(info, amount);
-  if (expectedMint === 0n) throw new Error("this amount is too small to mint a sticky token unit");
+  const expectedMint = await previewStickMint(ctx.currentId, info, amount, beneficiary, holder);
   const txs = await tokenApprovalTxs(info.stakedToken, ctx.terminal, amount, info);
   txs.push({
     label: "Stick",
@@ -3101,7 +3142,7 @@ async function stake() {
   });
   const receipt = `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`;
   if (!(await reviewAction(action, `Stick — ${pretty}`, txs, [
-    ["Stick", pretty], ["Beneficiary", beneficiary], ["Sticky tokens", receipt],
+    ["Stick", pretty], ["Beneficiary", beneficiary], ["Minimum Sticky tokens", receipt],
   ]))) return;
   txStatus("Stick confirmed", "ok");
   await renderProject(ctx.currentId);
@@ -3120,25 +3161,40 @@ function curveReclaim(pool, count) {
 }
 const afterFee = (gross, reward) => (reward > 0n ? gross - (gross * PROTOCOL_FEE) / 1000n : gross);
 async function poolBacking(projectId, info) {
+  const block = await rpc("eth_blockNumber", []);
+  if (!/^0x[0-9a-fA-F]+$/.test(block || "")) throw new Error("The RPC returned an invalid backing block.");
+  const read = (to, selector, args = "") => rpc("eth_call", [{ to, data: selector + args }, block]).then(decUint);
   const args = encAddress(ctx.terminal) + word(projectId) + encAddress(info.stakedToken);
-  const [sigma, supply] = await Promise.all([
-    view(ctx.store, SEL.storeBalanceOf, args).then(decUint),
-    view(info.stToken, SEL.totalSupply).then(decUint),
+  const [rawBacking, supply, savedOrphaned] = await Promise.all([
+    read(ctx.store, SEL.storeBalanceOf, args),
+    read(info.stToken, SEL.totalSupply),
+    read(ctx.hook, SEL.orphanedBalanceOf, word(projectId)),
   ]);
+  if (savedOrphaned > rawBacking) throw new Error("The Sticky pool returned inconsistent backing accounting.");
+  const orphaned = supply === 0n ? rawBacking : savedOrphaned;
+  const sigma = rawBacking - orphaned;
   return {
-    sigma, supply, reward: info.reward, decimals: info.decimals, symbol: info.symbol, stSymbol: info.stSymbol,
+    sigma, supply, rawBacking, orphaned, reward: info.reward, decimals: info.decimals, symbol: info.symbol, stSymbol: info.stSymbol,
   };
 }
 
-// The immutable ruleset and Sticky hook preserve weight 1e18: stakes always mint one for one,
-// normalized to 18 decimals, even when donations or earlier cash outs changed the pool's backing.
-function stickMintOf(pool, amount) {
-  return pool.decimals <= 18
-    ? amount * 10n ** BigInt(18 - pool.decimals)
-    : amount / 10n ** BigInt(pool.decimals - 18);
+// Read the same core preview used by the adapter, including hook pricing, decimal rounding, and payer trust.
+// JBRuleset has nine static ABI words; the beneficiary count follows it. Sticky reserves no tokens.
+async function previewStickMint(projectId, info, amount, beneficiary, payer = beneficiary) {
+  const result = await actionCall(ctx.terminal, SEL.previewPayFor + encode(
+    ["uint256", "address", "uint256", "address", "bytes"],
+    [projectId, info.stakedToken, amount, beneficiary, "0x"],
+  ), payer);
+  if (!/^0x(?:[0-9a-fA-F]{64}){13,}$/.test(result) || decUint(result, 11) !== 384n
+    || decUint(result, 10) !== 0n) throw new Error("the terminal did not return a valid Sticky mint quote");
+  const count = decUint(result, 9);
+  if (count === 0n) throw new Error("this amount is too small or cannot be priced precisely enough at the current backing price");
+  return count;
 }
 
-function renderStickQuote() {
+let stickQuoteSequence = 0;
+async function renderStickQuote() {
+  const sequence = ++stickQuoteSequence;
   const el = $("stake-quote");
   const pool = ctx.pool;
   if (!el) return;
@@ -3148,12 +3204,24 @@ function renderStickQuote() {
   let amount = 0n;
   try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
   if (amount <= 0n) return;
-  const mint = stickMintOf(pool, amount);
-  const afterStake = { ...pool, sigma: pool.sigma + amount, supply: pool.supply + mint };
-  const back = afterFee(curveReclaim(afterStake, mint), pool.reward);
-  el.textContent = pool.reward === MAX_TAX
-    ? "100% stickiness bonus: unsticking returns no underlying tokens."
-    : `Mint ${formatUnits(mint, 18)} ${pool.stSymbol}. Immediate unstick estimate: ${formatUnits(back, pool.decimals)} ${pool.symbol}; the exact amount is reviewed before unsticking.`;
+  const projectId = ctx.currentId, chainId = ctx.chainId;
+  const displayedAccount = account();
+  const input = field.value;
+  const payer = /^0x[0-9a-fA-F]{40}$/.test(displayedAccount || "") ? displayedAccount : "0x0000000000000000000000000000000000000000";
+  const beneficiary = $("stake-beneficiary")?.value || payer;
+  el.textContent = "Checking the current backing price…";
+  const current = () => sequence === stickQuoteSequence && ctx.currentId === projectId && ctx.chainId === chainId
+    && account() === displayedAccount && field.value === input && ($("stake-beneficiary")?.value || payer) === beneficiary;
+  try {
+    const info = await projectInfo(projectId);
+    if (!current()) return;
+    const mint = await previewStickMint(projectId, info, amount, beneficiary, payer);
+    if (!current()) return;
+    el.textContent = `Estimated mint: ${formatUnits(mint, 18)} ${pool.stSymbol}. The final review sets your minimum.`
+      + (pool.reward === MAX_TAX ? " 100% stickiness bonus: unsticking returns no underlying tokens." : "");
+  } catch (error) {
+    if (current()) el.textContent = `Quote unavailable: ${error.message}`;
+  }
 }
 
 function renderUnstickQuote() {
@@ -3176,12 +3244,11 @@ function renderUnstickQuote() {
   if (count >= pool.supply) {
     el.textContent = pool.reward > 0n
       ? `full exit — the last one out takes the whole pool: ≈ ${amt(net)} after the 2.5% protocol fee`
-      : `full exit — the last one out takes the whole pool: ${amt(gross)}`;
+      : `full exit estimate before any applicable fees: ${amt(gross)}; review the exact reclaim before confirming`;
     return;
   }
   if (pool.reward === 0n) {
-    const par = pool.sigma * 10n ** 18n === pool.supply * 10n ** BigInt(pool.decimals);
-    el.textContent = `you get ${amt(gross)}${par ? " — one for one" : " — your share of the backing"}`;
+    el.textContent = `Your share before any applicable fees: ≈ ${amt(gross)}. Review the exact reclaim before confirming.`;
     return;
   }
   const bonus = (pool.sigma * count) / pool.supply - gross;
@@ -3192,7 +3259,7 @@ async function unstake() {
   const action = beginAction();
   const { holder } = action;
   const info = await projectInfo(ctx.currentId);
-  // Wallet balances are authoritative if a direct controller burn left the hook's tranche book overstated.
+  // Use the token balance as the authoritative cap, including voluntary burns and incoming transfers.
   const count = positiveAmount($("unstake-amount").value, 18);
   const balance = decUint(await view(info.stToken, SEL.balanceOf, encAddress(holder)));
   if (count > balance) throw new Error("the unstick amount exceeds your sticky token balance");
@@ -3884,7 +3951,7 @@ async function renderAccount(address) {
         `<div class="card-item pickc" onclick="location.hash='#/project/${id}'"><div class="card-head">` +
         `${tokenLogo(info.stakedToken, info.symbol, 26)}<div style="flex:1;min-width:0">` +
         `<div style="font-weight:700">${esc(stickyLabel(info))} <span class="mut">#${id}</span></div>` +
-        `<div class="kv"><span class="mut">Stuck:</span> ${formatUnits(staked, 18)} ${esc(info.symbol)}</div>` +
+        `<div class="kv"><span class="mut">Stuck:</span> ${formatUnits(staked, 18)} ${esc(info.stSymbol)}</div>` +
         `<div class="kv"><span class="mut">Time:</span> ${formatDuration(current)}</div>` +
         `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), current))}</div>` +
         `</div></div></div>`,
@@ -4007,6 +4074,15 @@ $("stake-balance").onkeydown = (event) => {
 $("unstake-max").onclick = () => { if (ctx.stakedMax) { $("unstake-amount").value = ctx.stakedMax; renderUnstickQuote(); } };
 $("unstake-amount").oninput = renderUnstickQuote;
 $("stake-amount").oninput = renderStickQuote;
+$("stake-beneficiary").oninput = renderStickQuote;
+$("tranches-newer").onclick = guard(async () => {
+  ctx.tranchePage = ctx.tranchePage > 0n ? ctx.tranchePage - 1n : 0n;
+  await refreshPosition();
+});
+$("tranches-older").onclick = guard(async () => {
+  ctx.tranchePage = (ctx.tranchePage || 0n) + 1n;
+  await refreshPosition();
+});
 $("deploy").onclick = guard(deployStreaks);
 // Cash out curve: y = x((1-r) + rx) — proportional at r=0, bonding-curved as the reward grows.
 let rewardChoice = "10";
@@ -4426,6 +4502,7 @@ function demoRpc(method, params) {
       + list.map((t) => word(t.amount) + word(t.ts)).join(""),
   };
   if (method === "eth_chainId") return Promise.resolve("0x" + D.chainId.toString(16));
+  if (method === "eth_blockNumber") return Promise.resolve("0x1");
   if (method === "eth_getCode") return Promise.resolve("0x60006000");
   if (method === "eth_getBlockByNumber") return Promise.resolve({ timestamp: "0x" + (D.blockTs[params[0]] || D.now).toString(16) });
   if (method === "eth_getLogs") {
@@ -4461,6 +4538,12 @@ function demoRpc(method, params) {
       if (sel === SEL.uriOf) return Promise.resolve(enc.str(""));
     }
     if (to === D.terminal.toLowerCase() && sel === SEL.STORE) return Promise.resolve(enc.addr(D.store));
+    if (to === D.terminal.toLowerCase() && sel === SEL.previewPayFor) {
+      const p = D.projects[idAt(0)];
+      const amount = decUint(arg(2));
+      const mint = p?.supply > 0n ? amount * p.supply / p.sigma : amount;
+      return Promise.resolve("0x" + Array(9).fill(word(0)).join("") + word(mint) + word(0) + word(384) + word(0));
+    }
     if (to === D.store.toLowerCase() && sel === SEL.storeBalanceOf) {
       // storeBalanceOf(terminal, projectId, token) — projectId is the 2nd arg.
       return Promise.resolve(enc.uint(D.projects[idAt(1)]?.sigma ?? 0n));
@@ -4471,12 +4554,15 @@ function demoRpc(method, params) {
     }
     if (to === D.hook.toLowerCase()) {
       const p = D.projects[idAt(0)];
+      if (sel === SEL.orphanedBalanceOf) return Promise.resolve(enc.uint(0));
       const who = decAddress(arg(1)).toLowerCase();
       const holder = p?.holders.find((h) => h.addr.toLowerCase() === who);
       if (sel === SEL.stakedBalanceOf) return Promise.resolve(enc.uint(holder?.staked ?? 0n));
       if (sel === SEL.streakStartOf) return Promise.resolve(enc.uint(holder?.start ?? 0));
       if (sel === SEL.longestStreakOf) return Promise.resolve(enc.uint(holder?.longest ?? 0));
       if (sel === SEL.tranchesOf) return Promise.resolve(enc.tranches(p?.tranches[who] || []));
+      if (sel === SEL.trancheCountOf) return Promise.resolve(enc.uint(p?.tranches[who]?.length || 0));
+      if (sel === SEL.tranchesRangeOf) return Promise.resolve(enc.tranches((p?.tranches[who] || []).slice(idAt(2), idAt(2) + idAt(3))));
       if (sel === SEL.isGranterOf) return Promise.resolve(enc.bool(false));
       if (sel === SEL.isTrustedSenderOf) return Promise.resolve(enc.bool(false));
     }

@@ -1,5 +1,11 @@
 # The Stickiness Ratchet — NAV entry + the stock exit curve (pure PvP)
 
+> Historical design record. Implementation details below are superseded by the
+> [current contract guide](../../README.md): issuance now uses an exact per-project
+> accounting feed, funds present without shares are permanently excluded, and zero
+> cash out tax does not guarantee freedom from terminal fees. This document is not
+> evidence of a deployed release or the current rounding/orphan policy.
+
 Status: design chosen by jango 2026-08-12 ("remove the time aspect and simply
 make it pvp"; stock curve kept — "exit-aggregators being ok"), pending final
 spec review.

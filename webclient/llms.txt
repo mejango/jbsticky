@@ -1,9 +1,10 @@
 # Sticky
 
-> Sticky turns a Juicebox project token into a streak. Stick tokens to start a clock;
-> unstick and the clock resets to zero and a configured share of what you withdraw stays
-> behind, backing everyone still stuck. There is no lockup and no admin: the terms are
-> fixed by the hook the project deployed.
+> Sticky issues shares of a Juicebox project's token backing and tracks how long a
+> holder keeps a positive share balance. Deposits are priced against current backing;
+> cash outs follow the project's permanent tax setting and applicable terminal fees.
+> The holder's clock resets only when their share balance reaches zero. There is no
+> time lock; a 100% cash out tax returns no underlying tokens, even on a full exit.
 
 ## How to read this site as an agent
 
@@ -23,10 +24,25 @@ comes from direct JSON-RPC reads the browser makes against the project's chain.
 
 ## Vocabulary
 
-- **Stick / unstick** — deposit or withdraw the project token. Unsticking is newest tranche first.
+- **Stick / unstick** — deposit underlying tokens for Sticky shares, or burn shares to redeem backing.
+  Unsticking consumes newest tranches first; a partial tranche keeps its timestamp.
+- **Sticky shares** — 18-decimal balances, distinct from underlying-token amounts. Existing-supply
+  issuance uses floor(deposit × share supply / share-owned backing), with a conservative one-basis-point
+  share-rounding guard. The immutable per-project accounting feed provides the exact denominator.
 - **Streak** — how long an account has held a non-zero stuck balance. It resets only at zero.
-- **Bonus** — the share of each unstick that stays in the pool, raising what every remaining
-  sticky token is backed by.
+- **Bonus / cash out tax** — the Juicebox curve can leave backing for remaining shares. Its effect
+  depends on the portion of supply redeemed; zero tax does not waive other applicable terminal fees.
+- **Unowned backing** — funds present when no shares exist are permanently excluded when a new
+  deposit establishes supply. New entrants cannot redeem these funds.
+- **Rewards** — the configured distributor uses share-vote snapshots, not streak age. Auto-stick
+  quotes during execution and rejects zero issuance; earlier collection to the holder's wallet can
+  leave a keeper with nothing to compound.
+
+Use the terminal's previewPayFor with the real payer and beneficiary for issuance, and a reviewed
+nonzero minReturnedTokens for a direct payment. Do not assume fixed one-for-one issuance. A positive
+burn, including a voluntary burn without reclaim, or a transfer can emit Unstaked; that event alone
+does not establish a payout. Read holder tranches through the bounded overload (at most 256 entries;
+the client uses 50), rather than the unbounded whole-array getter.
 
 ## Source
 

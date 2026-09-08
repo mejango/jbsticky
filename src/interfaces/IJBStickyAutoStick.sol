@@ -10,16 +10,8 @@ import {IJBStickyDeployer} from "./IJBStickyDeployer.sol";
 import {IJBStickyHook} from "./IJBStickyHook.sol";
 
 /// @notice Auto-compounds vested underlying-token rewards back into the same holder's sticky position.
+/// @dev Best effort: rewards already collected to the holder must be staked separately.
 interface IJBStickyAutoStick {
-    /// @notice Emitted when a keeper starts vesting a holder's eligible reward rounds.
-    /// @param projectId The ID of the sticky project the vesting belongs to.
-    /// @param holder The holder whose rewards began vesting.
-    /// @param token The underlying token that began vesting.
-    /// @param caller The address that triggered the vesting.
-    event BeganAutoStickVesting(
-        uint256 indexed projectId, address indexed holder, address indexed token, address caller
-    );
-
     /// @notice Emitted when vested rewards are collected and stuck back into the holder's position.
     /// @param projectId The ID of the sticky project compounded into.
     /// @param holder The holder whose rewards were compounded.
@@ -34,6 +26,15 @@ interface IJBStickyAutoStick {
         uint256 underlyingAmount,
         uint256 stickyTokenCount,
         address caller
+    );
+
+    /// @notice Emitted when a keeper starts vesting a holder's eligible reward rounds.
+    /// @param projectId The ID of the sticky project the vesting belongs to.
+    /// @param holder The holder whose rewards began vesting.
+    /// @param token The underlying token that began vesting.
+    /// @param caller The address that triggered the vesting.
+    event BeganAutoStickVesting(
+        uint256 indexed projectId, address indexed holder, address indexed token, address caller
     );
 
     /// @notice Emitted when a holder changes their auto-stick configuration.
@@ -53,23 +54,32 @@ interface IJBStickyAutoStick {
     );
 
     /// @notice The deployer whose sticky projects this adapter serves.
-    function DEPLOYER() external view returns (IJBStickyDeployer);
+    /// @return deployer The bound Sticky deployer.
+    function DEPLOYER() external view returns (IJBStickyDeployer deployer);
 
     /// @notice The distributor vested rewards are collected from.
-    function DISTRIBUTOR() external view returns (IJBDistributor);
+    /// @return distributor The bound rewards distributor.
+    function DISTRIBUTOR() external view returns (IJBDistributor distributor);
 
     /// @notice The data hook that gates third-party stakes and tracks positions.
-    function HOOK() external view returns (IJBStickyHook);
+    /// @return hook The bound Sticky position hook.
+    function HOOK() external view returns (IJBStickyHook hook);
 
     /// @notice The terminal sticky projects are paid through.
-    function TERMINAL() external view returns (IJBTerminal);
+    /// @return terminal The bound payment terminal.
+    function TERMINAL() external view returns (IJBTerminal terminal);
 
     /// @notice The contract managing token minting and burning for projects.
-    function TOKENS() external view returns (IJBTokens);
+    /// @return tokens The bound project-token registry.
+    function TOKENS() external view returns (IJBTokens tokens);
 
     /// @notice A holder's auto-stick configuration for a sticky project.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder to get the configuration of.
+    /// @return minimumAmount The minimum reward in underlying-token decimals.
+    /// @return cooldown The minimum number of seconds between compounds.
+    /// @return lastCompoundedAt The timestamp of the last successful compound.
+    /// @return enabled Whether auto-stick is enabled.
     function configOf(
         uint256 projectId,
         address holder
@@ -110,16 +120,17 @@ interface IJBStickyAutoStick {
         external
         returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 
-    /// @notice Claims the caller's vested underlying-token rewards and sticks them, atomically, in one call.
-    /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
-    /// @return underlyingAmount The underlying-token amount claimed and stuck.
-    /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
-    function stickRewardsFor(uint256 projectId) external returns (uint256 underlyingAmount, uint256 stickyTokenCount);
-
     /// @notice Sets the caller's auto-stick configuration for a sticky project.
     /// @param projectId The ID of the sticky project.
     /// @param enabled Whether auto-stick should be on.
     /// @param minimumAmount The smallest reward worth compounding, in the underlying token's decimals. Non-zero.
     /// @param cooldown The minimum number of seconds between compounds.
     function setConfigFor(uint256 projectId, bool enabled, uint128 minimumAmount, uint48 cooldown) external;
+
+    /// @notice Claims the caller's vested underlying-token rewards and sticks them, atomically, in one call.
+    /// @dev Reverts before payment if the reward would issue zero Sticky token atoms.
+    /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
+    /// @return underlyingAmount The underlying-token amount claimed and stuck.
+    /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
+    function stickRewardsFor(uint256 projectId) external returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 }

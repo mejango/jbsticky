@@ -8,6 +8,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import {JBFixedPointNumber} from "@bananapus/core-v6/src/libraries/JBFixedPointNumber.sol";
+import {JBPayHookSpecification} from "@bananapus/core-v6/src/structs/JBPayHookSpecification.sol";
+import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
+
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {IJBStickyDeployer} from "../src/interfaces/IJBStickyDeployer.sol";
@@ -54,6 +58,10 @@ contract StubDistributor {
     MockToken public token;
     uint256 public collectable;
     uint256 public beginVestingCalls;
+    uint256 public collectionCalls;
+    uint256 public deliveryOverride;
+    bool public hasDeliveryOverride;
+    address public lastBeneficiary;
     address public lastBeginVestingHook;
     uint256 public lastBeginVestingTokenId;
 
@@ -63,6 +71,11 @@ contract StubDistributor {
 
     function setCollectable(uint256 amount) external {
         collectable = amount;
+    }
+
+    function setDeliveryOverride(uint256 amount) external {
+        deliveryOverride = amount;
+        hasDeliveryOverride = true;
     }
 
     function collectableFor(address, uint256, IERC20) external view returns (uint256) {
@@ -76,17 +89,25 @@ contract StubDistributor {
     }
 
     function collectVestedRewards(address, uint256[] calldata, IERC20[] calldata, address beneficiary) external {
-        token.mint(beneficiary, collectable);
+        collectionCalls++;
+        lastBeneficiary = beneficiary;
+        token.mint(beneficiary, hasDeliveryOverride ? deliveryOverride : collectable);
         collectable = 0;
     }
 }
 
-/// @notice Pulls the payment and returns an 18-decimal 1:1 mint, like a sticky project's terminal would.
+/// @notice Models canonical terminal previews and payments, with configurable share pricing and short mints.
 contract StubTerminal {
     using SafeERC20 for IERC20;
 
     MockToken public token;
     uint256 public shortfall; // shaves the returned mint when non-zero, to test the mint floor
+    uint256 public sharePrice = 1;
+    uint256 public lastProjectId;
+    uint256 public lastMinimum;
+    address public lastPayer;
+    address public lastBeneficiary;
+    bool public ignoreMinimum;
 
     constructor(MockToken token_) {
         token = token_;
@@ -96,11 +117,44 @@ contract StubTerminal {
         shortfall = amount;
     }
 
-    function pay(
+    function setSharePrice(uint256 price) external {
+        sharePrice = price;
+    }
+
+    function setIgnoreMinimum(bool shouldIgnore) external {
+        ignoreMinimum = shouldIgnore;
+    }
+
+    function previewPayFor(
         uint256,
-        address token_,
+        address,
         uint256 amount,
         address,
+        bytes calldata
+    )
+        external
+        view
+        returns (
+            JBRuleset memory ruleset,
+            uint256 beneficiaryTokenCount,
+            uint256 reservedTokenCount,
+            JBPayHookSpecification[] memory hookSpecifications
+        )
+    {
+        beneficiaryTokenCount = _quote(amount);
+        hookSpecifications = new JBPayHookSpecification[](0);
+    }
+
+    function _quote(uint256 amount) internal view returns (uint256 count) {
+        count = JBFixedPointNumber.adjustDecimals({value: amount, decimals: token.decimals(), targetDecimals: 18})
+            / sharePrice;
+    }
+
+    function pay(
+        uint256 projectId,
+        address token_,
+        uint256 amount,
+        address beneficiary,
         uint256 minReturnedTokens,
         string calldata,
         bytes calldata
@@ -110,8 +164,12 @@ contract StubTerminal {
         returns (uint256 count)
     {
         IERC20(token_).safeTransferFrom(msg.sender, address(this), amount);
-        count = amount * 10 ** (18 - token.decimals()) - shortfall;
-        require(count >= minReturnedTokens, "UnderMinReturnedTokens");
+        count = _quote(amount) - shortfall;
+        if (!ignoreMinimum) require(count >= minReturnedTokens, "UnderMinReturnedTokens");
+        lastProjectId = projectId;
+        lastMinimum = minReturnedTokens;
+        lastPayer = msg.sender;
+        lastBeneficiary = beneficiary;
     }
 }
 
@@ -270,7 +328,7 @@ contract JBStickyAutoStickUnitTest is Test {
         _mockGranter(true);
         distributor.setCollectable(5e6);
         (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.READY));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
         (uint256 underlyingAmount,) = adapter.compoundFor(PROJECT_ID, holder);
         assertEq(underlyingAmount, 5e6);
     }
@@ -297,7 +355,7 @@ contract JBStickyAutoStickUnitTest is Test {
         distributor.setCollectable(5e6);
         (JBAutoStickStatus status,, uint256 allowance,) = adapter.statusOf(PROJECT_ID, holder);
         assertEq(allowance, 0);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.INSUFFICIENT_ALLOWANCE));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.InsufficientAllowance));
     }
 
     function test_compoundRevertsOnUnknownProject() public {
@@ -375,6 +433,138 @@ contract JBStickyAutoStickUnitTest is Test {
         assertEq(distributor.beginVestingCalls(), 1);
         assertEq(distributor.lastBeginVestingHook(), stickyToken);
         assertEq(distributor.lastBeginVestingTokenId(), uint256(uint160(holder)));
+    }
+
+    function test_compoundRejectsZeroIssuanceBeforeCollection() public {
+        _setUpWithDecimals(24);
+        _enable(1, 1 days);
+        underlying.mint(holder, 123);
+        distributor.setCollectable(999_999);
+        vm.mockCallRevert(
+            address(distributor),
+            abi.encodeWithSignature("collectVestedRewards(address,uint256[],address[],address)"),
+            "collection must not be reached"
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 999_999)
+        );
+        adapter.compoundFor(PROJECT_ID, holder);
+
+        assertEq(distributor.collectable(), 999_999);
+        assertEq(distributor.collectionCalls(), 0);
+        assertEq(underlying.balanceOf(holder), 123);
+        assertEq(underlying.balanceOf(address(adapter)), 0);
+        assertEq(underlying.balanceOf(address(terminal)), 0);
+        assertEq(underlying.allowance(address(adapter), address(terminal)), 0);
+        (,, uint48 lastCompoundedAt,) = adapter.configOf(PROJECT_ID, holder);
+        assertEq(lastCompoundedAt, 0);
+    }
+
+    function test_stickRewardsRejectsZeroIssuanceBeforeCollection() public {
+        _setUpWithDecimals(24);
+        vm.prank(holder);
+        underlying.approve(address(adapter), type(uint256).max);
+        distributor.setCollectable(999_999);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 999_999)
+        );
+        vm.prank(holder);
+        adapter.stickRewardsFor(PROJECT_ID);
+        assertEq(distributor.collectable(), 999_999);
+        assertEq(underlying.balanceOf(holder), 0);
+        assertEq(underlying.balanceOf(address(terminal)), 0);
+    }
+
+    function test_compoundRechecksActualDeliveredIssuanceBeforePull() public {
+        _setUpWithDecimals(24);
+        _enable(1, 1 days);
+        distributor.setCollectable(1e6);
+        distributor.setDeliveryOverride(999_999);
+        vm.mockCallRevert(
+            address(underlying),
+            abi.encodeCall(IERC20.transferFrom, (holder, address(adapter), 999_999)),
+            "pull must not be reached"
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 999_999)
+        );
+        adapter.compoundFor(PROJECT_ID, holder);
+        assertEq(distributor.collectable(), 1e6);
+        assertEq(underlying.balanceOf(holder), 0);
+        assertEq(underlying.balanceOf(address(terminal)), 0);
+    }
+
+    function test_compoundQuotesAndPullsOnlyTheActualDelivery() public {
+        _enable(1, 1 days);
+        underlying.mint(holder, 10e6);
+        distributor.setCollectable(5e6);
+        distributor.setDeliveryOverride(3e6);
+        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder);
+        assertEq(amount, 3e6);
+        assertEq(count, 3e18);
+        assertEq(terminal.lastMinimum(), 3e18);
+        assertEq(underlying.balanceOf(holder), 10e6);
+        assertEq(underlying.balanceOf(address(adapter)), 0);
+        assertEq(underlying.balanceOf(address(terminal)), 3e6);
+    }
+
+    function test_compoundAcceptsSmallestPositive24DecimalIssuance() public {
+        _setUpWithDecimals(24);
+        _enable(1, 1 days);
+        distributor.setCollectable(1e6);
+        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder);
+        assertEq(amount, 1e6);
+        assertEq(count, 1);
+        assertEq(terminal.lastMinimum(), 1);
+        assertEq(underlying.allowance(address(adapter), address(terminal)), 0);
+    }
+
+    function test_compoundUsesCurrentSharePriceAndCanonicalBeneficiary() public {
+        _enable(1, 1 days);
+        distributor.setCollectable(10e6);
+        terminal.setSharePrice(2);
+        vm.prank(keeper);
+        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder);
+        assertEq(amount, 10e6);
+        assertEq(count, 5e18);
+        assertEq(terminal.lastMinimum(), 5e18);
+        assertEq(terminal.lastProjectId(), PROJECT_ID);
+        assertEq(terminal.lastPayer(), address(adapter));
+        assertEq(terminal.lastBeneficiary(), holder);
+        assertEq(distributor.lastBeneficiary(), holder);
+        assertEq(underlying.balanceOf(keeper), 0);
+    }
+
+    function test_compoundRejectsPriceRoundingToZeroWith18Decimals() public {
+        _setUpWithDecimals(18);
+        _enable(1, 1 days);
+        distributor.setCollectable(1);
+        terminal.setSharePrice(2);
+        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        assertEq(uint256(status), 7);
+        vm.expectRevert(
+            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 1)
+        );
+        adapter.compoundFor(PROJECT_ID, holder);
+    }
+
+    function test_compoundRejectsShortMintEvenIfTerminalIgnoresMinimum() public {
+        _enable(1, 1 days);
+        distributor.setCollectable(5e6);
+        terminal.setShortfall(1);
+        terminal.setIgnoreMinimum(true);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyAutoStick.JBStickyAutoStick_InsufficientStickyTokens.selector, 5e18 - 1, 5e18
+            )
+        );
+        adapter.compoundFor(PROJECT_ID, holder);
+        assertEq(distributor.collectable(), 5e6);
+        assertEq(underlying.balanceOf(address(terminal)), 0);
+        assertEq(underlying.allowance(address(adapter), address(terminal)), 0);
     }
 
     //*********************************************************************//
@@ -470,43 +660,54 @@ contract JBStickyAutoStickUnitTest is Test {
     // ---------------------------- statusOf ------------------------------ //
     //*********************************************************************//
 
+    function test_statusOrdinalsRemainCompatibleWithClients() public pure {
+        assertEq(uint256(JBAutoStickStatus.Ready), 0);
+        assertEq(uint256(JBAutoStickStatus.Disabled), 1);
+        assertEq(uint256(JBAutoStickStatus.InvalidProject), 2);
+        assertEq(uint256(JBAutoStickStatus.Cooldown), 3);
+        assertEq(uint256(JBAutoStickStatus.BelowMinimum), 4);
+        assertEq(uint256(JBAutoStickStatus.NotTrusted), 5);
+        assertEq(uint256(JBAutoStickStatus.InsufficientAllowance), 6);
+        assertEq(uint256(JBAutoStickStatus.ZeroIssuance), 7);
+    }
+
     function test_statusOfWalksTheLadder() public {
         vm.mockCall(deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (99)), abi.encode(address(0)));
         vm.mockCall(tokens, abi.encodeCall(IJBTokens.tokenOf, (99)), abi.encode(address(0)));
         (JBAutoStickStatus status,,,) = adapter.statusOf(99, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.INVALID_PROJECT));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.InvalidProject));
 
         (status,,,) = adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.DISABLED));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.Disabled));
 
         _enable(10e6, 1 days);
         distributor.setCollectable(5e6);
         (status,,,) = adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.BELOW_MINIMUM));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
 
         distributor.setCollectable(20e6);
         _mockTrust(false);
         (status,,,) = adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.NOT_TRUSTED));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.NotTrusted));
 
         _mockTrust(true);
         vm.prank(holder);
         underlying.approve(address(adapter), 1e6);
         (status,,,) = adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.INSUFFICIENT_ALLOWANCE));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.InsufficientAllowance));
 
         vm.prank(holder);
         underlying.approve(address(adapter), type(uint256).max);
         (JBAutoStickStatus ready, uint256 collectable, uint256 allowance, uint256 nextCompoundAt) =
             adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(ready), uint256(JBAutoStickStatus.READY));
+        assertEq(uint256(ready), uint256(JBAutoStickStatus.Ready));
         assertEq(collectable, 20e6);
         assertEq(allowance, type(uint256).max);
         assertEq(nextCompoundAt, 0);
 
         adapter.compoundFor(PROJECT_ID, holder);
         (status,,, nextCompoundAt) = adapter.statusOf(PROJECT_ID, holder);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.COOLDOWN));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.Cooldown));
         assertEq(nextCompoundAt, block.timestamp + 1 days);
     }
 

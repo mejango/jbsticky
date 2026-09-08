@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
+import {JBStickyRewardPocket} from "./JBStickyRewardPocket.sol";
 
 import {IJBStickyRewardPockets} from "./interfaces/IJBStickyRewardPockets.sol";
-import {JBStickyRewardPocket} from "./JBStickyRewardPocket.sol";
 
 /// @notice Deploys deterministic reward pockets that turn cross-chain arrivals into sticky rewards. A funder on any
 /// chain bridges sucker-mapped project tokens with the pocket as beneficiary; when the claim lands on this chain,
@@ -33,6 +33,7 @@ contract JBStickyRewardPockets is IJBStickyRewardPockets {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
+    /// @notice Initializes the factory's rewards distributor.
     /// @param distributor The distributor pockets settle rewards into.
     constructor(IJBDistributor distributor) {
         DISTRIBUTOR = distributor;
@@ -40,6 +41,38 @@ contract JBStickyRewardPockets is IJBStickyRewardPockets {
 
     //*********************************************************************//
     // ---------------------- external transactions ---------------------- //
+    //*********************************************************************//
+
+    /// @notice Settles a pocket's balance of a token into the rewards distributor, deploying the pocket if needed.
+    /// @param stickyToken The sticky token whose holders should be rewarded.
+    /// @param token The reward token to settle.
+    /// @return amount The amount settled.
+    function settleFor(address stickyToken, IERC20 token) external override returns (uint256 amount) {
+        amount = JBStickyRewardPocket(deployPocketFor(stickyToken)).settle(token);
+
+        emit Settle({stickyToken: stickyToken, token: token, amount: amount, caller: msg.sender});
+    }
+
+    //*********************************************************************//
+    // ----------------------- external views ---------------------------- //
+    //*********************************************************************//
+
+    /// @notice The deterministic pocket address for a sticky token, whether or not it has been deployed.
+    /// @dev Matches across chains only when the factory address, distributor address, pocket creation code, and
+    /// sticky token address all match.
+    /// @param stickyToken The sticky token to predict the pocket of.
+    /// @return pocket The predicted pocket address.
+    function predictPocketOf(address stickyToken) external view override returns (address pocket) {
+        return Create2.computeAddress({
+            salt: bytes32(uint256(uint160(stickyToken))),
+            bytecodeHash: keccak256(
+                abi.encodePacked(type(JBStickyRewardPocket).creationCode, abi.encode(DISTRIBUTOR, stickyToken))
+            )
+        });
+    }
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
     //*********************************************************************//
 
     /// @notice Deploys the pocket for a sticky token at its deterministic address.
@@ -61,32 +94,5 @@ contract JBStickyRewardPockets is IJBStickyRewardPockets {
         pocketOf[stickyToken] = pocket;
 
         emit DeployPocket({stickyToken: stickyToken, pocket: pocket, caller: msg.sender});
-    }
-
-    /// @notice Settles a pocket's balance of a token into the rewards distributor, deploying the pocket if needed.
-    /// @param stickyToken The sticky token whose holders should be rewarded.
-    /// @param token The reward token to settle.
-    /// @return amount The amount settled.
-    function settleFor(address stickyToken, IERC20 token) external override returns (uint256 amount) {
-        amount = JBStickyRewardPocket(deployPocketFor(stickyToken)).settle(token);
-
-        emit Settle({stickyToken: stickyToken, token: token, amount: amount, caller: msg.sender});
-    }
-
-    //*********************************************************************//
-    // ----------------------- external views ---------------------------- //
-    //*********************************************************************//
-
-    /// @notice The deterministic pocket address for a sticky token, whether or not it has been deployed.
-    /// @dev Identical on every chain this factory is deployed to (the factory and distributor are deployed with
-    /// chain-identical addresses), so it can be predicted from anywhere.
-    /// @param stickyToken The sticky token to predict the pocket of.
-    function predictPocketOf(address stickyToken) external view override returns (address) {
-        return Create2.computeAddress({
-            salt: bytes32(uint256(uint160(stickyToken))),
-            bytecodeHash: keccak256(
-                abi.encodePacked(type(JBStickyRewardPocket).creationCode, abi.encode(DISTRIBUTOR, stickyToken))
-            )
-        });
     }
 }

@@ -11,15 +11,21 @@ import {JBStickyTranche} from "../structs/JBStickyTranche.sol";
 /// @notice A data hook that tracks staking positions for sticky projects: per-deposit tranches, LIFO unstaking, and a
 /// person-level streak clock.
 interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
+    /// @notice Emitted when backing present without any shares is excluded from future holders' claims.
+    /// @param projectId The ID of the sticky project.
+    /// @param amount The total excluded underlying balance, in underlying token atoms.
+    /// @param caller The terminal that recorded the first payment of the new share supply.
+    event ExcludeOrphanedBalance(uint256 indexed projectId, uint256 amount, address caller);
+
     /// @notice Emitted when an address is allowed to airdrop stakes to any holder of a sticky project.
     /// @param projectId The ID of the sticky project the sender can airdrop to.
     /// @param granter The address allowed to airdrop.
     /// @param caller The address that set the granter.
     event SetGranter(uint256 indexed projectId, address indexed granter, address caller);
 
-    /// @notice Emitted when a sticky project's token is registered as its transfer reporter.
+    /// @notice Emitted when a sticky project's token is registered as its movement reporter.
     /// @param projectId The ID of the sticky project.
-    /// @param token The sticky token allowed to report transfers.
+    /// @param token The sticky token allowed to report transfers and burns.
     /// @param caller The address that registered the token.
     event SetToken(uint256 indexed projectId, address token, address caller);
 
@@ -34,7 +40,7 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param projectId The ID of the sticky project being staked to.
     /// @param holder The address the staked position belongs to.
     /// @param payer The address the staked tokens came from.
-    /// @param count The number of staked project tokens minted for the stake, as a fixed point number with 18 decimals.
+    /// @param count The shares added by a payment or incoming transfer, as a fixed point number with 18 decimals.
     /// @param stakedBalance The holder's staked balance after the stake, as a fixed point number with 18 decimals.
     /// @param caller The address that triggered the stake.
     event Staked(
@@ -59,21 +65,23 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param caller The address that triggered the stake which started the streak.
     event StreakStarted(uint256 indexed projectId, address indexed holder, address caller);
 
-    /// @notice Emitted when tokens are unstaked, consuming tranches newest-first.
+    /// @notice Emitted when tokens burn or transfer away, consuming tranches newest-first.
+    /// @dev A voluntary burn or transfer does not reclaim backing; this event alone does not prove a cash out.
     /// @param projectId The ID of the sticky project being unstaked from.
     /// @param holder The address the staked position belongs to.
-    /// @param count The number of staked project tokens burned by the unstake, as a fixed point number with 18
-    /// decimals.
+    /// @param count The number of staked project tokens removed, as a fixed point number with 18 decimals.
     /// @param stakedBalance The holder's staked balance after the unstake, as a fixed point number with 18 decimals.
-    /// @param caller The address that triggered the unstake.
+    /// @param caller The registered sticky token that reported the movement.
     event Unstaked(
         uint256 indexed projectId, address indexed holder, uint256 count, uint256 stakedBalance, address caller
     );
 
     /// @notice The address allowed to set a project's granters, once, at launch.
+    /// @return deployer The immutable deployer.
     function DEPLOYER() external view returns (address);
 
     /// @notice The directory of terminals and controllers for projects.
+    /// @return directory The directory used to validate terminal callbacks.
     function DIRECTORY() external view returns (IJBDirectory);
 
     /// @notice The duration of a holder's active streak, in seconds.
@@ -86,12 +94,14 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @notice Whether an address can airdrop stakes to any holder of a sticky project.
     /// @param projectId The ID of the sticky project to check.
     /// @param granter The address to check.
+    /// @return isGranter Whether the address is a project granter.
     function isGranterOf(uint256 projectId, address granter) external view returns (bool);
 
     /// @notice Whether a holder allows a sender to add stakes to their position.
     /// @param projectId The ID of the sticky project to check.
     /// @param holder The holder whose position would be added to.
     /// @param sender The sender to check.
+    /// @return isTrusted Whether the holder trusts the sender.
     function isTrustedSenderOf(uint256 projectId, address holder, address sender) external view returns (bool);
 
     /// @notice The longest streak a holder has ever had, including their active streak.
@@ -100,50 +110,84 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @return The holder's longest streak duration, in seconds.
     function longestStreakOf(uint256 projectId, address holder) external view returns (uint256);
 
+    /// @notice Backing excluded when the most recent share supply began.
+    /// @dev While no shares exist, all current terminal backing is unowned even if this stored value is lower.
+    /// @param projectId The ID of the sticky project.
+    /// @return amount The excluded underlying balance, in underlying token atoms.
+    function orphanedBalanceOf(uint256 projectId) external view returns (uint256 amount);
+
     /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
     /// @param projectId The ID of the sticky project to check the balance of.
     /// @param holder The address to check the balance of.
+    /// @return balance The holder's currently staked token balance.
     function stakedBalanceOf(uint256 projectId, address holder) external view returns (uint256);
 
     /// @notice The timestamp at which a holder's active streak started, or 0 if nothing is staked.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
+    /// @return timestamp The active streak's start timestamp, or zero if the balance is zero.
     function streakStartOf(uint256 projectId, address holder) external view returns (uint256);
 
-    /// @notice The sticky token allowed to report transfers for a project.
+    /// @notice The sticky token allowed to report transfers and burns for a project.
     /// @param projectId The ID of the sticky project to get the token of.
+    /// @return token The project's registered sticky token.
     function tokenOf(uint256 projectId) external view returns (address);
 
     /// @notice The number of tranches a holder has.
     /// @param projectId The ID of the sticky project to check the tranches of.
     /// @param holder The address to check the tranches of.
+    /// @return count The number of active tranches.
     function trancheCountOf(uint256 projectId, address holder) external view returns (uint256);
 
     /// @notice A holder's tranches, oldest first.
     /// @param projectId The ID of the sticky project to get the tranches of.
     /// @param holder The address to get the tranches of.
+    /// @return tranches The active tranches, oldest first.
     function tranchesOf(uint256 projectId, address holder) external view returns (JBStickyTranche[] memory);
+
+    /// @notice A bounded range of a holder's active tranches, oldest first.
+    /// @param projectId The ID of the sticky project.
+    /// @param holder The holder whose tranches to read.
+    /// @param start The zero-based index of the first tranche to read.
+    /// @param count The maximum number of tranches to return, capped at 256.
+    /// @return tranches The requested tranches, ending at the active count if fewer remain.
+    function tranchesOf(
+        uint256 projectId,
+        address holder,
+        uint256 start,
+        uint256 count
+    )
+        external
+        view
+        returns (JBStickyTranche[] memory tranches);
+
+    /// @notice Consume the newest tranches for every positive token burn, including voluntary controller burns.
+    /// @dev Only the registered sticky token can report burns. Zero burns leave accounting unchanged.
+    /// @param projectId The ID of the sticky project.
+    /// @param holder The holder whose tokens were burned.
+    /// @param amount The number of tokens burned, as a fixed point number with 18 decimals.
+    function recordBurn(uint256 projectId, address holder, uint256 amount) external;
 
     /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
     /// tranches are consumed and the receiver gets a fresh tranche — transfers restart the clock on moved tokens.
-    /// @dev Can only be called by the project's registered sticky token.
+    /// @dev Can only be called by the project's registered sticky token. Zero and self transfers are no-ops.
     /// @param projectId The ID of the sticky project the transfer belongs to.
     /// @param from The holder the tokens moved from.
     /// @param to The holder the tokens moved to.
     /// @param amount The number of tokens moved, as a fixed point number with 18 decimals.
     function recordTransfer(uint256 projectId, address from, address to, uint256 amount) external;
 
-    /// @notice Registers the sticky token allowed to report transfers for a project.
-    /// @dev Can only be called by the deployer, which calls it once at launch.
-    /// @param projectId The ID of the sticky project.
-    /// @param token The sticky token.
-    function setTokenFor(uint256 projectId, address token) external;
-
     /// @notice Allows addresses to airdrop stakes to any holder of a sticky project.
     /// @dev Can only be called by the deployer, which calls it once at launch.
     /// @param projectId The ID of the sticky project the senders can airdrop to.
     /// @param granters The addresses allowed to airdrop.
     function setGrantersFor(uint256 projectId, address[] calldata granters) external;
+
+    /// @notice Registers the sticky token allowed to report transfers and burns for a project.
+    /// @dev Can only be called by the deployer, which calls it once at launch.
+    /// @param projectId The ID of the sticky project.
+    /// @param token The sticky token.
+    function setTokenFor(uint256 projectId, address token) external;
 
     /// @notice Allows or disallows a sender to add stakes to the caller's position.
     /// @param projectId The ID of the sticky project the trust applies to.

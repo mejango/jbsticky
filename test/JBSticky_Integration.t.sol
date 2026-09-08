@@ -516,7 +516,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.warp(vm.getBlockTimestamp() + 3 days);
         vm.roll(vm.getBlockNumber() + 1);
         (JBAutoStickStatus status,,,) = adapter.statusOf(projectId, user);
-        assertEq(uint256(status), uint256(JBAutoStickStatus.READY));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
         uint256 walletBefore = art.balanceOf(user);
         vm.prank(keeper);
         (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor({projectId: projectId, holder: user});
@@ -536,7 +536,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // No custody left behind, and the cooldown now gates the next compound.
         assertEq(art.balanceOf(address(adapter)), 0);
         (JBAutoStickStatus afterStatus,,, uint256 nextCompoundAt) = adapter.statusOf(projectId, user);
-        assertEq(uint256(afterStatus), uint256(JBAutoStickStatus.COOLDOWN));
+        assertEq(uint256(afterStatus), uint256(JBAutoStickStatus.Cooldown));
         assertEq(nextCompoundAt, vm.getBlockTimestamp() + 1 days);
     }
 

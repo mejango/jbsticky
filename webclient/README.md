@@ -85,10 +85,22 @@ the API timed out, or one chain reported a failure. Keep the original record and
 recover destination execution hashes; republishing could create duplicate projects.
 The recovery UI exposes only clearing that is supported by the saved evidence.
 
+New stakes use the terminal's `previewPayFor` result as their exact minimum token
+output. Issuance follows current backing; Sticky balances and tranches are share
+amounts with 18 decimals, distinct from underlying token amounts. The immutable
+project feed supplies the exact backing denominator; the client does not derive
+issuance from an independently rounded exchange rate. Zero issuance or excessive
+share rounding fails before staking. The account page
+loads at most 50 tranches at once, so incoming dust cannot force an unbounded read.
+Claimable backing excludes funds left when no shares existed. The current home-page
+value uses that claimable backing; its historical chart estimates past share counts
+at today's backing per share and token price, rather than reconstructing past prices.
+
 The 100% cash out tax permanently makes unsticking return zero underlying tokens.
-For tokens above 18 decimals, minimums reject deposits that would mint zero sticky
-tokens, and rewards use Claim separately from Stick when the adapter cannot enforce
-that minimum in one call.
+The auto-stick adapter quotes issuance during execution and rejects zero-token
+mints, including high-decimal reward dust. Its UI estimate can change before
+confirmation. Auto-stick is best effort: anyone can collect rewards to the holder's
+wallet before a keeper executes; those rewards remain available for manual staking.
 
 ## Checks
 

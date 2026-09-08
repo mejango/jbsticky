@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
+import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {JBAfterCashOutRecordedContext} from "@bananapus/core-v6/src/structs/JBAfterCashOutRecordedContext.sol";
 import {JBAfterPayRecordedContext} from "@bananapus/core-v6/src/structs/JBAfterPayRecordedContext.sol";
@@ -23,13 +24,23 @@ contract JBStickyHookUnitTest is Test {
     address deployer = makeAddr("deployer");
     IJBDirectory directory = IJBDirectory(makeAddr("directory"));
     address terminal = makeAddr("terminal");
+    address token = makeAddr("token");
     address holder = makeAddr("holder");
     address payer = makeAddr("payer");
 
     JBStickyHook hook;
+    uint256 reportedSupply;
 
     function setUp() public {
         hook = new JBStickyHook({directory: directory, deployer: deployer});
+        vm.prank(deployer);
+        hook.setTokenFor({projectId: PROJECT_ID, token: token});
+        vm.mockCall({callee: token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(uint256(0))});
+        vm.mockCall({
+            callee: terminal,
+            data: abi.encodePacked(IJBTerminal.currentSurplusOf.selector),
+            returnData: abi.encode(uint256(0))
+        });
 
         // The terminal is a terminal of the project; other addresses aren't.
         vm.mockCall({
@@ -44,6 +55,16 @@ contract JBStickyHookUnitTest is Test {
     //*********************************************************************//
 
     function _pay(address beneficiary, uint256 count) internal {
+        uint256 supplyBefore = reportedSupply;
+        reportedSupply += count;
+        vm.mockCall({
+            callee: token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(reportedSupply)
+        });
+        vm.mockCall({
+            callee: terminal,
+            data: abi.encodePacked(IJBTerminal.currentSurplusOf.selector),
+            returnData: abi.encode(reportedSupply)
+        });
         vm.prank(terminal);
         hook.afterPayRecordedWith(
             JBAfterPayRecordedContext({
@@ -55,28 +76,24 @@ contract JBStickyHookUnitTest is Test {
                 weight: 1e18,
                 newlyIssuedTokenCount: count,
                 beneficiary: beneficiary,
-                hookMetadata: bytes(""),
+                hookMetadata: abi.encode(supplyBefore, supplyBefore, uint256(0)),
                 payerMetadata: bytes("")
             })
         );
     }
 
     function _cashOut(address account, uint256 count) internal {
-        vm.prank(terminal);
-        hook.afterCashOutRecordedWith(
-            JBAfterCashOutRecordedContext({
-                holder: account,
-                projectId: PROJECT_ID,
-                rulesetId: 1,
-                cashOutCount: count,
-                reclaimedAmount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: count}),
-                forwardedAmount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 0}),
-                cashOutTaxRate: 0,
-                beneficiary: payable(account),
-                hookMetadata: bytes(""),
-                cashOutMetadata: bytes("")
-            })
-        );
+        reportedSupply -= count;
+        vm.mockCall({
+            callee: token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(reportedSupply)
+        });
+        vm.mockCall({
+            callee: terminal,
+            data: abi.encodePacked(IJBTerminal.currentSurplusOf.selector),
+            returnData: abi.encode(reportedSupply)
+        });
+        vm.prank(token);
+        hook.recordBurn({projectId: PROJECT_ID, holder: account, amount: count});
     }
 
     //*********************************************************************//
@@ -206,13 +223,13 @@ contract JBStickyHookUnitTest is Test {
                 weight: 1e18,
                 newlyIssuedTokenCount: 1,
                 beneficiary: holder,
-                hookMetadata: bytes(""),
+                hookMetadata: abi.encode(uint256(0)),
                 payerMetadata: bytes("")
             })
         );
     }
 
-    function test_beforeCashOut_passesContextThroughAndRequestsCallback() public view {
+    function test_beforeCashOut_passesContextThroughWithoutDoubleAccountingCallback() public view {
         (
             uint256 cashOutTaxRate,
             uint256 effectiveCashOutCount,
@@ -239,10 +256,7 @@ contract JBStickyHookUnitTest is Test {
         assertEq(effectiveCashOutCount, 5e18);
         assertEq(effectiveTotalSupply, 100e18);
         assertEq(effectiveSurplusValue, 100e18);
-        assertEq(specifications.length, 1);
-        assertEq(address(specifications[0].hook), address(hook));
-        assertEq(specifications[0].noop, false);
-        assertEq(specifications[0].amount, 0);
+        assertEq(specifications.length, 0);
     }
 
     function test_beforePay_passesWeightThroughAndRequestsCallback() public view {

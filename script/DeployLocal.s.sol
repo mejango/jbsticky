@@ -4,54 +4,42 @@ pragma solidity 0.8.28;
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {Script} from "forge-std/Script.sol";
-import {console2} from "forge-std/console2.sol";
-import {stdJson} from "forge-std/StdJson.sol";
-
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
+import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
 import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
+import {console2} from "forge-std/console2.sol";
 
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
-
-import {JBStickyAutoStick} from "src/JBStickyAutoStick.sol";
-import {JBStickyDeployer} from "src/JBStickyDeployer.sol";
-import {JBStickyRewardPockets} from "src/JBStickyRewardPockets.sol";
-
-/// @notice A test token to stake on a local fork.
-contract MockArt is ERC20 {
-    constructor() ERC20("Art", "ART") {}
-
-    function mint(address to, uint256 amount) external {
-        _mint({account: to, value: amount});
-    }
-}
-
-/// @notice A second test token, staked with a stickiness bonus on a local fork.
-contract MockBan is ERC20 {
-    constructor() ERC20("Banana", "BAN") {}
-
-    function mint(address to, uint256 amount) external {
-        _mint({account: to, value: amount});
-    }
-}
+import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
+import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+import {JBStickyRewardPockets} from "../src/JBStickyRewardPockets.sol";
+import {JBStickyDeployment} from "./helpers/JBStickyDeployment.sol";
+import {MockArt} from "./mocks/MockArt.sol";
+import {MockBan} from "./mocks/MockBan.sol";
+import {JBStickyCoreDeployment} from "./structs/JBStickyCoreDeployment.sol";
 
 /// @notice Deploys JBSticky plus a mintable test token to a local fork of a chain with nana core, and launches a
 /// sticky project for it. For local development only.
-contract DeployLocalScript is Script {
+contract DeployLocal is JBStickyDeployment {
+    //*********************************************************************//
+    // --------------------------- custom errors ------------------------- //
+    //*********************************************************************//
+
+    /// @notice The disposable local demo was not explicitly enabled.
+    error DeployLocal_LocalDemoNotEnabled();
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
+
+    /// @notice Deploys disposable demo tokens and projects on an explicitly opted-in local fork.
+    /// @dev This non-idempotent fixture deliberately uses shortened distributor durations. Never use it for production.
     function run() public {
-        // Read the core controller and terminal addresses for the forked network directly from the checked-in
-        // deployment artifacts.
-        string memory network = vm.envOr("NANA_CORE_NETWORK", string("sepolia"));
-        string memory base = string.concat("deployments-local/nana-core-v6/", network, "/");
-        IJBController controller = IJBController(
-            stdJson.readAddress({json: vm.readFile(string.concat(base, "JBController.json")), key: ".address"})
-        );
-        IJBTerminal terminal = IJBTerminal(
-            stdJson.readAddress({json: vm.readFile(string.concat(base, "JBMultiTerminal.json")), key: ".address"})
-        );
+        if (!vm.envOr({name: "STICKY_LOCAL_DEMO", defaultValue: false})) revert DeployLocal_LocalDemoNotEnabled();
+        JBStickyCoreDeployment memory core = _loadCore();
+        IJBController controller = core.controller;
+        IJBTerminal terminal = core.terminal;
 
         uint256 fee = controller.PROJECTS().creationFee();
 
@@ -86,7 +74,7 @@ contract DeployLocalScript is Script {
         granters[0] = msg.sender;
         granters[1] = address(autoStick);
 
-        // ART: a pure wrapper — no stickiness bonus, fee-free unsticks.
+        // ART: zero cash-out tax; redemption follows the configured backing economics.
         uint256 projectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(art)),
             name: "Streaking ART",
@@ -98,7 +86,7 @@ contract DeployLocalScript is Script {
         });
         art.mint({to: msg.sender, amount: 1_000_000e18});
 
-        // BAN: carries a 10% stickiness bonus, so unsticks reward those who stay.
+        // BAN: applies the protocol's 10% cash-out tax curve and applicable fees.
         uint256 banProjectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(ban)),
             name: "Streaking BAN",
@@ -112,14 +100,14 @@ contract DeployLocalScript is Script {
 
         vm.stopBroadcast();
 
-        console2.log("ART", address(art));
-        console2.log("BAN", address(ban));
-        console2.log("JBStickyDeployer", address(deployer));
-        console2.log("JBStickyHook", address(deployer.HOOK()));
-        console2.log("projectId", projectId);
-        console2.log("banProjectId", banProjectId);
-        console2.log("JBTokenDistributor", address(distributor));
-        console2.log("JBStickyAutoStick", address(autoStick));
-        console2.log("JBStickyRewardPockets", address(pockets));
+        console2.log({p0: "ART", p1: address(art)});
+        console2.log({p0: "BAN", p1: address(ban)});
+        console2.log({p0: "JBStickyDeployer", p1: address(deployer)});
+        console2.log({p0: "JBStickyHook", p1: address(deployer.HOOK())});
+        console2.log({p0: "projectId", p1: projectId});
+        console2.log({p0: "banProjectId", p1: banProjectId});
+        console2.log({p0: "JBTokenDistributor", p1: address(distributor)});
+        console2.log({p0: "JBStickyAutoStick", p1: address(autoStick)});
+        console2.log({p0: "JBStickyRewardPockets", p1: address(pockets)});
     }
 }

@@ -4,6 +4,13 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Read-only fork rehearsal RPC alias
+        type: choice
+        default: ethereum_sepolia
+        options: [ethereum, optimism, base, arbitrum, ethereum_sepolia, optimism_sepolia, base_sepolia, arbitrum_sepolia]
 jobs:
   forge-test:
     runs-on: ubuntu-latest
@@ -33,12 +40,29 @@ jobs:
           cache: npm
           cache-dependency-path: extensions/JBSticky/package-lock.json
       - name: Install npm dependencies
-        run: npm ci --omit=dev
+        run: npm ci
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.8.1
       - name: Run tests
-        run: forge test --fail-fast --summary --detailed --skip "*/script/**"
+        run: forge test --fail-fast --summary --detailed
+      - name: Check Sphinx configuration without public RPC calls
+        run: node --test test/deployment/config.test.cjs
       - name: Check contract sizes
         run: forge build --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
+      - name: Compile deployment entrypoints
+        run: forge build --skip "*/test/**"
+      - name: Rehearse deployment and restart on the selected chain
+        if: github.event_name == 'workflow_dispatch'
+        run: forge script script/Rehearse.s.sol:Rehearse --rpc-url "${{ inputs.network }}" -vv
+        env:
+          FOUNDRY_PROFILE: deploy
+          RPC_ETHEREUM_MAINNET: ${{ secrets.RPC_ETHEREUM_MAINNET }}
+          RPC_OPTIMISM_MAINNET: ${{ secrets.RPC_OPTIMISM_MAINNET }}
+          RPC_BASE_MAINNET: ${{ secrets.RPC_BASE_MAINNET }}
+          RPC_ARBITRUM_MAINNET: ${{ secrets.RPC_ARBITRUM_MAINNET }}
+          RPC_ETHEREUM_SEPOLIA: ${{ secrets.RPC_ETHEREUM_SEPOLIA }}
+          RPC_OPTIMISM_SEPOLIA: ${{ secrets.RPC_OPTIMISM_SEPOLIA }}
+          RPC_BASE_SEPOLIA: ${{ secrets.RPC_BASE_SEPOLIA }}
+          RPC_ARBITRUM_SEPOLIA: ${{ secrets.RPC_ARBITRUM_SEPOLIA }}
