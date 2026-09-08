@@ -296,6 +296,11 @@ abstract contract JBStickyDeployment is Script {
                 }
                 // Every occurrence of one immutable must agree, including uses outside its public getter.
                 bytes32 word = _immutableWord({code: actual, start: refs[j].start});
+                // Every current binding is an address or a bounded timing setting. Reject upper-bit pollution
+                // before an address getter can normalize it while other code still consumes the original word.
+                if (uint256(word) > type(uint160).max) {
+                    revert JBStickyDeployment_RuntimeMismatch({target: target, name: name});
+                }
                 if (j == 0) immutableWord = word;
                 else if (word != immutableWord) revert JBStickyDeployment_RuntimeMismatch({target: target, name: name});
                 for (uint256 k; k < refs[j].length; k++) {

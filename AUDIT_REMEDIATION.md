@@ -28,7 +28,7 @@ The accounting redesign preserves exact LIFO timestamps. Under the test fixture,
 
 ## Validation and style
 
-The complete Solidity suite passes **129 tests**, including five fuzz properties at **4,096 runs each**. It includes actual V6 core/distributor integrations, malicious-token callbacks, accounting reference-model checks, and deployment regressions. Client verification passes **275 Node tests and 23 Python tests**, with browser checks at mobile and desktop widths. Formatter and runtime/initcode size gates pass; the largest Sticky runtime is 18,375 bytes (`JBStickyDeployer`).
+The complete Solidity suite passes **130 tests**, including five fuzz properties at **4,096 runs each**. It includes actual V6 core/distributor integrations, malicious-token callbacks, accounting reference-model checks, and deployment regressions. Client verification passes **275 Node tests and 23 Python tests**, with browser checks at mobile and desktop widths. Formatter and runtime/initcode size gates pass; the largest Sticky runtime is 18,375 bytes (`JBStickyDeployer`).
 
 Read-only deployment-and-restart fork rehearsals pass on **Ethereum, Optimism, Base, Arbitrum and all four Sepolia networks**. The deployment-only Foundry profile disables transaction isolation to match Sphinx 0.33 and avoid a Foundry 1.8.1 Optimism-family simulation failure; the normal test profile is unchanged. Actual Sphinx configuration and state-diff compatibility checks pass without submitting a proposal.
 

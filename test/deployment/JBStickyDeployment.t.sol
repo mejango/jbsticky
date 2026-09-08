@@ -143,6 +143,22 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
     }
 
+    function test_rejectsNoncanonicalUpperBitsInImmutableAddress() public {
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        string memory json = vm.readFile("out/JBStickyDeployer.sol/JBStickyDeployer.json");
+        string memory root = ".deployedBytecode.immutableReferences";
+        string[] memory keys = vm.parseJsonKeys(json, root);
+        JBStickyImmutableReference[] memory refs =
+            abi.decode(vm.parseJson(json, string.concat(root, ".", keys[0])), (JBStickyImmutableReference[]));
+        bytes memory code = deployed.deployer.code;
+        for (uint256 i; i < refs.length; i++) {
+            code[refs[i].start] = 0x01;
+        }
+        vm.etch(deployed.deployer, code);
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
+        _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
+    }
+
     function test_rejectsConsistentlyWrongImmutableDependency() public {
         JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
         // A legitimate second factory has identical opcodes and different constructor-created HOOK references.
