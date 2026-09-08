@@ -5,3 +5,7 @@ broadcast/
 .env
 deployments-local/
 webclient/config.js
+__pycache__/
+*.py[cod]
+webclient/.venv/
+webclient/.env

@@ -6,6 +6,8 @@
   },
   "deploy": {
     "startCommand": "python3 serve.py",
+    "healthcheckPath": "/healthz",
+    "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE"
   }
 }

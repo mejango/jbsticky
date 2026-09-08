@@ -1,7 +1,7 @@
 // Sticky webclient. Raw JSON-RPC, no dependencies, no build step.
 // Hash-routed: #/ is the homepage; #/project/<id> is a sticky token's overview, with
 // /tokens and /airdrops child routes for its other tabs.
-// Writes go straight to an RPC node (anvil auto-impersonation for local dev) or a browser wallet.
+// Wallet writes are reviewed and journaled; multichain launches use Relayr prepaid bundles.
 "use strict";
 
 // Function selectors, precomputed with `cast sig`.
@@ -45,7 +45,6 @@ const SEL = {
   ROUND_DURATION: "0x6641ea08",
   VESTING_ROUNDS: "0xaf29da14",
   distBalanceOf: "0xf7888aec",
-  ROUND_DURATION: "0x6641ea08",
   predictPocketOf: "0x7780193e",
   settleFor: "0x85713bc6",
   ensReverseWithGateways: "0xb7d6ca64",
@@ -73,8 +72,15 @@ const TOPIC = {
 
 // ---------------------------------------------------------------- abi codec
 const strip = (h) => h.replace(/^0x/, "");
-const word = (v) => BigInt(v).toString(16).padStart(64, "0");
-const encAddress = (a) => strip(a).toLowerCase().padStart(64, "0");
+const word = (v) => {
+  const value = BigInt(v);
+  if (value < 0n || value >= 2n ** 256n) throw new Error("Value is outside the uint256 range.");
+  return value.toString(16).padStart(64, "0");
+};
+const encAddress = (a) => {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(a)) throw new Error("Invalid address.");
+  return strip(a).toLowerCase().padStart(64, "0");
+};
 const encBytesTail = (bytes) => {
   const len = word(bytes.length);
   let hex = "";
@@ -110,17 +116,29 @@ function encode(types, values) {
 
 function hexToBytes(hex) {
   const h = strip(hex);
+  if (!/^(?:[0-9a-fA-F]{2})*$/.test(h)) throw new Error("Invalid hexadecimal bytes.");
   const out = new Uint8Array(h.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
-const decUint = (hex, i = 0) => BigInt("0x" + (strip(hex).slice(i * 64, i * 64 + 64) || "0"));
-const decAddress = (hex, i = 0) => "0x" + strip(hex).slice(i * 64 + 24, i * 64 + 64);
+const decUint = (hex, i = 0) => {
+  const value = strip(hex).slice(i * 64, i * 64 + 64);
+  if (!Number.isSafeInteger(i) || i < 0 || !/^[0-9a-fA-F]{64}$/.test(value)) throw new Error("Contract returned an invalid ABI word.");
+  return BigInt("0x" + value);
+};
+const decAddress = (hex, i = 0) => {
+  const value = decUint(hex, i);
+  if (value >= 2n ** 160n) throw new Error("Contract returned an invalid address.");
+  return "0x" + value.toString(16).padStart(40, "0");
+};
 function decString(hex) {
   const h = strip(hex);
+  if (h.length === 64) return new TextDecoder().decode(hexToBytes(h)).replace(/\0+$/, "");
   const offset = Number(decUint(h, 0)) * 2;
-  const len = Number(BigInt("0x" + h.slice(offset, offset + 64)));
+  if (!Number.isSafeInteger(offset) || offset < 64 || offset % 64 || offset + 64 > h.length) throw new Error("Contract returned an invalid string offset.");
+  const len = Number(decUint(h, offset / 64));
+  if (!Number.isSafeInteger(len) || len < 0 || len > 1048576 || offset + 64 + len * 2 > h.length) throw new Error("Contract returned an invalid string length.");
   return new TextDecoder().decode(hexToBytes(h.slice(offset + 64, offset + 64 + len * 2)));
 }
 // JBStickyTranche[]: offset word, length word, then (amount, timestamp) per tranche.
@@ -128,6 +146,7 @@ function decTranches(hex) {
   const h = strip(hex);
   const offset = Number(decUint(h, 0)) / 32;
   const len = Number(decUint(h, offset));
+  if (!Number.isSafeInteger(offset) || offset < 1 || !Number.isSafeInteger(len) || len < 0 || (offset + 1 + len * 2) * 64 > h.length) throw new Error("Contract returned an invalid tranche list.");
   const out = [];
   for (let i = 0; i < len; i++) {
     out.push({ amount: decUint(h, offset + 1 + i * 2), timestamp: Number(decUint(h, offset + 2 + i * 2)) });
@@ -139,7 +158,18 @@ function decTranches(hex) {
 const $ = (id) => document.getElementById(id);
 let walletAccount = null; // set when a browser wallet is connected
 const account = () => viewAs ?? walletAccount ?? $("account").value;
-const txAccount = () => walletAccount ?? $("account").value;
+function localTransactionMode(tx) {
+  const loopback = (hostname) => ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+  if (window.STICKY_CONFIG?.localMode !== true || !loopback(location.hostname) || window.__DEMO_RPC) return false;
+  try { return loopback(new URL(tx?.rpcUrl || $("rpc").value).hostname); } catch { return false; }
+}
+function txAccount() {
+  if (viewAs) throw new Error("Exit account preview before sending a transaction.");
+  if (window.__DEMO_RPC) throw new Error("The demo is read only. Connect to a live Sticky deployment to transact.");
+  const address = walletAccount || (localTransactionMode() ? $("account").value : null);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address || "")) throw new Error("Connect a wallet before sending a transaction.");
+  return address;
+}
 
 // Give the reflected half real document space so it moves exactly with the page. Set the normal fold
 // once after loading; unlike the earlier attempt, nothing snaps or rewrites scrolling afterward.
@@ -165,14 +195,7 @@ setTimeout(setInitialTopFold, 150);
 
 async function rpc(method, params) {
   if (window.__DEMO_RPC) return window.__DEMO_RPC(method, params);
-  const res = await fetch($("rpc").value, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
-  return json.result;
+  return StickyRuntime.jsonRpc($("rpc").value, method, params);
 }
 
 // Match Juicescan's ENS behavior: reverse-resolve every account against Ethereum mainnet's Universal Resolver,
@@ -182,14 +205,7 @@ const ENS_UNIVERSAL_RESOLVER = "0xeeeeeeee14d718c2b47d9923deab1335e144eeee";
 const ensNameCache = new Map();
 
 async function ensRpc(method, params) {
-  const res = await fetch(ENS_RPC_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
-  return json.result;
+  return StickyRuntime.jsonRpc(ENS_RPC_URL, method, params);
 }
 
 function ensReverseData(address) {
@@ -267,9 +283,10 @@ async function projectIdForHandle(handle) {
 
 const call = async (to, data) => rpc("eth_call", [{ to, data }, "latest"]);
 const view = (to, sel, args = "") => call(to, sel + args);
-const fromBlock = () => window.STICKY_CONFIG?.fromBlock ?? "earliest";
-const getLogs = (address, topics) =>
-  rpc("eth_getLogs", [{ address, topics, fromBlock: fromBlock(), toBlock: "latest" }]);
+const fromBlock = () => StickyRuntime.deployment(window.STICKY_CONFIG || {}, ctx.chainId).fromBlock ?? "earliest";
+const getLogs = (address, topics) => window.__DEMO_RPC
+  ? rpc("eth_getLogs", [{ address, topics, fromBlock: fromBlock(), toBlock: "latest" }])
+  : StickyRuntime.logs(rpc, { address, topics, fromBlock: fromBlock(), toBlock: "latest" });
 
 const blockTimestamps = {};
 async function blockTimestamp(blockNumber) {
@@ -306,31 +323,35 @@ async function ensureWalletChain(chainId) {
   if (switched !== Number(chainId)) throw new Error(`switch your wallet to ${chainById(chainId)?.name || chainId}`);
 }
 
+let txEngine = null;
+function getTxEngine() {
+  if (!txEngine) {
+    if (!window.StickyTx) throw new Error("Transaction recovery could not be loaded. Reload before sending.");
+    txEngine = window.StickyTx.createEngine({
+      storage: window.localStorage,
+      locks: navigator.locks,
+      wallet: () => walletAccount ? activeProvider : null,
+      ensureChain: ensureWalletChain,
+      localMode: localTransactionMode,
+      authorize: (tx) => {
+        if (txAccount().toLowerCase() !== tx.from.toLowerCase()) throw new Error("Connect the account shown in the transaction review.");
+      },
+      rpc: (tx, method, params) => rpcAt(tx.rpcUrl, method, params),
+      onUpdate: (session) => {
+        confirmSession = session;
+        renderTxRecovery(session);
+        if ($("confirm-dialog").open && session) renderConfirmSteps();
+      },
+    });
+  }
+  return txEngine;
+}
+
+// Standalone callers use the same durable review path as every transaction sequence.
 async function sendTx(tx) {
-  const chainId = Number(tx.chainId ?? ctx.chainId);
-  const wireTx = { to: tx.to, data: tx.data, ...(tx.value ? { value: tx.value } : {}) };
-  let hash;
-  if (walletAccount) {
-    await ensureWalletChain(chainId);
-    wireTx.from = walletAccount;
-    hash = await activeProvider.request({ method: "eth_sendTransaction", params: [wireTx] });
-  } else {
-    if (chainId !== ctx.chainId) throw new Error("connect a wallet to deploy on more than the connected chain");
-    wireTx.from = txAccount();
-    hash = await rpc("eth_sendTransaction", [wireTx]);
-  }
-  txStatus(`Transaction ${hash.slice(0, 14)}… submitted. Awaiting confirmation…`);
-  for (let i = 0; i < 120; i++) {
-    const receipt = walletAccount
-      ? await activeProvider.request({ method: "eth_getTransactionReceipt", params: [hash] })
-      : await rpc("eth_getTransactionReceipt", [hash]);
-    if (receipt) {
-      if (receipt.status !== "0x1") throw new Error(`tx reverted: ${hash}`);
-      return receipt;
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error("timed out waiting for receipt");
+  const plan = [{ label: "Transaction", args: [], ...tx }];
+  if (!(await confirmAndRun(tx.label || "Confirm transaction", plan))) return null;
+  return plan[0].receipt;
 }
 
 // ---------------------------------------------------------------- formatting
@@ -342,9 +363,14 @@ function formatUnits(v, decimals, dp = 4) {
   return fracStr ? `${whole}.${fracStr}` : whole.toString();
 }
 function parseUnits(str, decimals) {
-  const [whole, frac = ""] = str.trim().split(".");
-  if (!/^\d*$/.test(whole) || !/^\d*$/.test(frac)) throw new Error(`bad amount: ${str}`);
-  return BigInt(whole || "0") * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0").slice(0, decimals));
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("invalid token decimals");
+  const input = String(str).trim();
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(input)) throw new Error(`bad amount: ${str}`);
+  const [whole, frac = ""] = input.split(".");
+  if (frac.length > decimals) throw new Error(`this token supports at most ${decimals} decimal places`);
+  const amount = BigInt(whole || "0") * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0") || "0");
+  if (amount >= 1n << 256n) throw new Error("amount is too large");
+  return amount;
 }
 function formatDuration(seconds) {
   const s = Number(seconds);
@@ -366,7 +392,7 @@ function tokenBadge(addr, symbol, size) {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}"><rect width="24" height="24" rx="6" fill="hsl(${hue} 45% 42%)"/>` +
     `<text x="12" y="16.4" font-size="12" font-weight="700" fill="#f0f7f9" text-anchor="middle" font-family="ui-monospace,Menlo,monospace">${esc(letter)}</text></svg>`;
 }
-const ipfsUrl = (uri) => uri.replace("ipfs://", "https://ipfs.io/ipfs/");
+const ipfsUrl = (uri) => StickyRuntime.assetUrl(uri);
 const logoCache = {}; // token addr -> url | null | pending promise
 const projectMetadataCache = {}; // project token addr -> metadata | null | pending promise
 
@@ -379,7 +405,14 @@ async function resolveProjectMetadata(addr) {
       if (projectId === 0n) return null;
       const uri = decString(await view(ctx.controller, SEL.uriOf, word(projectId)));
       if (!uri) return null;
-      return await (await fetch(ipfsUrl(uri))).json();
+      const inline = parseStickyProjectUri(uri);
+      if (inline) return inline;
+      const url = ipfsUrl(uri);
+      if (!url) return null;
+      const response = await fetch(url, { signal: AbortSignal.timeout(10000), credentials: "omit", referrerPolicy: "no-referrer" });
+      if (!response.ok) return null;
+      const metadata = await response.json();
+      return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : null;
     } catch {
       return null;
     }
@@ -389,7 +422,7 @@ async function resolveProjectMetadata(addr) {
 async function resolveTokenLogoUrl(addr) {
   const key = addr.toLowerCase();
   const override = window.STICKY_CONFIG?.logoOverrides?.[key];
-  if (override) return (logoCache[key] = override);
+  if (override) return (logoCache[key] = ipfsUrl(override));
   if (key in logoCache) return logoCache[key];
   return (logoCache[key] = (async () => {
     const metadata = await resolveProjectMetadata(addr);
@@ -448,7 +481,16 @@ async function hydrateLogos() {
     const addr = el.dataset.tokenLogo;
     const size = el.dataset.size;
     const url = await resolveTokenLogoUrl(addr);
-    if (url) el.innerHTML = `<img src="${url}" width="${size}" height="${size}" style="border-radius:6px;object-fit:cover;display:block" onerror="this.remove()">`;
+    if (url) {
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = "";
+      img.width = img.height = Number(size) || 15;
+      img.style.cssText = "border-radius:6px;object-fit:cover;display:block";
+      img.referrerPolicy = "no-referrer";
+      img.onerror = () => img.remove();
+      el.replaceChildren(img);
+    }
   }
 }
 
@@ -539,7 +581,7 @@ function inlineStatus(anchor, msg, cls = "err") {
   notice.textContent = msg;
   notice.className = `inline-status ${cls}`;
 }
-const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // --------------------------------------------------------------------- state
 const ctx = {
@@ -556,19 +598,35 @@ const ctx = {
 };
 
 async function loadDeployer() {
+  ctx.loaded = false;
   const deployer = $("deployer").value;
   status("loading…");
-  ctx.hook = decAddress(await view(deployer, SEL.HOOK));
-  ctx.tokens = decAddress(await view(deployer, SEL.TOKENS));
-  ctx.terminal = decAddress(await view(deployer, SEL.TERMINAL));
-  ctx.store = decAddress(await view(ctx.terminal, SEL.STORE));
-  ctx.controller = decAddress(await view(deployer, SEL.CONTROLLER));
-  try {
-    ctx.chainId = Number(BigInt(await rpc("eth_chainId", [])));
-  } catch {}
+  StickyRuntime.address(deployer);
+  const chainId = Number(BigInt(await rpc("eth_chainId", [])));
+  if (!window.__DEMO_RPC) {
+    const selected = Number(new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || chainId);
+    if (chainId !== selected) throw new Error(`The configured RPC serves chain ${chainId}; this page selected chain ${selected}.`);
+    const code = await rpc("eth_getCode", [deployer, "latest"]);
+    if (!code || code === "0x") throw new Error("Sticky is not deployed at the configured address on this chain.");
+  }
+  const [hook, tokens, terminal, controller] = await Promise.all(
+    [SEL.HOOK, SEL.TOKENS, SEL.TERMINAL, SEL.CONTROLLER].map(selector => view(deployer, selector).then(decAddress).then(StickyRuntime.address)),
+  );
+  const store = StickyRuntime.address(decAddress(await view(terminal, SEL.STORE)));
+  if (!window.__DEMO_RPC) {
+    await Promise.all([hook, tokens, terminal, controller, store].map(async address => {
+      const code = await rpc("eth_getCode", [address, "latest"]);
+      if (!code || code === "0x") throw new Error("The configured Sticky deployment has an unavailable dependency.");
+    }));
+  }
+  Object.assign(ctx, { chainId, hook, tokens, terminal, controller, store });
   ctx.loaded = true;
   ctx.projects = {};
+  ctx.pool = null;
+  ctx.walletMax = ctx.stakedMax = null;
+  for (const cache of [blockTimestamps, logoCache, projectMetadataCache]) for (const key of Object.keys(cache)) delete cache[key];
   handleRouteCache.clear();
+  projectHandleCache.clear();
   // Re-resolve the fund-origin default now that the connected chain is known.
   originKey = null;
   renderOriginPills();
@@ -1324,6 +1382,7 @@ async function renderProject(projectId) {
   $("tab-btn-rewards").href = `${projectRoute}/airdrops`;
 
   const info = await projectInfo(projectId);
+  syncTransferSticky(info);
   $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
   $("h-symbol").textContent = stickyLabel(info);
   $("h-name").textContent = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.name;
@@ -1333,8 +1392,8 @@ async function renderProject(projectId) {
   $("stake-symbol").textContent = info.symbol;
   $("unstake-symbol").textContent = info.symbol;
   $("unstake-hint").textContent = info.reward > 0n
-    ? `unsticking leaves ${pct(info.reward)} behind for those still stuck | newest tranche first | stickiness clock resets only at zero`
-    : `unwind fee-free 1:1 | newest tranche first | streak resets only at zero`;
+    ? `cash out tax: ${pct(info.reward)} | reclaim depends on your share of the pool | newest tranche first | streak resets only at zero`
+    : `unwind your share of the backing fee-free | newest tranche first | streak resets only at zero`;
 
   const logs = await hookLogs(projectId);
   const [totalStaked, tokenSupply, rows, pool] = await Promise.all([
@@ -1350,7 +1409,7 @@ async function renderProject(projectId) {
   if (info.reward > 0n) {
     const rho0 = pool.supply > 0n ? Number((pool.sigma * 10n ** 18n) / pool.supply) / 10 ** info.decimals : 1;
     $("p-bonus-blurb").textContent =
-      `${pct(info.reward)} of each unstick stays in the pool, backing every ${info.stSymbol} that remains.`
+      `A ${pct(info.reward)} cash out tax rewards remaining holders. The amount left behind depends on how much of the supply is unstuck.`
       + (rho0 > 1.0005 ? ` 1 ${info.stSymbol} is currently backed by ${parseFloat(rho0.toFixed(4))} ${info.symbol}.` : "");
     renderBonusSplit(Number(info.reward) / 10000, {
       el: $("p-ratchet"),
@@ -1386,8 +1445,8 @@ async function renderProject(projectId) {
     ? "Transfers are disabled. Sticky tokens are minted by sticking and burned by unsticking."
     : "Transfers move the sender's newest tranches first. The recipient receives a fresh tranche; existing streaks keep running unless the sender transfers everything.";
   const bonusRule = info.reward > 0n
-    ? `${pct(info.reward)} of each unstick stays with everyone still stuck.`
-    : "Unsticking returns the underlying tokens one for one; no bonus stays behind.";
+    ? `Cash out tax is ${pct(info.reward)}. The reclaim depends on pool backing and the portion of total supply unstuck.`
+    : "Unsticking returns your proportional share of the backing without a cash out fee.";
   // The auto-stick adapter is presented as its own pre-approval, not as a generic airdrop sender.
   const adapterGranter = granters.some((g) => g.toLowerCase() === (autoStickAdapter() || "").toLowerCase());
   const humanGranters = granters.filter((g) => g.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
@@ -1415,8 +1474,8 @@ async function renderProject(projectId) {
             "Backing",
             `1 ${esc(info.stSymbol)} ≈ ${formatUnits((pool.sigma * 10n ** 18n) / pool.supply, info.decimals)} ${esc(info.symbol)}`,
             info.reward > 0n
-              ? "Unsticks leave their bonus in the pool, so backing per sticky token only goes up."
-              : "Pure wrapper — backing stays one for one.",
+              ? "Unsticks can add backing for remaining holders. New sticks mint one for one and can dilute accumulated bonuses."
+              : "Sticks mint one for one. Donations can increase the backing available when unsticking.",
           )
         : "")
       + meta("Transferable", transferMode, transferRule)
@@ -1454,7 +1513,7 @@ async function refreshPosition() {
   const info = await projectInfo(ctx.currentId);
   const args = word(ctx.currentId) + encAddress(account());
   const [staked, streakStart, longest, wallet, tranches] = await Promise.all([
-    view(ctx.hook, SEL.stakedBalanceOf, args).then(decUint),
+    view(info.stToken, SEL.balanceOf, encAddress(account())).then(decUint),
     view(ctx.hook, SEL.streakStartOf, args).then(decUint),
     view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
     view(info.stakedToken, SEL.balanceOf, encAddress(account())).then(decUint),
@@ -1468,7 +1527,7 @@ async function refreshPosition() {
   $("p-longest").textContent = formatDuration(longest > current ? longest : current);
   $("p-wallet").textContent = `${formatUnits(wallet, info.decimals)} ${info.symbol}`;
   $("open-unstick").textContent = `Unstick ${info.symbol}`;
-  ctx.walletMax = formatUnits(wallet, info.decimals);
+  ctx.walletMax = formatUnits(wallet, info.decimals, info.decimals);
   // Full precision so "max" truly unsticks everything (and the full-exit auto-stick check sees a full exit).
   ctx.stakedMax = formatUnits(staked, 18, 18);
   $("stake-balance").textContent = ctx.walletMax;
@@ -1508,24 +1567,32 @@ function contractNameOf(addr) {
 let confirmResolve = null;
 let confirmPlan = [];
 let confirmSummary = [];
-let confirmProgress = -1; // -1 = reviewing; 0..n-1 = sending that step; n = all sent
+let confirmSession = null;
+let confirmProgress = -1;
+let txRunCancelled = false;
 
-// The numbered sequence card: shown for multi-step plans, and advanced live while transactions send.
 function renderConfirmSteps() {
   const card = $("cd-steps");
-  if (confirmPlan.length < 2) return card.classList.add("hide");
   card.classList.remove("hide");
-  const intro = confirmProgress < 0
-    ? `Your wallet will ask for ${confirmPlan.length} transactions. This dialog stays open and advances through each one.`
-    : confirmProgress >= confirmPlan.length
-      ? "All transactions confirmed."
-      : `Waiting on your wallet — transaction ${confirmProgress + 1} of ${confirmPlan.length}.`;
-  card.innerHTML = `<p>${esc(intro)}</p>` + confirmPlan.map((tx, i) => {
-    const state = confirmProgress >= confirmPlan.length || i < confirmProgress
-      ? "done"
-      : i === confirmProgress ? "current" : "pending";
-    return `<div class="cd-step ${state}"><i>${state === "done" ? "✓" : i + 1}</i><span>${esc(tx.label)}</span></div>`;
+  const steps = confirmSession?.steps || confirmPlan.map((tx) => ({ tx, state: "ready" }));
+  const labels = {
+    ready: "Ready for review", rejected: "Cancelled in wallet", submitting: "Waiting for wallet",
+    pending: "Checking execution", unknown: "Execution hash needed", reverted: "Reverted and finalized", confirmed: "Confirmed",
+  };
+  const done = steps.filter((step) => step.state === "confirmed").length;
+  const uncertain = steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state));
+  const intro = done === steps.length ? "All transactions confirmed."
+    : uncertain ? "The submitted step will be checked before any remaining transaction is sent."
+      : `${steps.length - done} transaction${steps.length - done === 1 ? "" : "s"} remain. Confirmed steps will not be repeated.`;
+  card.innerHTML = `<p>${esc(intro)}</p>` + steps.map((step, i) => {
+    const state = step.state === "confirmed" ? "done" : ["pending", "submitting", "unknown"].includes(step.state) ? "current" : "pending";
+    const chain = chainById(step.tx.chainId);
+    const reference = step.hash ? ` <span class="mut">${esc(step.hash.slice(0, 12))}…</span>` : "";
+    const link = step.hash && chain?.explorer ? ` <a href="${esc(chain.explorer)}/tx/${esc(step.hash)}" target="_blank" rel="noopener noreferrer">View</a>` : "";
+    return `<div class="cd-step ${state}"><i>${state === "done" ? "✓" : i + 1}</i><span>${esc(step.tx.label)}<br><small>${esc(labels[step.state])}${reference}${link}</small></span></div>`;
   }).join("");
+  const recovery = $("cd-recovery");
+  if (recovery) recovery.classList.toggle("hide", !uncertain);
 }
 
 function renderConfirm() {
@@ -1540,7 +1607,7 @@ function renderConfirm() {
     .map((tx, i) => {
       const chain = tx.chainLabel || chainById(tx.chainId ?? ctx.chainId)?.label || "";
       const step = confirmPlan.length > 1 ? `${i + 1}. ` : "";
-      const rows = [...tx.args];
+      const rows = [["FROM", tx.from || txAccount()], ...tx.args];
       if (tx.value) rows.push(["VALUE", tx.valueLabel ?? `${BigInt(tx.value)} wei`]);
       return `<div class="txstep">`
         + (chain ? `<div class="cd-chain">${esc(chain)}</div>` : "")
@@ -1550,7 +1617,7 @@ function renderConfirm() {
         + rows.map(([k, v]) => `<tr><th style="width:104px">${esc(k)}</th><td style="word-break:break-all">${esc(String(v))}</td></tr>`).join("")
         + `</tbody></table>`
         + `<details class="cd-raw"><summary>Show raw data</summary>`
-        + `<div class="rawbox">function: ${esc(tx.fn)}\nto: ${tx.to}\nvalue: ${tx.value ? BigInt(tx.value) : 0} wei\ndata: ${tx.data}</div></details>`
+        + `<div class="rawbox">function: ${esc(tx.fn)}\nfrom: ${esc(tx.from || txAccount())}\nto: ${tx.to}\nvalue: ${tx.value ? BigInt(tx.value) : 0} wei\ndata: ${tx.data}</div></details>`
         + `</div>`;
     })
     .join("");
@@ -1559,62 +1626,151 @@ function renderConfirm() {
 // Show the consent dialog for a transaction plan. Resolves true only if the user confirms.
 // `summary` is optional plain-language rows shown above the sequence, e.g. [["Stick", "10 ART"]].
 function confirmTxs(title, txs, summary = []) {
+  if (confirmResolve) throw new Error("Finish the current transaction review first.");
   confirmPlan = txs;
   confirmSummary = summary;
   confirmProgress = -1;
   $("cd-title").textContent = title;
   $("cd-confirm").disabled = false;
+  $("cd-confirm").textContent = confirmSession?.steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state))
+    ? "Check transaction" : "Confirm & send";
   $("cd-cancel").classList.remove("hide");
+  $("cd-cancel").textContent = "Cancel";
+  $("confirm-dialog").querySelectorAll(".inline-status").forEach((notice) => notice.remove());
   renderConfirm();
-  $("confirm-dialog").showModal();
-  return new Promise((resolve) => {
-    confirmResolve = resolve;
-  });
+  const answer = new Promise((resolve) => { confirmResolve = resolve; });
+  if (!$("confirm-dialog").open) $("confirm-dialog").showModal();
+  return answer;
 }
 
 function settleConfirm(ok) {
-  // A confirmed plan keeps the dialog open so the sequence card can advance through the sends.
   if (!ok) {
+    txRunCancelled = true;
     try { $("confirm-dialog").close(); } catch {}
   }
   const resolve = confirmResolve;
   confirmResolve = null;
-  if (resolve) resolve(ok);
+  if (resolve) {
+    if (ok) {
+      $("cd-confirm").disabled = true;
+      $("cd-cancel").textContent = "Close";
+    }
+    resolve(ok);
+  }
 }
 
-// The one true tx path: review, confirm, then send each step while the dialog reports progress.
-// Resolves true when every transaction landed; false when the user cancelled.
-async function confirmAndRun(title, txs, summary = []) {
-  if (!(await confirmTxs(title, txs, summary))) {
-    return false;
-  }
-  $("cd-confirm").disabled = true;
-  $("cd-cancel").classList.add("hide");
+async function runSavedTransactions(session, originalTxs) {
+  txRunCancelled = false;
+  confirmSession = session;
   try {
-    for (let i = 0; i < txs.length; i++) {
-      confirmProgress = i;
-      renderConfirmSteps();
-      txStatus(`${txs[i].label}…`);
-      txs[i].receipt = await sendTx({
-        to: txs[i].to,
-        data: txs[i].data,
-        chainId: txs[i].chainId,
-        ...(txs[i].value ? { value: txs[i].value } : {}),
-      });
-    }
-    confirmProgress = txs.length;
+    const result = await getTxEngine().run({
+      sessionId: session.id,
+      review: (saved) => {
+        confirmSession = saved;
+        return confirmTxs(saved.title, saved.steps.map((step) => step.tx), saved.summary);
+      },
+      shouldContinue: () => !txRunCancelled,
+    });
+    confirmSession = result.session;
+    if (originalTxs) result.session.steps.forEach((step, index) => { originalTxs[index].receipt = step.receipt; });
+    if (result.cancelled) return false;
+    confirmProgress = result.session.steps.length;
     renderConfirmSteps();
-  } finally {
     try { $("confirm-dialog").close(); } catch {}
+    renderTxRecovery(result.session);
+    return true;
+  } catch (error) {
+    $("cd-confirm").disabled = false;
+    $("cd-confirm").textContent = "Resume saved plan";
+    $("cd-cancel").classList.remove("hide");
+    $("cd-cancel").textContent = "Close";
+    inlineStatus($("cd-confirm"), error.message, "err");
+    try { renderTxRecovery(getTxEngine().load()); } catch {}
+    throw error;
   }
-  return true;
+}
+
+async function confirmAndRun(title, txs, summary = [], hooks = {}) {
+  const from = txAccount();
+  const frozen = txs.map((tx) => {
+    if (tx.from && tx.from.toLowerCase() !== from.toLowerCase()) throw new Error("The account changed while building the transaction. Review the action again.");
+    return {
+      ...tx, from: tx.from || from, chainId: Number(tx.chainId ?? ctx.chainId),
+      rpcUrl: tx.rpcUrl || stickyDeploymentFor(tx.chainId ?? ctx.chainId).rpcUrl,
+    };
+  });
+  const session = await getTxEngine().prepare(title, frozen, summary);
+  await hooks.onPrepared?.(session);
+  return runSavedTransactions(session, txs);
+}
+
+async function resumeSavedTransactions() {
+  const session = getTxEngine().load();
+  if (!session) return;
+  const result = await runSavedTransactions(session);
+  if (result) {
+    txStatus("Saved transactions confirmed.", "ok");
+    await refreshPosition();
+  }
+}
+
+function renderTxRecovery(session) {
+  const banner = $("tx-recovery-banner");
+  if (!banner) return;
+  const pending = session?.steps.some((step) => step.state !== "confirmed");
+  const tagged = session?.steps.some((step) => step.tx.sessionTag) && !session.acknowledged;
+  banner.classList.toggle("hide", !pending && !tagged);
+  if (!session) return;
+  $("tx-recovery-label").textContent = `${session.title}: ${pending ? "saved transaction needs attention" : "payment confirmed; resume your launch"}.`;
+  $("tx-recovery-resume").disabled = !!txEngine?.isBusy();
+  $("tx-recovery-clear").classList.toggle("hide", tagged || session.steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state)));
+}
+
+function installTxRecoveryUI() {
+  const banner = document.createElement("div");
+  banner.id = "tx-recovery-banner";
+  banner.className = "hide";
+  banner.setAttribute("role", "status");
+  banner.style.cssText = "position:relative;z-index:2;margin:12px auto;padding:14px;max-width:940px;border:1px solid var(--line);border-radius:6px;background:var(--panel,#fdffff);overflow-wrap:anywhere";
+  banner.innerHTML = '<span id="tx-recovery-label"></span><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button id="tx-recovery-resume">Review saved transaction</button><button id="tx-recovery-clear" class="ghost">Dismiss saved plan</button></div>';
+  (document.querySelector("main") || document.body).prepend(banner);
+  const recovery = document.createElement("div");
+  recovery.id = "cd-recovery";
+  recovery.className = "cd-steps hide";
+  recovery.innerHTML = '<p>If your wallet created a proposal, wait for it to execute. Paste the final execution transaction hash to recover a transaction your wallet did not report.</p><label for="cd-execution-hash">Execution transaction hash</label><input id="cd-execution-hash" autocomplete="off" spellcheck="false" placeholder="0x…" style="width:100%;margin:8px 0"><button id="cd-recover-hash" class="ghost">Verify execution</button>';
+  $("cd-body").after(recovery);
+  $("tx-recovery-resume").onclick = guard(resumeSavedTransactions);
+  $("tx-recovery-clear").onclick = guard(async () => { await getTxEngine().clear(); });
+  $("cd-recover-hash").onclick = guard(async () => {
+    if (confirmResolve) {
+      settleConfirm(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const saved = await getTxEngine().recover($("cd-execution-hash").value.trim());
+    confirmSession = saved;
+    renderConfirmSteps();
+    $("cd-confirm").textContent = "Resume saved plan";
+    $("cd-confirm").disabled = false;
+    if (!$("confirm-dialog").open) $("confirm-dialog").showModal();
+    inlineStatus($("cd-recover-hash"), "Execution verified. Resume the saved plan to continue.", "ok");
+  });
+  try { renderTxRecovery(getTxEngine().load()); } catch (error) {
+    banner.classList.remove("hide");
+    $("tx-recovery-label").textContent = error.message;
+    $("tx-recovery-clear").classList.add("hide");
+  }
+  window.addEventListener("storage", (event) => {
+    if (event.key === window.StickyTx?.STORAGE_KEY) {
+      try { renderTxRecovery(getTxEngine().load()); } catch (error) { $("tx-recovery-label").textContent = error.message; banner.classList.remove("hide"); }
+    }
+  });
 }
 
 async function auditPrompt() {
   const chainIds = [...new Set(confirmPlan.map((tx) => Number(tx.chainId ?? ctx.chainId)))];
   const lines = [
     "Audit these Ethereum transactions before I sign them. Do not assume good intent — verify everything.",
-    `Chain ids: ${chainIds.join(", ")}. My account: ${account()}. App: Sticky webclient (${location.origin}).`,
+    `Chain ids: ${chainIds.join(", ")}. Reviewed account: ${confirmPlan[0]?.from || txAccount()}. App: Sticky webclient (${location.origin}).`,
     `Stated intent: ${$("cd-title").textContent}.`,
     "",
   ];
@@ -1660,7 +1816,13 @@ async function renderTrustedSenders() {
 }
 
 async function setTrust(sender, trusted) {
+  const action = beginAction();
+  const { holder } = action;
+  sender = actionAddress(sender, "sender");
   const info = await projectInfo(ctx.currentId);
+  const current = decUint(await view(ctx.hook, SEL.isTrustedSenderOf,
+    word(ctx.currentId) + encAddress(holder) + encAddress(sender))) === 1n;
+  if (current === trusted) throw new Error(trusted ? "this sender is already trusted" : "this sender is not trusted");
   const txs = [{
     label: trusted ? "Trust sender" : "Untrust sender",
     to: ctx.hook,
@@ -1672,7 +1834,7 @@ async function setTrust(sender, trusted) {
     ],
     data: SEL.setTrustedSenderFor + word(ctx.currentId) + encAddress(sender) + word(trusted ? 1 : 0),
   }];
-  if (!(await confirmAndRun(`${trusted ? "Trust" : "Untrust"} ${shortAddr(sender)}`, txs))) return;
+  if (!(await reviewAction(action, `${trusted ? "Trust" : "Untrust"} ${shortAddr(sender)}`, txs))) return;
   txStatus(trusted ? "Sender trusted" : "Sender untrusted", "ok");
   await renderTrustedSenders();
 }
@@ -1700,29 +1862,23 @@ const chainsForEnvironment = (environment) => ORIGINS.filter((origin) => origin.
 
 function stickyDeploymentFor(chainId) {
   const origin = chainById(chainId);
-  const configured = window.STICKY_CONFIG?.chains?.[String(chainId)] || {};
+  const configured = StickyRuntime.deployment(window.STICKY_CONFIG || {}, chainId);
   const current = Number(chainId) === ctx.chainId;
   return {
     ...origin,
     ...configured,
     chainId: Number(chainId),
     rpcUrl: configured.rpcUrl || (current ? $("rpc").value : origin?.rpcUrl),
-    deployer: configured.deployer || (current ? $("deployer").value : window.STICKY_CONFIG?.deployer),
-    autoStickAdapter: configured.autoStickAdapter
-      || (current ? autoStickAdapter() : window.STICKY_CONFIG?.autoStickAdapter),
+    deployer: current ? $("deployer").value : configured.deployer,
+    autoStickAdapter: configured.autoStickAdapter,
+    distributor: configured.distributor,
+    pockets: configured.pockets,
+    fromBlock: configured.fromBlock ?? "earliest",
   };
 }
 
 async function rpcAt(url, method, params) {
-  if (!url) throw new Error("no RPC is configured for this chain");
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const json = await response.json();
-  if (json.error) throw new Error(json.error.message);
-  return json.result;
+  return StickyRuntime.jsonRpc(url, method, params);
 }
 
 const viewAt = (deployment, to, selector, args = "") =>
@@ -1745,6 +1901,11 @@ async function loadStickyRuntime(chainId) {
   }
   const controller = decAddress(await viewAt(deployment, deployment.deployer, SEL.CONTROLLER));
   const projects = decAddress(await viewAt(deployment, controller, SEL.PROJECTS));
+  await Promise.all([controller, projects].map(async address => {
+    StickyRuntime.address(address);
+    const code = await rpcAt(deployment.rpcUrl, "eth_getCode", [address, "latest"]);
+    if (!code || code === "0x") throw new Error(`A required Sticky contract is missing on ${chain.name}`);
+  }));
   const fee = decUint(await viewAt(deployment, projects, SEL.creationFee));
   const adapter = deployment.autoStickAdapter;
   if (adapter) {
@@ -1755,21 +1916,34 @@ async function loadStickyRuntime(chainId) {
     if (!adapterCode || adapterCode === "0x") {
       throw new Error(`the auto-stick adapter is not deployed at ${adapter} on ${chain.name}`);
     }
+    const [adapterDeployer, adapterDistributor, hook, adapterHook] = await Promise.all([
+      viewAt(deployment, adapter, "0xc1b8411a").then(decAddress),
+      viewAt(deployment, adapter, "0x9c26149f").then(decAddress),
+      viewAt(deployment, deployment.deployer, SEL.HOOK).then(decAddress),
+      viewAt(deployment, adapter, SEL.HOOK).then(decAddress),
+    ]);
+    if (adapterDeployer.toLowerCase() !== deployment.deployer.toLowerCase() || hook.toLowerCase() !== adapterHook.toLowerCase()
+      || !deployment.distributor || adapterDistributor.toLowerCase() !== deployment.distributor.toLowerCase()) {
+      throw new Error(`The auto-stick adapter on ${chain.name} does not match this Sticky deployment and distributor.`);
+    }
   }
   return { ...chain, ...deployment, controller, projects, fee, autoStickAdapter: adapter || "" };
 }
 
 let createEnvironment = "production";
 let createChainIds = new Set(chainsForEnvironment(createEnvironment).map((chain) => chain.chainId));
+const launchChainConfigured = (chain) => window.STICKY_CONFIG?.demoMode === true
+  || /^0x[0-9a-fA-F]{40}$/.test(stickyDeploymentFor(chain.chainId).deployer || "");
 
 function renderCreateChains() {
   const chains = chainsForEnvironment(createEnvironment);
+  for (const chain of chains) if (!launchChainConfigured(chain)) createChainIds.delete(chain.chainId);
   $("d-environment").value = createEnvironment;
   $("d-chains").innerHTML = chains.map((chain) =>
     `<label class="chain-option"><input type="checkbox" data-create-chain="${chain.chainId}"`
-      + `${createChainIds.has(chain.chainId) ? " checked" : ""}>`
+      + `${createChainIds.has(chain.chainId) ? " checked" : ""}${launchChainConfigured(chain) ? "" : " disabled"}>`
       + `<span class="chain-option-icon" aria-hidden="true">${CHAIN_ICON_SVG[chain.icon]}</span>`
-      + `<span>${esc(chain.name)}</span></label>`,
+      + `<span>${esc(chain.name)}${launchChainConfigured(chain) ? "" : " — unavailable"}</span></label>`,
   ).join("");
   syncCreateChainValidity();
 }
@@ -1782,7 +1956,7 @@ function syncCreateChainValidity() {
 
 function selectCreateEnvironment(environment) {
   createEnvironment = environment;
-  createChainIds = new Set(chainsForEnvironment(environment).map((chain) => chain.chainId));
+  createChainIds = new Set(chainsForEnvironment(environment).filter(launchChainConfigured).map((chain) => chain.chainId));
   renderCreateChains();
   resolveLockToken().catch(() => {});
 }
@@ -1792,11 +1966,13 @@ const originLabel = (origin) =>
   origin.chainId === ctx.chainId ? `${origin.label} <span class="mut">— THIS CHAIN</span>` : origin.label;
 
 function renderOriginPills() {
-  const selected = ORIGINS.find((origin) => origin.key === originKey)
-    ?? ORIGINS.find((origin) => origin.chainId === ctx.chainId) ?? ORIGINS[0];
+  const family = chainById(ctx.chainId)?.environment || "production";
+  const origins = chainsForEnvironment(family);
+  const selected = origins.find((origin) => origin.key === originKey)
+    ?? origins.find((origin) => origin.chainId === ctx.chainId) ?? origins[0];
   originKey = selected.key;
   $("r-origin-btn").innerHTML = `${CHAIN_ICON_SVG[selected.icon]}${selected.label}`;
-  $("r-origin-menu").innerHTML = ORIGINS.map((origin) =>
+  $("r-origin-menu").innerHTML = origins.map((origin) =>
     `<div class="dd-item${origin.key === originKey ? " on" : ""}" onclick="setOrigin('${origin.key}')">` +
     `${CHAIN_ICON_SVG[origin.icon]}${originLabel(origin)}</div>`,
   ).join("");
@@ -1813,23 +1989,478 @@ window.setOrigin = (key) => {
   $("r-origin-menu").classList.add("hide");
 };
 
-const distributor = () => window.STICKY_CONFIG?.distributor;
-const autoStickAdapter = () => window.STICKY_CONFIG?.autoStickAdapter;
+// Cross-chain rewards use the reward token's own V6 sucker pair. The Sticky
+// project receives the destination tokens through its deterministic pocket.
+let bridgeApi = null;
+let bridgeContextKey = "";
+let bridgeRoutes = [];
+let bridgeDisplayedRows = [];
+let bridgeRefreshGeneration = 0;
+let bridgeBusy = false;
+const getBridgeApi = () => bridgeApi ||= StickyBridge.create({ rpc: rpcAt, keccak256: StickyRelayr.keccak256, logs: StickyRuntime.logs, inspectSafeExecution: StickyTxSafe.inspectSafeExecution });
+
+function bridgeRuntime(chainId) {
+  const chain = chainById(chainId);
+  if (!chain) throw new Error("This bridge chain is unsupported.");
+  return { ...stickyDeploymentFor(chainId), ...chain, rpcUrl: stickyDeploymentFor(chainId).rpcUrl,
+    bridgeContracts: window.STICKY_CONFIG?.chains?.[String(chainId)]?.bridgeContracts,
+    bridgeFromBlock: window.STICKY_CONFIG?.chains?.[String(chainId)]?.bridgeFromBlock };
+}
+
+function rehydrateBridgeRoute(route) {
+  return { ...route, source: bridgeRuntime(Number(route.source.chainId)), destination: bridgeRuntime(Number(route.destination.chainId)) };
+}
+
+async function bridgeContext() {
+  const projectId = ctx.currentId;
+  const chainId = ctx.chainId;
+  const source = ORIGINS.find(origin => origin.key === originKey);
+  if (projectId === null || !source || source.chainId === chainId) return null;
+  const destination = bridgeRuntime(chainId);
+  if (source.environment !== destination.environment) throw new Error("Choose an origin in the same network environment.");
+  const info = await projectInfo(projectId);
+  if (ctx.currentId !== projectId || ctx.chainId !== chainId) throw new Error("The project changed. Review the bridge again.");
+  const pockets = stickyDeploymentFor(chainId).pockets;
+  if (!pockets || !distributor()) throw new Error("Cross-chain rewards are unavailable until this chain's reward pocket and distributor are deployed.");
+  const pocket = await getBridgeApi().pocketFor(destination, info.stToken, pockets, distributor());
+  const owner = /^0x[0-9a-f]{40}$/i.test(txAccount() || "") ? txAccount().toLowerCase() : null;
+  return { source: bridgeRuntime(source.chainId), destination, info, pocket, owner,
+    key: `sticky:bridge:v1:${chainId}:${info.stToken.toLowerCase()}:${owner || "disconnected"}` };
+}
+
+function bridgeRecords(key) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return [];
+  let records;
+  try { records = JSON.parse(raw); } catch { throw new Error("Saved bridge recovery data is unreadable. Keep this browser's data and recover the original transfer before sending again."); }
+  if (!Array.isArray(records) || records.length > 100 || records.some(record => !record || !/^0x[0-9a-f]{64}$/i.test(record.metadata || "")
+    || !/^0x[0-9a-f]{40}$/i.test(record.owner || "") || !/^\d+$/.test(record.amount || "") || !record.route?.source || !record.route?.destination)) {
+    throw new Error("Saved bridge recovery data is invalid. Recover the original transfer before sending again.");
+  }
+  return records;
+}
+
+function saveBridgeRecords(key, records) {
+  if (records.length > 100) throw new Error("This browser's saved bridge history is full. Existing transfers can still be recovered; no new transfer was submitted.");
+  const encoded = JSON.stringify(records);
+  localStorage.setItem(key, encoded);
+  if (localStorage.getItem(key) !== encoded) throw new Error("Bridge recovery could not be saved. No new transfer will be submitted.");
+}
+
+async function mutateBridgeRecords(key, update) {
+  if (!navigator.locks?.request) throw new Error("This browser cannot safely save bridge recovery across tabs.");
+  return navigator.locks.request("sticky-reward-bridge-storage", { mode: "exclusive" }, () => {
+    const updated = update(bridgeRecords(key));
+    saveBridgeRecords(key, updated);
+    return updated;
+  });
+}
+
+function canDiscardBridgeJournal(journal, metadata) {
+  return !!journal?.steps.length && journal.steps.every(step => step.tx.sessionTag === "sticky-bridge:" + metadata
+    && ((step.state === "ready" && !step.submission) || ["rejected", "reverted"].includes(step.state)
+      || (step.state === "confirmed" && /^0x095ea7b3[0-9a-f]{128}$/i.test(step.tx.data))))
+    && journal.steps.some(step => step.state !== "confirmed");
+}
+
+async function discardBridgeDraft(context, record) {
+  const tag = "sticky-bridge:" + record.metadata;
+  const journal = getTxEngine().load();
+  if (record.journalId && getTxEngine().wasDiscarded(record.journalId, tag)) {
+    await mutateBridgeRecords(context.key, records => records.filter(item => item.metadata !== record.metadata));
+    return true;
+  }
+  if (!canDiscardBridgeJournal(journal, record.metadata)) return false;
+  await getTxEngine().discardUnsubmitted(journal.id);
+  await mutateBridgeRecords(context.key, records => records.filter(item => item.metadata !== record.metadata));
+  return true;
+}
+
+function bridgeRouteId(route) {
+  return `${route.source.chainId}:${route.destination.chainId}:${route.sourceSucker.toLowerCase()}:${route.backingToken.toLowerCase()}`;
+}
+
+async function reconcileBridgeRecord(context, record, rows) {
+  const candidates = rows.filter(row => row.leaf.metadata === record.metadata && row.caller === record.owner.toLowerCase());
+  let found;
+  for (const candidate of candidates) {
+    try { await getBridgeApi().verifySource(rehydrateBridgeRoute(record.route), candidate, record.owner, record.prepareData); found = candidate; break; } catch { /* A copied reference or noncanonical log must not release the saved wallet transfer. */ }
+  }
+  if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary !== "0x" + encAddress(context.pocket))) throw new Error("The recovered bridge leaf does not match the saved transfer.");
+  await mutateBridgeRecords(context.key, records => {
+    const index = records.findIndex(item => item.metadata === record.metadata);
+    if (index < 0) return records; // A coordinated cancellation may finish while a read is in flight.
+    records[index] = found ? { ...records[index], phase: "submitted", sourceHash: found.sourceHash, sourceVerified: true, leafIndex: found.leaf.index.toString(), status: found.status }
+      : { ...records[index], sourceVerified: false, status: "recover" };
+    return records;
+  });
+  if (!found) return false;
+  const journal = getTxEngine().load();
+  if (journal?.steps.every(step => step.tx.sessionTag === "sticky-bridge:" + record.metadata && step.state === "confirmed")) await getTxEngine().acknowledge(journal.id);
+  return true;
+}
+
+async function renderBridgeFunding() {
+  if (!$("bridge-status")) return;
+  const generation = ++bridgeRefreshGeneration;
+  try {
+    const context = await bridgeContext();
+    if (!context || generation !== bridgeRefreshGeneration) return;
+    const key = `${context.key}:${context.source.chainId}`;
+    if (bridgeContextKey !== key) {
+      bridgeContextKey = key;
+      bridgeRoutes = [];
+      bridgeDisplayedRows = [];
+      $("bridge-source-token").value = "";
+      $("bridge-route").innerHTML = "";
+      $("bridge-route").classList.add("hide");
+      $("bridge-route").disabled = true;
+      $("bridge-prepare").disabled = true;
+      $("bridge-movements").replaceChildren();
+    }
+    $("pocket-addr").textContent = context.pocket;
+    const records = context.owner ? bridgeRecords(context.key).filter(record => record.route.source.chainId === context.source.chainId) : [];
+    const routes = new Map(bridgeRoutes.map(route => [bridgeRouteId(route), route]));
+    for (const record of records) {
+      const route = rehydrateBridgeRoute(record.route);
+      if (route.destination.chainId !== context.destination.chainId || record.owner.toLowerCase() !== context.owner) throw new Error("Saved bridge data belongs to another destination or account.");
+      routes.set(bridgeRouteId(route), route);
+    }
+    const displayed = [];
+    for (const route of routes.values()) {
+      const rows = await getBridgeApi().movements(route, context.pocket);
+      for (const record of records.filter(item => bridgeRouteId(item.route) === bridgeRouteId(route))) {
+        const verified = await reconcileBridgeRecord(context, record, rows);
+        if (!verified) displayed.push({ route, record, status: "recover" });
+      }
+      for (const row of rows) displayed.push({ route, row, status: row.status });
+    }
+    if (generation !== bridgeRefreshGeneration) return;
+    bridgeDisplayedRows = displayed;
+    const rowsEl = $("bridge-movements");
+    rowsEl.replaceChildren();
+    for (const [index, item] of displayed.entries()) {
+      const container = document.createElement("div");
+      container.style.cssText = "border-top:1px solid var(--line);padding:12px 0;overflow-wrap:anywhere";
+      const amount = item.row?.leaf.projectTokenCount || BigInt(item.record.amount);
+      const meta = item.route.sourceMeta || { symbol: shortAddr(item.route.sourceToken), decimals: 18 };
+      const labels = { queued: "Queued on origin — ready to send", "in-flight": "Crossing chains — refresh after the bridge delivers", claimable: "Arrived — ready to claim into rewards", claimed: "Claimed into the pocket — settle any remaining balance below", recover: "Saved transfer — review its wallet status before continuing" };
+      const summary = document.createElement("p");
+      summary.textContent = `${formatUnits(amount, meta.decimals, meta.decimals)} ${meta.symbol}: ${labels[item.status]}`;
+      container.append(summary);
+      if (item.row?.sourceHash) {
+        const link = document.createElement("a");
+        link.href = `${chainById(item.route.source.chainId).explorer}/tx/${item.row.sourceHash}`;
+        link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Origin transaction";
+        container.append(link);
+      }
+      if (["queued", "claimable", "recover"].includes(item.status)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = item.status === "queued" ? "Send across chains" : item.status === "claimable" ? "Claim arrival" : "Review saved transfer";
+        button.onclick = guard(() => withBridgeLock(() => actOnBridgeMovement(index)));
+        container.append(button);
+      }
+      if (item.status === "recover" && canDiscardBridgeJournal(getTxEngine().load(), item.record.metadata)) {
+        const cancel = document.createElement("button");
+        cancel.type = "button"; cancel.className = "ghost"; cancel.textContent = "Cancel this transfer";
+        cancel.onclick = guard(() => withBridgeLock(async () => {
+          const live = await bridgeContext();
+          if (!live || live.key !== context.key) throw new Error("The selected wallet or project changed. Refresh this transfer.");
+          if (!(await discardBridgeDraft(live, item.record))) throw new Error("The transfer may still execute. Recover its wallet outcome before cancelling.");
+        }));
+        container.append(cancel);
+      }
+      if (item.status === "claimed") {
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "ghost"; button.textContent = "Check unsettled rewards";
+        button.onclick = guard(async () => { $("bridge-reward-token").value = item.route.rewardToken; await renderRewards(); });
+        container.append(button);
+      }
+      rowsEl.append(container);
+    }
+    const unresolved = displayed.some(item => item.status === "recover");
+    const selected = bridgeRoutes[Number($("bridge-route").value)];
+    $("bridge-prepare").disabled = bridgeBusy || unresolved || !selected?.canPrepare;
+    $("bridge-status").textContent = unresolved ? "Keep this browser's saved transfer until its wallet outcome is verified."
+      : displayed.some(item => item.status === "in-flight") ? "Bridge delivery takes time. Refresh to check for a claimable arrival."
+      : bridgeRoutes.length ? "The bridge route is verified. Review the origin transfer, then send its queued batch and claim it here after delivery."
+      : "Enter a Juicebox V6 project token address on the origin chain to find its bridge. Existing arrivals can be settled below.";
+  } catch (error) {
+    if (generation === bridgeRefreshGeneration) {
+      $("bridge-status").textContent = error.message;
+      $("bridge-prepare").disabled = true;
+    }
+  }
+}
+
+async function withBridgeLock(action) {
+  if (!navigator.locks?.request) throw new Error("This browser cannot safely coordinate cross-chain transfers. Use a current browser with Web Locks support.");
+  if (bridgeBusy) return;
+  bridgeBusy = true;
+  $("bridge-prepare").disabled = true;
+  try { return await navigator.locks.request("sticky-reward-bridge", { mode: "exclusive", ifAvailable: true }, async lock => {
+    if (!lock) throw new Error("A bridge action is already open in another tab.");
+    return action();
+  }); } finally { bridgeBusy = false; await renderBridgeFunding(); }
+}
+
+async function findBridgeRoutes() {
+  const context = await bridgeContext();
+  if (!context) return;
+  const sourceToken = StickyBridge.address($("bridge-source-token").value.trim());
+  $("bridge-status").textContent = "Checking the token's bridge contracts on both chains…";
+  bridgeRoutes = [];
+  const routes = await getBridgeApi().discover({ source: context.source, destination: context.destination, sourceToken });
+  if (ctx.chainId !== context.destination.chainId || ORIGINS.find(origin => origin.key === originKey)?.chainId !== context.source.chainId
+    || $("bridge-source-token").value.trim().toLowerCase() !== sourceToken) throw new Error("The selected bridge changed. Find routes again.");
+  if (!routes.length) throw new Error("This token has no verified direct bridge to this chain. Its project must have a V6 sucker pair and matching backing-token mappings on both chains.");
+  bridgeRoutes = routes;
+  const selector = $("bridge-route");
+  selector.replaceChildren();
+  routes.forEach((route, index) => {
+    const option = document.createElement("option"); option.value = String(index);
+    option.textContent = `${route.sourceMeta.symbol} → ${route.rewardMeta.symbol} via ${route.backingMeta.symbol}${route.canPrepare ? "" : " (recovery only)"}`;
+    selector.append(option);
+  });
+  selector.classList.remove("hide"); selector.disabled = false;
+  $("bridge-reward-token").value = routes[0].rewardToken;
+  await renderRewards();
+}
+
+async function prepareBridgeFunding() {
+  const context = await bridgeContext();
+  if (!context?.owner) throw new Error("Connect the wallet that holds the origin project tokens.");
+  const route = bridgeRoutes[Number($("bridge-route").value)];
+  if (!route || route.source.chainId !== context.source.chainId || route.destination.chainId !== context.destination.chainId
+    || route.sourceToken !== $("bridge-source-token").value.trim().toLowerCase()) throw new Error("Find and review this token's bridge first.");
+  const saved = bridgeRecords(context.key);
+  if (saved.length >= 100) throw new Error("This browser's saved bridge history is full. Existing transfers can still be recovered; no new transfer was submitted.");
+  const previousMovements = new Map();
+  for (const record of saved) {
+    const previousRoute = rehydrateBridgeRoute(record.route);
+    const key = bridgeRouteId(previousRoute);
+    if (!previousMovements.has(key)) previousMovements.set(key, await getBridgeApi().movements(previousRoute, context.pocket));
+    if (!(await reconcileBridgeRecord(context, record, previousMovements.get(key)))) throw new Error("Recover the saved origin transfer before starting another bridge transfer.");
+  }
+  const journal = getTxEngine().load();
+  if (journal && (journal.steps.some(step => step.state !== "confirmed") || (!journal.acknowledged && journal.steps.some(step => step.tx.sessionTag)))) throw new Error("Finish the saved wallet transaction before starting a bridge transfer.");
+  const amount = parseUnits($("bridge-amount").value, route.sourceMeta.decimals);
+  const metadata = "0x" + [...crypto.getRandomValues(new Uint8Array(32))].map(value => value.toString(16).padStart(2, "0")).join("");
+  const plan = await getBridgeApi().prepare({ route, amount, owner: context.owner, pocket: context.pocket, metadata });
+  const record = { metadata, owner: context.owner, amount: amount.toString(), route, prepareData: plan.txs.at(-1).data, createdAt: Date.now(), status: "review", phase: "created" };
+  await mutateBridgeRecords(context.key, records => [...records, record]);
+  let mayRun = false;
+  let complete;
+  try { complete = await confirmAndRun("Bridge rewards to " + stickyLabel(context.info), plan.txs, [
+    ["Send", `${formatUnits(amount, route.sourceMeta.decimals, route.sourceMeta.decimals)} ${route.sourceMeta.symbol} on ${route.source.name}`],
+    ["Receive", `${formatUnits(amount, route.rewardMeta.decimals, route.rewardMeta.decimals)} ${route.rewardMeta.symbol} in this project's pocket on ${route.destination.name}`],
+    ["Afterward", "Send the queued bridge batch, wait for delivery, claim the arrival, then settle it into rewards."],
+  ], { onPrepared: async session => {
+    mayRun = true;
+    await mutateBridgeRecords(context.key, records => {
+      const index = records.findIndex(item => item.metadata === metadata);
+      if (index < 0) throw new Error("The saved bridge transfer disappeared before wallet review.");
+      records[index] = { ...records[index], phase: "prepared", journalId: session.id };
+      return records;
+    });
+  } }); } catch (error) {
+    if (!mayRun) {
+      const current = getTxEngine().load();
+      if (current?.steps.every(step => step.tx.sessionTag === "sticky-bridge:" + metadata)) await getTxEngine().discardUnsubmitted(current.id);
+      await mutateBridgeRecords(context.key, records => records.filter(item => item.metadata !== metadata));
+    }
+    throw error;
+  }
+  if (!complete) {
+    await discardBridgeDraft(context, bridgeRecords(context.key).find(item => item.metadata === metadata) || record);
+    return;
+  }
+  await reconcileBridgeRecord(context, record, await getBridgeApi().movements(route, context.pocket));
+  txStatus("Rewards queued on the origin chain. Send the queued batch to begin crossing chains.", "ok");
+}
+
+async function actOnBridgeMovement(index) {
+  const item = bridgeDisplayedRows[index];
+  const context = await bridgeContext();
+  if (!item || !context?.owner || item.route.source.chainId !== context.source.chainId || item.route.destination.chainId !== context.destination.chainId) throw new Error("Reconnect the wallet and refresh this bridge transfer.");
+  $("bridge-reward-token").value = item.route.rewardToken;
+  if (item.status === "recover") {
+    const saved = getTxEngine().load();
+    const discarded = item.record.journalId && getTxEngine().wasDiscarded(item.record.journalId, "sticky-bridge:" + item.record.metadata);
+    if (discarded || (item.record.phase === "created" && !item.record.sourceHash && !item.record.journalId
+      && !saved?.steps.some(step => step.tx.sessionTag === "sticky-bridge:" + item.record.metadata))) {
+      // The shared runner starts only after the durable prepared phase. A crash
+      // before journal publication leaves a draft that never reached the wallet.
+      await mutateBridgeRecords(context.key, records => {
+        const current = records.find(record => record.metadata === item.record.metadata);
+        if (current && !(discarded && current.journalId === item.record.journalId)
+          && (current.phase !== "created" || current.sourceHash || current.journalId)) throw new Error("This transfer has wallet history. Recover its original transaction before starting another.");
+        return records.filter(record => record.metadata !== item.record.metadata);
+      });
+      txStatus("The unsubmitted bridge draft was cleared. Find the bridge again to review a new transfer.", "ok");
+      return;
+    }
+    if (!saved?.steps.every(step => step.tx.sessionTag === "sticky-bridge:" + item.record.metadata)) throw new Error("The transfer's wallet record is unavailable. Recover its original transaction before sending more tokens; its saved bridge reference has been preserved.");
+    await getBridgeApi().validateRoute(item.route);
+    if (!(await confirmAndRun(saved.title, saved.steps.map(step => step.tx), saved.summary, { onPrepared: async journal => {
+      await mutateBridgeRecords(context.key, records => {
+        const index = records.findIndex(record => record.metadata === item.record.metadata);
+        if (index < 0) throw new Error("The saved bridge transfer disappeared before wallet review.");
+        records[index] = { ...records[index], phase: "prepared", journalId: journal.id };
+        return records;
+      });
+    } }))) {
+      await discardBridgeDraft(context, item.record);
+      return;
+    }
+    await reconcileBridgeRecord(context, item.record, await getBridgeApi().movements(item.route, context.pocket));
+    return;
+  }
+  const tx = item.status === "queued" ? await getBridgeApi().flush(item.route, context.owner, context.pocket)
+    : await getBridgeApi().claim(item.route, item.row, context.owner, context.pocket);
+  if (!(await confirmAndRun(tx.label, [tx], [["Reward token on destination", item.route.rewardToken], ["Destination pocket", context.pocket]]))) return;
+  await renderRewards();
+}
+
+function initBridgeFunding() {
+  if (!$("bridge-find")) return;
+  $("bridge-find").onclick = guard(() => withBridgeLock(findBridgeRoutes));
+  $("bridge-prepare").onclick = guard(() => withBridgeLock(prepareBridgeFunding));
+  $("bridge-refresh").onclick = guard(renderBridgeFunding);
+  $("bridge-source-token").oninput = () => { bridgeRoutes = []; $("bridge-prepare").disabled = true; $("bridge-route").classList.add("hide"); };
+  $("bridge-route").onchange = async () => {
+    const route = bridgeRoutes[Number($("bridge-route").value)];
+    if (route) $("bridge-reward-token").value = route.rewardToken;
+    await renderRewards();
+  };
+  $("bridge-reward-token").onchange = guard(renderRewards);
+}
+queueMicrotask(initBridgeFunding);
+
+const distributor = () => StickyRuntime.deployment(window.STICKY_CONFIG || {}, ctx.chainId).distributor;
+const autoStickAdapter = () => StickyRuntime.deployment(window.STICKY_CONFIG || {}, ctx.chainId).autoStickAdapter;
 const rewardTokens = {}; // projectId -> Set of reward token addresses
 
+const NATIVE_REWARD_TOKEN = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+function actionAddress(value, label = "address") {
+  const address = String(value || "").trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address) || /^0x0{40}$/i.test(address)) {
+    throw new Error(`enter a valid ${label}`);
+  }
+  return address;
+}
+
+function rewardTokenAddress(value, fallback) {
+  const input = String(value || fallback || "").trim();
+  return /^eth$/i.test(input) ? NATIVE_REWARD_TOKEN : actionAddress(input, "reward token address or ETH");
+}
+
+function positiveAmount(value, decimals) {
+  const amount = parseUnits(value, decimals);
+  if (amount === 0n) throw new Error("enter an amount greater than zero");
+  return amount;
+}
+
+function beginAction() {
+  return { holder: txAccount(), chainId: ctx.chainId, projectId: ctx.currentId };
+}
+
+function reviewAction(action, title, txs, summary = []) {
+  if (txAccount().toLowerCase() !== action.holder.toLowerCase()
+    || ctx.chainId !== action.chainId || ctx.currentId !== action.projectId) {
+    throw new Error("the account, chain, or project changed; review this action again");
+  }
+  return confirmAndRun(title, txs.map((tx) => ({ ...tx, from: action.holder, chainId: action.chainId })), summary);
+}
+
+async function actionCall(to, data, holder = txAccount(), value = 0n) {
+  return rpc("eth_call", [{ from: holder, to, data, ...(value ? { value: `0x${value.toString(16)}` } : {}) }, "latest"]);
+}
+
+// A successful beginVesting simulation can still be a no-op. Read the holder's unresolved completed rounds
+// and their checkpointed share before asking them to pay for a vesting-only transaction.
+async function hasRewardsToVest(info, holder, token) {
+  const [roundHex, cursorHex, block] = await Promise.all([
+    view(distributor(), SEL.currentRound),
+    view(distributor(), "0x5fef1a8a", encAddress(info.stToken) + word(0) + encAddress(holder) + encAddress(token)),
+    rpc("eth_getBlockByNumber", ["latest", false]),
+  ]);
+  const round = decUint(roundHex);
+  const cursor = decUint(cursorHex);
+  const now = BigInt(block.timestamp);
+  // Keep unusual distributor histories bounded. Existing unlocked rewards can always be collected directly.
+  if (round > cursor + 4096n) throw new Error("reward history is too large to check; use a distributor client to start unlocking");
+  for (let start = cursor; start < round; start += 16n) {
+    const rounds = [];
+    for (let value = start; value < round && value < start + 16n; value++) rounds.push(value);
+    const states = await Promise.all(rounds.map((value) => view(distributor(), "0xc45c9bf6",
+      encAddress(info.stToken) + word(0) + encAddress(token) + word(value))));
+    for (const state of states) {
+      const amount = decUint(state, 0);
+      const snapshot = decUint(state, 1);
+      const deadline = decUint(state, 3);
+      const totalStake = decUint(state, 4);
+      if (amount === 0n || totalStake === 0n || (deadline !== 0n && now >= deadline)) continue;
+      const votes = decUint(await view(info.stToken, "0x3a46b1a8", encAddress(holder) + word(snapshot)));
+      if (amount * votes / totalStake > 0n) return true;
+    }
+  }
+  return false;
+}
+
+async function requireTokenBalance(token, holder, amount, meta) {
+  const balance = token.toLowerCase() === NATIVE_REWARD_TOKEN
+    ? BigInt(await rpc("eth_getBalance", [holder, "latest"]))
+    : decUint(await view(token, SEL.balanceOf, encAddress(holder)));
+  if (balance < amount) throw new Error(`insufficient ${meta.symbol} balance`);
+}
+
+// Explicitly reset a nonzero allowance before replacing it, including tokens that require a zero reset.
+// Each step remains separately reviewed and recovery preserves successful prerequisite transactions.
+async function tokenApprovalTxs(token, spender, amount, meta, template = null, exact = false) {
+  const holder = txAccount();
+  actionAddress(token, "token address");
+  actionAddress(spender, "spender address");
+  const allowance = decUint(await view(token, SEL.allowance, encAddress(holder) + encAddress(spender)));
+  if (exact ? allowance === amount : allowance >= amount) return [];
+  const make = (value) => {
+    const pretty = value === UNLIMITED ? "unlimited" : `${formatUnits(value, meta.decimals, meta.decimals)} ${meta.symbol}`;
+    return {
+      ...(template || {}),
+      label: value === 0n ? `Reset ${meta.symbol} allowance` : (template?.label || `Approve ${pretty}`),
+      to: token,
+      fn: "approve(address spender, uint256 amount)",
+      args: [["SPENDER", spender], ["ALLOWANCE", pretty]],
+      data: SEL.approve + encode(["address", "uint256"], [spender, value]),
+    };
+  };
+  return [...(allowance > 0n && amount > 0n ? [make(0n)] : []), make(amount)];
+}
+
 async function rewardTokenMeta(addr) {
+  actionAddress(addr, "reward token address");
+  if (addr.toLowerCase() === NATIVE_REWARD_TOKEN) return { symbol: "ETH", decimals: 18 };
   const [symbol, decimals] = await Promise.all([
     view(addr, SEL.symbol).then(decString).catch(() => shortAddr(addr)),
-    view(addr, SEL.decimals).then((h) => Number(decUint(h))).catch(() => 18),
+    view(addr, SEL.decimals).then((h) => {
+      if (!/^0x[0-9a-fA-F]{64}$/.test(h)) throw new Error("the reward token did not return valid decimals");
+      return Number(decUint(h));
+    }),
   ]);
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("invalid reward token decimals");
   return { symbol, decimals };
 }
 
 async function renderRewards() {
   if (ctx.currentId === null || !distributor()) return;
   const info = await projectInfo(ctx.currentId);
+  const holder = account();
   const key = ctx.currentId.toString();
   const known = (rewardTokens[key] ??= new Set([info.stakedToken.toLowerCase()]));
+  // Native funding has no ERC-20 Transfer event, so always check it, including after a reload.
+  known.add(NATIVE_REWARD_TOKEN);
   // Discover reward tokens from ERC-20 transfers into the distributor.
   try {
     const logs = await rpc("eth_getLogs", [
@@ -1837,16 +2468,21 @@ async function renderRewards() {
     ]);
     for (const log of logs) known.add(log.address.toLowerCase());
   } catch {}
-  // Cross-chain pocket: predicted address + unsettled staked-token balance.
-  const pocketsAddr = window.STICKY_CONFIG?.pockets;
+  // Cross-chain pocket: show the selected destination token's arrivals, including rewards other than the backing token.
+  const pocketsAddr = stickyDeploymentFor(ctx.chainId).pockets;
   if (pocketsAddr) {
     try {
       const pocket = decAddress(await view(pocketsAddr, SEL.predictPocketOf, encAddress(info.stToken)));
       ctx.pocket = pocket;
       $("pocket-addr").textContent = pocket;
-      const pending = decUint(await view(info.stakedToken, SEL.balanceOf, encAddress(pocket)));
-      $("pocket-pending").textContent = `${formatUnits(pending, info.decimals)} ${info.symbol}`;
-    } catch {}
+      const rewardToken = rewardTokenAddress($("bridge-reward-token")?.value || $("r-token").value, info.stakedToken);
+      if (rewardToken.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("pockets accept ERC-20 rewards");
+      const meta = await rewardTokenMeta(rewardToken);
+      const pending = decUint(await view(rewardToken, SEL.balanceOf, encAddress(pocket)));
+      $("pocket-pending").textContent = `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`;
+    } catch {
+      $("pocket-pending").textContent = "Select a destination reward token to check arrivals";
+    }
   }
   // The direct split route: the distributor is itself a split hook, and the split's beneficiary field names the
   // sticky token whose stickers the funds reward.
@@ -1856,17 +2492,21 @@ async function renderRewards() {
   const tbody = $("rewards-list");
   tbody.innerHTML = "";
   for (const tokenAddr of known) {
-    const meta = await rewardTokenMeta(tokenAddr);
+    const meta = await rewardTokenMeta(tokenAddr).catch(() => null);
+    // Anyone can emit a Transfer log naming the distributor. Bad token metadata must not hide valid rewards.
+    if (!meta) continue;
     const [pool, collectable] = await Promise.all([
       view(distributor(), SEL.distBalanceOf, encAddress(info.stToken) + encAddress(tokenAddr)).then(decUint),
-      view(distributor(), SEL.collectableFor, encAddress(info.stToken) + encAddress(account()) + encAddress(tokenAddr)).then(decUint).catch(() => 0n),
+      holder
+        ? view(distributor(), SEL.collectableFor, encAddress(info.stToken) + encAddress(holder) + encAddress(tokenAddr)).then(decUint).catch(() => 0n)
+        : Promise.resolve(0n),
     ]);
     if (pool === 0n && collectable === 0n && tokenAddr !== info.stakedToken.toLowerCase()) continue;
     // The underlying-token row defaults to one-click claim-and-stick wherever the hook accepts the adapter as
     // payer (creator pre-approval or personal trust); every other reward token keeps normal claiming.
     let action = `<button class="ghost" style="margin:0;padding:4px 10px" onclick="claimRewardFor('${tokenAddr}')">Claim</button>`;
     const as = ctx.autoStick;
-    const canStick = as && (as.projectGranter || as.personallyTrusted);
+    const canStick = as && info.decimals <= 18 && (as.projectGranter || as.personallyTrusted);
     if (tokenAddr === info.stakedToken.toLowerCase() && canStick && collectable > 0n) {
       action = `<button style="margin:0;padding:4px 10px" onclick="claimAndStickNow()">Claim &amp; stick</button>`
         + `<div style="margin-top:2px"><span class="link" style="font-size:12px" onclick="claimRewardFor('${tokenAddr}')">Claim only</span></div>`;
@@ -1878,25 +2518,21 @@ async function renderRewards() {
     tbody.appendChild(row);
   }
   if (!tbody.children.length) tbody.innerHTML = `<tr><td colspan="4" class="mut">no rewards yet — fund some</td></tr>`;
+  if (typeof renderBridgeFunding === "function") await renderBridgeFunding();
 }
 
 async function fundRewards() {
+  const action = beginAction();
+  const { holder } = action;
   const info = await projectInfo(ctx.currentId);
-  const tokenAddr = $("r-token").value || info.stakedToken;
+  const tokenAddr = rewardTokenAddress($("r-token").value, info.stakedToken);
   const meta = await rewardTokenMeta(tokenAddr);
-  const amount = parseUnits($("r-amount").value, meta.decimals);
-  const pretty = `${formatUnits(amount, meta.decimals)} ${meta.symbol}`;
-  const txs = [];
-  const allowance = decUint(await view(tokenAddr, SEL.allowance, encAddress(account()) + encAddress(distributor())));
-  if (allowance < amount) {
-    txs.push({
-      label: "Approve",
-      to: tokenAddr,
-      fn: "approve(address spender, uint256 amount)",
-      args: [["SPENDER", `${distributor()} — JBTokenDistributor`], ["AMOUNT", pretty]],
-      data: SEL.approve + encode(["address", "uint256"], [distributor(), amount]),
-    });
-  }
+  const amount = positiveAmount($("r-amount").value, meta.decimals);
+  const pretty = `${formatUnits(amount, meta.decimals, meta.decimals)} ${meta.symbol}`;
+  actionAddress(distributor(), "rewards distributor");
+  await requireTokenBalance(tokenAddr, holder, amount, meta);
+  const native = tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN;
+  const txs = native ? [] : await tokenApprovalTxs(tokenAddr, distributor(), amount, meta);
   txs.push({
     label: "Fund stuck holders",
     to: distributor(),
@@ -1907,45 +2543,42 @@ async function fundRewards() {
       ["SPLIT", "pro-rata to locked balances at this round's snapshot"],
     ],
     data: SEL.fund + encode(["address", "address", "uint256"], [info.stToken, tokenAddr, amount]),
+    ...(native ? { value: `0x${amount.toString(16)}`, valueLabel: pretty } : {}),
   });
-  if (!(await confirmAndRun(`Fund stuck holders — ${pretty}`, txs, [["Send", pretty], ["To", "everyone currently stuck, pro-rata"]]))) return;
+  if (!(await reviewAction(action, `Fund stuck holders — ${pretty}`, txs, [["Send", pretty], ["To", "holders at this round's recorded snapshot, pro-rata"]]))) return;
   try { $("fund-dialog").close(); } catch {}
+  (rewardTokens[ctx.currentId.toString()] ??= new Set()).add(tokenAddr.toLowerCase());
   txStatus("Sticks funded", "ok");
   await renderRewards();
 }
 
 async function claimReward(tokenAddr) {
+  const action = beginAction();
+  const { holder } = action;
   const info = await projectInfo(ctx.currentId);
+  tokenAddr = rewardTokenAddress(tokenAddr, info.stakedToken);
   const meta = await rewardTokenMeta(tokenAddr);
-  const me = word(BigInt(account()));
-  const candidates = [
-    {
-      label: "Start unlocking",
-      to: distributor(),
-      fn: "beginVesting(address hook, uint256[] tokenIds, address[] tokens)",
-      args: [["HOLDER", account()], ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`]],
-      data: SEL.beginVesting + encode(["address", "uint256[]", "address[]"], [info.stToken, [BigInt(account())], [tokenAddr]]),
-    },
-    {
-      label: "Collect unlocked rewards",
-      to: distributor(),
-      fn: "collectVestedRewards(address hook, uint256[] tokenIds, address[] tokens, address beneficiary)",
-      args: [["HOLDER", account()], ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`], ["BENEFICIARY", account()]],
-      data: SEL.collectVestedRewards
-        + encode(["address", "uint256[]", "address[]", "address"], [info.stToken, [BigInt(account())], [tokenAddr], account()]),
-    },
-  ];
-  // Only propose steps that would actually succeed (e.g. skip re-beginning already-vesting rounds).
-  const txs = [];
-  for (const tx of candidates) {
-    try {
-      await call(tx.to, tx.data);
-      txs.push(tx);
-    } catch {}
+  const collectable = decUint(await view(distributor(), SEL.collectableFor,
+    encAddress(info.stToken) + encAddress(holder) + encAddress(tokenAddr)));
+  if (collectable === 0n && !(await hasRewardsToVest(info, holder, tokenAddr))) {
+    throw new Error("there are no rewards to unlock or collect yet");
   }
-  if (!txs.length) throw new Error("nothing to claim yet — rewards unlock after the round ends");
-  if (!(await confirmAndRun(`Claim ${meta.symbol} rewards`, txs))) return;
-  txStatus("Rewards claimed", "ok");
+  // collectVestedRewards starts vesting historical rewards itself; a separate beginVesting would waste a transaction.
+  const tx = {
+    label: collectable > 0n ? "Collect unlocked rewards" : "Start unlocking eligible rewards",
+    to: distributor(),
+    fn: "collectVestedRewards(address hook, uint256[] tokenIds, address[] tokens, address beneficiary)",
+    args: [
+      ["HOLDER", holder], ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`], ["BENEFICIARY", holder],
+      ["READY", `${formatUnits(collectable, meta.decimals, meta.decimals)} ${meta.symbol}`],
+      ["EFFECT", "collects unlocked rewards and starts vesting any eligible past rounds; current-round rewards remain locked"],
+    ],
+    data: SEL.collectVestedRewards
+      + encode(["address", "uint256[]", "address[]", "address"], [info.stToken, [BigInt(holder)], [tokenAddr], holder]),
+  };
+  await actionCall(tx.to, tx.data, holder);
+  if (!(await reviewAction(action, `Claim ${meta.symbol} rewards`, [tx]))) return;
+  txStatus(collectable > 0n ? "Rewards collected; eligible past rewards are unlocking" : "Eligible past rewards are unlocking", "ok");
   await renderRewards();
 }
 window.claimRewardFor = (tokenAddr) => guard(() => claimReward(tokenAddr))({ currentTarget: document.activeElement });
@@ -2017,6 +2650,9 @@ async function autoStickState() {
 
 function asStatusLine(state) {
   const { info } = state;
+  if (state.enabled && stickMintOf(info, state.minimum) === 0n) {
+    return "Update the minimum in settings before auto-sticking these rewards";
+  }
   const now = Math.floor(Date.now() / 1000);
   switch (state.status) {
     case AS_STATUS.READY:
@@ -2053,8 +2689,9 @@ async function renderAutoStick() {
   $("as-heading").textContent = `Auto-stick ${info.symbol} rewards`;
   const schedule = unlockScheduleSentence(await unlockScheduleOf());
   $("as-blurb").textContent =
-    `Automatically collect your unlocked ${info.symbol} rewards and add them to your ${stickyLabel(info)} position. `
+    `Allow anyone to collect your unlocked ${info.symbol} rewards into your ${stickyLabel(info)} position under your settings. `
     + `Each auto-stick creates a new stick starting at that time.`
+    + " Execution needs a keeper transaction; you can also use Stick now when rewards are ready."
     + (schedule ? ` ${schedule}` : "");
   $("as-toggle").textContent = state.enabled ? "Turn off auto-stick" : "Turn on auto-stick";
 
@@ -2088,8 +2725,7 @@ async function renderAutoStick() {
   let canBeginVesting = false;
   if (state.enabled) {
     try {
-      await call(autoStickAdapter(), SEL.asBeginVestingFor + word(ctx.currentId) + encAddress(account()));
-      canBeginVesting = true;
+      canBeginVesting = await hasRewardsToVest(info, account(), info.stakedToken);
     } catch {}
   }
   $("as-begin-vesting").classList.toggle("hide", !canBeginVesting);
@@ -2097,7 +2733,7 @@ async function renderAutoStick() {
 
 // The auto-stick transaction plan pieces, shared by enable, disable, settings, and repair flows.
 function asApproveTx(info, amount) {
-  const pretty = amount === UNLIMITED ? "unlimited" : `${formatUnits(amount, info.decimals)} ${info.symbol}`;
+  const pretty = amount === UNLIMITED ? "unlimited" : `${formatUnits(amount, info.decimals, info.decimals)} ${info.symbol}`;
   return {
     label: `Allow the auto-stick contract to move eligible ${info.symbol} rewards`,
     to: info.stakedToken,
@@ -2128,9 +2764,16 @@ function asTrustTx(info, trusted) {
 }
 
 function asConfigTx(info, enabled, minimum, cooldown) {
+  if (minimum <= 0n || minimum >= 1n << 128n) {
+    throw new Error("the auto-stick minimum must fit in uint128 and be greater than zero");
+  }
+  if (cooldown < 86400n || cooldown > 2592000n) throw new Error("auto-stick cooldown must be between 1 and 30 days");
+  if (enabled && stickMintOf(info, minimum) === 0n) {
+    throw new Error("the auto-stick minimum is too small to mint a sticky token unit");
+  }
   return {
     label: enabled
-      ? `Auto-stick unlocked ${info.symbol} rewards when at least ${formatUnits(minimum, info.decimals)} `
+      ? `Auto-stick unlocked ${info.symbol} rewards when at least ${formatUnits(minimum, info.decimals, info.decimals)} `
         + `${info.symbol} is ready, no more than once every ${formatDuration(cooldown)}`
       : "Turn off auto-stick",
     to: autoStickAdapter(),
@@ -2138,7 +2781,7 @@ function asConfigTx(info, enabled, minimum, cooldown) {
     args: [
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
       ["ENABLED", enabled ? "yes" : "no"],
-      ["MINIMUM", `${formatUnits(minimum, info.decimals)} ${info.symbol}`],
+      ["MINIMUM", `${formatUnits(minimum, info.decimals, info.decimals)} ${info.symbol}`],
       ["COOLDOWN", formatDuration(cooldown)],
       ["EFFECT", enabled
         ? "rewards can only be added to your sticky position — never sent elsewhere or taken by the keeper"
@@ -2153,10 +2796,10 @@ function asDisableTxs(info, state) {
     asConfigTx(info, false, state.minimum, BigInt(state.cooldown)),
     // On creator-pre-approved projects there may be no per-holder trust to revoke.
     ...(state.personallyTrusted ? [asTrustTx(info, false)] : []),
-    {
+    ...(state.allowance > 0n ? [{
       ...asApproveTx(info, 0n),
       label: `Remove the auto-stick contract's ${info.symbol} allowance`,
-    },
+    }] : []),
   ];
 }
 
@@ -2168,11 +2811,11 @@ function openAutoStickDialog(mode) {
   $("as-dialog-title").textContent = mode === "settings" ? "Auto-stick settings" : "Turn on auto-stick";
   const dialogSchedule = unlockScheduleSentence(asUnlockSchedule || null);
   $("as-dialog-blurb").textContent =
-    `Unlocked ${info.symbol} rewards are collected and stuck for you automatically once they clear your minimum. `
+    `Anyone can trigger collection of unlocked ${info.symbol} rewards into your position once they clear your minimum and cooldown. `
     + `Each auto-stick creates a new stick starting at that time.`
     + (dialogSchedule ? ` ${dialogSchedule}` : "");
   $("as-min-label").textContent = `MINIMUM ${info.symbol.toUpperCase()} PER AUTO-STICK`;
-  $("as-min").value = state.minimum > 0n ? formatUnits(state.minimum, info.decimals) : "1";
+  $("as-min").value = state.minimum > 0n ? formatUnits(state.minimum, info.decimals, info.decimals) : "1";
   asCooldownChoice = state.cooldown || 604_800;
   for (const preset of document.querySelectorAll("[data-as-cooldown]")) {
     preset.classList.toggle("on", Number(preset.dataset.asCooldown) === asCooldownChoice);
@@ -2185,20 +2828,25 @@ function openAutoStickDialog(mode) {
 }
 
 async function saveAutoStick() {
-  const state = ctx.autoStick;
+  const action = beginAction();
+  const state = await autoStickState();
+  if (!state || state.status === AS_STATUS.INVALID_PROJECT) throw new Error("auto-stick is unavailable for this project");
+  ctx.autoStick = state;
   const { info } = state;
-  const minimum = parseUnits($("as-min").value, info.decimals);
-  if (minimum === 0n) throw new Error("the minimum must be more than zero");
+  const minimum = positiveAmount($("as-min").value, info.decimals);
   const cooldown = BigInt(asCooldownChoice);
   const txs = [];
   if (asDialogMode === "settings") {
+    if (!state.enabled) throw new Error("auto-stick was turned off; open its setup again to enable it");
     txs.push(asConfigTx(info, true, minimum, cooldown));
   } else {
+    // Renewals can start enabled. Disable first so a keeper cannot use a new allowance with the old settings.
+    if (state.enabled) txs.push(asConfigTx(info, false, state.minimum, BigInt(state.cooldown)));
     const allowance = asAllowanceChoice === "unlimited"
       ? UNLIMITED
       : parseUnits($("as-allowance").value || "0", info.decimals);
     if (allowance === 0n) throw new Error("set an allowance cap, or choose unlimited");
-    txs.push(asApproveTx(info, allowance));
+    txs.push(...await tokenApprovalTxs(info.stakedToken, autoStickAdapter(), allowance, info, asApproveTx(info, allowance), true));
     // Skip the trust step when the project pre-approved the adapter at launch, or it's already granted
     // (repair re-runs land here too).
     if (!state.projectGranter && !state.personallyTrusted) txs.push(asTrustTx(info, true));
@@ -2209,74 +2857,90 @@ async function saveAutoStick() {
     ? `Auto-stick settings for ${stickyLabel(info)}`
     : `Turn on auto-stick for ${stickyLabel(info)}`;
   const summary = [
-    ["Auto-stick when", `at least ${formatUnits(minimum, info.decimals)} ${info.symbol} is ready`],
+    ["Auto-stick when", `at least ${formatUnits(minimum, info.decimals, info.decimals)} ${info.symbol} is ready`],
     ["At most", `once every ${formatDuration(Number(cooldown))}`],
   ];
-  if (!(await confirmAndRun(title, txs, summary))) return;
+  if (!(await reviewAction(action, title, txs, summary))) return;
   try { $("autostick-dialog").close(); } catch {}
   txStatus(asDialogMode === "settings" ? "Auto-stick settings saved" : "Auto-stick is on", "ok");
   await renderRewards();
 }
 
 async function toggleAutoStick() {
-  const state = ctx.autoStick;
+  const action = beginAction();
+  const state = await autoStickState();
+  ctx.autoStick = state;
   if (!state) return;
   if (!state.enabled) return openAutoStickDialog("enable");
   const { info } = state;
   const txs = asDisableTxs(info, state);
-  if (!(await confirmAndRun(`Turn off auto-stick for ${stickyLabel(info)}`, txs))) return;
+  if (!(await reviewAction(action, `Turn off auto-stick for ${stickyLabel(info)}`, txs))) return;
   txStatus("Auto-stick is off", "ok");
   await renderRewards();
 }
 
 async function repairAutoStick() {
-  const state = ctx.autoStick;
+  const action = beginAction();
+  const state = await autoStickState();
+  ctx.autoStick = state;
   if (!state) return;
   if (state.status === AS_STATUS.INSUFFICIENT_ALLOWANCE) return openAutoStickDialog("enable");
+  if (state.projectGranter || state.personallyTrusted) throw new Error("auto-stick permission is already enabled");
   const { info } = state;
   const txs = [asTrustTx(info, true)];
-  if (!(await confirmAndRun(`Repair auto-stick for ${stickyLabel(info)}`, txs))) return;
+  if (!(await reviewAction(action, `Repair auto-stick for ${stickyLabel(info)}`, txs))) return;
   txStatus("Auto-stick permission restored", "ok");
   await renderRewards();
 }
 
 async function autoStickNow() {
-  const state = ctx.autoStick;
+  const action = beginAction();
+  const { holder } = action;
+  const state = await autoStickState();
+  ctx.autoStick = state;
   if (!state) return;
+  if (state.status !== AS_STATUS.READY) throw new Error("auto-stick is not ready; refresh its settings and reward balance");
   const { info } = state;
+  if (stickMintOf(info, state.minimum) === 0n) throw new Error("update the auto-stick minimum so each compound can mint a sticky token unit");
+  if (stickMintOf(info, state.collectable) === 0n) throw new Error("these rewards are too small to mint a sticky token unit");
   const txs = [{
     label: "Stick ready rewards now",
     to: autoStickAdapter(),
     fn: "compoundFor(uint256 projectId, address holder)",
     args: [
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["HOLDER", account()],
+      ["HOLDER", holder],
       ["READY", `${formatUnits(state.collectable, info.decimals)} ${info.symbol}`],
       ["EFFECT", `collects your unlocked ${info.symbol} rewards and sticks them for you in a new tranche`],
     ],
-    data: SEL.asCompoundFor + word(ctx.currentId) + encAddress(account()),
+    data: SEL.asCompoundFor + word(ctx.currentId) + encAddress(holder),
   }];
-  if (!(await confirmAndRun(`Stick ready ${info.symbol} rewards`, txs, [["Stick", `${formatUnits(state.collectable, info.decimals)} ${info.symbol} of unlocked rewards`]]))) return;
+  if (!(await reviewAction(action, `Stick ready ${info.symbol} rewards`, txs, [["Stick", `${formatUnits(state.collectable, info.decimals)} ${info.symbol} of unlocked rewards`]]))) return;
   txStatus("Rewards auto-stuck", "ok");
   await renderProject(ctx.currentId);
 }
 
 async function beginAutoStickVesting() {
-  const state = ctx.autoStick;
+  const action = beginAction();
+  const { holder } = action;
+  const state = await autoStickState();
+  ctx.autoStick = state;
   if (!state) return;
   const { info } = state;
+  if (!state.enabled) throw new Error("turn on auto-stick before starting automatic reward unlocking");
+  if (!(await hasRewardsToVest(info, holder, info.stakedToken))) throw new Error("there are no new reward rounds to unlock");
   const txs = [{
     label: "Start unlocking",
     to: autoStickAdapter(),
     fn: "beginVestingFor(uint256 projectId, address holder)",
     args: [
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["HOLDER", account()],
+      ["HOLDER", holder],
       ["EFFECT", `starts the unlock schedule for your ${info.symbol} rewards — no tokens move`],
     ],
-    data: SEL.asBeginVestingFor + word(ctx.currentId) + encAddress(account()),
+    data: SEL.asBeginVestingFor + word(ctx.currentId) + encAddress(holder),
   }];
-  if (!(await confirmAndRun(`Start unlocking ${info.symbol} rewards`, txs))) return;
+  if (!(await reviewAction(action, `Start unlocking ${info.symbol} rewards`, txs))) return;
   txStatus("Unlocking started", "ok");
   await renderRewards();
 }
@@ -2285,26 +2949,28 @@ window.stickNowFor = () => guard(autoStickNow)({ currentTarget: document.activeE
 // One-click claim: the holder's own call claims their vested rewards and sticks them atomically. No settings,
 // no cooldown — an exact-amount approve is bundled only when the current allowance doesn't cover the claim.
 async function claimAndStick() {
-  const state = ctx.autoStick;
+  const action = beginAction();
+  const { holder } = action;
+  const state = await autoStickState();
+  ctx.autoStick = state;
   if (!state) return;
   const { info } = state;
+  // This adapter's one-step method has no caller-specified minimum. For higher-decimal tokens, another claim
+  // and a newly unlocked dust reward could change the amount after review and still mint zero. Separate claims
+  // remain available, and normal staking protects its exact nonzero mint on chain.
+  if (info.decimals > 18) throw new Error("claim these rewards first, then stick them; one-step claim-and-stick is unavailable for tokens with more than 18 decimals");
   const collectable = decUint(await view(
     distributor(),
     SEL.collectableFor,
-    encAddress(info.stToken) + encAddress(account()) + encAddress(info.stakedToken),
+    encAddress(info.stToken) + encAddress(holder) + encAddress(info.stakedToken),
   ));
   if (collectable === 0n) throw new Error("nothing claimable yet — rewards unlock after the round ends");
-  const pretty = `${formatUnits(collectable, info.decimals)} ${info.symbol}`;
-  const txs = [];
-  const allowance = decUint(await view(
-    info.stakedToken, SEL.allowance, encAddress(account()) + encAddress(autoStickAdapter()),
-  ));
-  if (allowance < collectable) {
-    txs.push({
-      ...asApproveTx(info, collectable),
-      label: `Allow the auto-stick contract to move this claim of ${pretty}`,
-    });
-  }
+  if (stickMintOf(info, collectable) === 0n) throw new Error("these rewards are too small to mint a sticky token unit");
+  const pretty = `${formatUnits(collectable, info.decimals, info.decimals)} ${info.symbol}`;
+  const txs = await tokenApprovalTxs(info.stakedToken, autoStickAdapter(), collectable, info, {
+    ...asApproveTx(info, collectable), label: `Allow the auto-stick contract to move this claim of ${pretty}`,
+  });
+  if (!state.projectGranter && !state.personallyTrusted) txs.push(asTrustTx(info, true));
   txs.push({
     label: "Claim & stick",
     to: autoStickAdapter(),
@@ -2316,50 +2982,106 @@ async function claimAndStick() {
     ],
     data: SEL.asStickRewardsFor + word(ctx.currentId),
   });
-  if (!(await confirmAndRun(`Claim & stick ${pretty}`, txs, [["Claim", pretty], ["It becomes", `${formatUnits(collectable, info.decimals)} ${info.stSymbol}, sticking now`]]))) return;
+  if (!(await reviewAction(action, `Claim & stick ${pretty}`, txs, [["Claim", pretty], ["It becomes", `${formatUnits(collectable, info.decimals)} ${info.stSymbol}, sticking now`]]))) return;
   txStatus("Rewards claimed and stuck", "ok");
   await renderProject(ctx.currentId);
 }
 window.claimAndStickNow = () => guard(claimAndStick)({ currentTarget: document.activeElement });
 
 async function settleArrivals() {
+  const action = beginAction();
+  const { holder } = action;
   const info = await projectInfo(ctx.currentId);
-  const pocketsAddr = window.STICKY_CONFIG?.pockets;
+  const pocketsAddr = actionAddress(stickyDeploymentFor(ctx.chainId).pockets, "reward pockets address");
+  const tokenAddr = rewardTokenAddress($("bridge-reward-token")?.value || $("r-token").value, info.stakedToken);
+  if (tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("reward pockets settle ERC-20 tokens; fund ETH rewards directly");
+  const meta = await rewardTokenMeta(tokenAddr);
+  const configuredDistributor = decAddress(await view(pocketsAddr, "0x9c26149f"));
+  if (configuredDistributor.toLowerCase() !== distributor()?.toLowerCase()) {
+    throw new Error("the reward pockets use a different distributor");
+  }
+  const pocket = actionAddress(decAddress(await view(pocketsAddr, SEL.predictPocketOf, encAddress(info.stToken))), "reward pocket");
+  const pending = decUint(await view(tokenAddr, SEL.balanceOf, encAddress(pocket)));
+  if (pending === 0n) throw new Error(`there are no ${meta.symbol} arrivals to settle`);
   const txs = [{
     label: "Settle arrivals",
     to: pocketsAddr,
     fn: "settleFor(address stickyToken, address token)",
     args: [
       ["STUCK IN", `${info.stToken} — ${stickyLabel(info)}`],
-      ["REWARD TOKEN", `${info.stakedToken} — ${info.symbol}`],
-      ["POCKET", ctx.pocket ?? "predicted"],
+      ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`],
+      ["AMOUNT", `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`],
+      ["POCKET", pocket],
       ["EFFECT", "the pocket's whole balance becomes this round's rewards"],
     ],
-    data: SEL.settleFor + encode(["address", "address"], [info.stToken, info.stakedToken]),
+    data: SEL.settleFor + encode(["address", "address"], [info.stToken, tokenAddr]),
   }];
-  if (!(await confirmAndRun("Settle cross-chain arrivals", txs))) return;
+  await actionCall(pocketsAddr, txs[0].data, holder);
+  if (!(await reviewAction(action, "Settle cross-chain arrivals", txs))) return;
   try { $("fund-dialog").close(); } catch {}
   txStatus("Arrivals settled into rewards", "ok");
+  (rewardTokens[ctx.currentId.toString()] ??= new Set()).add(tokenAddr.toLowerCase());
   await renderRewards();
 }
 
 // ------------------------------------------------------------------- actions
-async function stake() {
-  const info = await projectInfo(ctx.currentId);
-  const amount = parseUnits($("stake-amount").value, info.decimals);
-  const pretty = `${formatUnits(amount, info.decimals)} ${info.symbol}`;
-  const txs = [];
-  const allowance =
-    decUint(await view(info.stakedToken, SEL.allowance, encAddress(account()) + encAddress(ctx.terminal)));
-  if (allowance < amount) {
-    txs.push({
-      label: "Approve",
-      to: info.stakedToken,
-      fn: "approve(address spender, uint256 amount)",
-      args: [["SPENDER", `${ctx.terminal} — JBMultiTerminal`], ["AMOUNT", pretty]],
-      data: SEL.approve + encode(["address", "uint256"], [ctx.terminal, amount]),
-    });
+function syncTransferSticky(info) {
+  $("transfer-sticky")?.classList.toggle("hide", info.soulbound !== false);
+}
+
+async function transferSticky() {
+  const projectId = ctx.currentId;
+  const chainId = ctx.chainId;
+  const info = await projectInfo(projectId);
+  if (info.soulbound !== false) throw new Error("this sticky token is locked and cannot be transferred");
+  const action = beginAction();
+  if (action.chainId !== chainId || action.projectId !== projectId) {
+    throw new Error("the chain or project changed; review this transfer again");
   }
+  const { holder } = action;
+  const recipient = actionAddress($("transfer-recipient").value, "recipient address");
+  if (recipient.toLowerCase() === holder.toLowerCase()) throw new Error("choose a different recipient");
+  const amount = positiveAmount($("transfer-amount").value, 18);
+  await requireTokenBalance(info.stToken, holder, amount, { symbol: info.stSymbol });
+  const pretty = `${formatUnits(amount, 18, 18)} ${info.stSymbol}`;
+  const tx = {
+    label: `Transfer ${pretty}`,
+    to: info.stToken,
+    fn: "transfer(address to, uint256 amount)",
+    args: [
+      ["RECIPIENT", recipient], ["AMOUNT", pretty],
+      ["STREAK", "the transferred tokens start a new tranche now for the recipient; your remaining tranches keep their timestamps"],
+      ["FULL TRANSFER", "sending your entire balance ends your current streak"],
+    ],
+    data: "0xa9059cbb" + encode(["address", "uint256"], [recipient, amount]),
+  };
+  if (!(await reviewAction(action, `Transfer ${pretty}`, [tx], [
+    ["Transfer", pretty], ["To", recipient], ["Transferred tranche", "the recipient's clock starts again now"],
+  ]))) return;
+  txStatus("Sticky tokens transferred", "ok");
+  await renderProject(ctx.currentId);
+}
+
+async function stake() {
+  const action = beginAction();
+  const { holder } = action;
+  const info = await projectInfo(ctx.currentId);
+  const amount = positiveAmount($("stake-amount").value, info.decimals);
+  const beneficiary = actionAddress($("stake-beneficiary")?.value || holder, "beneficiary address");
+  const pretty = `${formatUnits(amount, info.decimals, info.decimals)} ${info.symbol}`;
+  await requireTokenBalance(info.stakedToken, holder, amount, info);
+  if (beneficiary.toLowerCase() !== holder.toLowerCase()) {
+    const [granter, trusted] = await Promise.all([
+      view(ctx.hook, SEL.isGranterOf, word(ctx.currentId) + encAddress(holder)),
+      view(ctx.hook, SEL.isTrustedSenderOf, word(ctx.currentId) + encAddress(beneficiary) + encAddress(holder)),
+    ]);
+    if (decUint(granter) !== 1n && decUint(trusted) !== 1n) {
+      throw new Error("this holder must trust your address before you can stick for them");
+    }
+  }
+  const expectedMint = stickMintOf(info, amount);
+  if (expectedMint === 0n) throw new Error("this amount is too small to mint a sticky token unit");
+  const txs = await tokenApprovalTxs(info.stakedToken, ctx.terminal, amount, info);
   txs.push({
     label: "Stick",
     to: ctx.terminal,
@@ -2368,19 +3090,19 @@ async function stake() {
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
       ["TOKEN", `${info.stakedToken} — ${info.symbol}`],
       ["AMOUNT", pretty],
-      ["BENEFICIARY", account()],
+      ["BENEFICIARY", beneficiary],
+      ["MINIMUM STICKY TOKENS", `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
     ],
     data: SEL.pay
       + encode(
         ["uint256", "address", "uint256", "address", "uint256", "string", "bytes"],
-        [ctx.currentId, info.stakedToken, amount, account(), 0n, "", "0x"],
+        [ctx.currentId, info.stakedToken, amount, beneficiary, expectedMint, "", "0x"],
       ),
   });
-  const mintPool = await poolBacking(ctx.currentId, info).catch(() => null);
-  const receipt = mintPool && mintPool.reward > 0n
-    ? `≈ ${parseFloat(Number(formatUnits(stickMintOf(mintPool, amount), 18)).toFixed(4))} ${info.stSymbol} — ${pretty} worth of the pool, at today's backing`
-    : `${formatUnits(amount, info.decimals)} ${info.stSymbol}`;
-  if (!(await confirmAndRun(`Stick — ${pretty}`, txs, [["Stick", pretty], ["You get", receipt]]))) return;
+  const receipt = `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`;
+  if (!(await reviewAction(action, `Stick — ${pretty}`, txs, [
+    ["Stick", pretty], ["Beneficiary", beneficiary], ["Sticky tokens", receipt],
+  ]))) return;
   txStatus("Stick confirmed", "ok");
   await renderProject(ctx.currentId);
 }
@@ -2391,7 +3113,7 @@ const PROTOCOL_FEE = 25n; // out of 1000; charged on reclaims whenever the bonus
 // A lone unstick pays the full bonus; bigger group exits pay proportionally less; a
 // full-supply exit takes the whole pool.
 function curveReclaim(pool, count) {
-  if (count === 0n || pool.supply === 0n) return 0n;
+  if (count === 0n || pool.supply === 0n || pool.reward === MAX_TAX) return 0n;
   if (count >= pool.supply) return pool.sigma;
   const base = (pool.sigma * count) / pool.supply;
   return (base * ((MAX_TAX - pool.reward) + (pool.reward * count) / pool.supply)) / MAX_TAX;
@@ -2408,12 +3130,12 @@ async function poolBacking(projectId, info) {
   };
 }
 
-// Sticks mint at the current backing, so 1 token in = exactly 1 token's worth of the pool —
-// fewer sticky tokens per token as the bonus grows.
+// The immutable ruleset and Sticky hook preserve weight 1e18: stakes always mint one for one,
+// normalized to 18 decimals, even when donations or earlier cash outs changed the pool's backing.
 function stickMintOf(pool, amount) {
-  return pool.supply > 0n && pool.sigma > 0n
-    ? (amount * pool.supply) / pool.sigma
-    : amount * 10n ** BigInt(18 - pool.decimals);
+  return pool.decimals <= 18
+    ? amount * 10n ** BigInt(18 - pool.decimals)
+    : amount / 10n ** BigInt(pool.decimals - 18);
 }
 
 function renderStickQuote() {
@@ -2426,13 +3148,12 @@ function renderStickQuote() {
   let amount = 0n;
   try { amount = parseUnits(field.value || field.placeholder || "0", pool.decimals); } catch {}
   if (amount <= 0n) return;
-  if (pool.reward === 0n) {
-    el.textContent = `Get ${formatUnits(amount, pool.decimals)} ${pool.symbol} back anytime.`;
-    return;
-  }
-  const r = Number(pool.reward) / 10000;
-  const back = parseFloat((Number(formatUnits(amount, pool.decimals)) * (1 - r) * 0.975).toFixed(4));
-  el.textContent = `If you change your mind you can get ${back} ${pool.symbol} back right away, and more as you stick around.`;
+  const mint = stickMintOf(pool, amount);
+  const afterStake = { ...pool, sigma: pool.sigma + amount, supply: pool.supply + mint };
+  const back = afterFee(curveReclaim(afterStake, mint), pool.reward);
+  el.textContent = pool.reward === MAX_TAX
+    ? "100% stickiness bonus: unsticking returns no underlying tokens."
+    : `Mint ${formatUnits(mint, 18)} ${pool.stSymbol}. Immediate unstick estimate: ${formatUnits(back, pool.decimals)} ${pool.symbol}; the exact amount is reviewed before unsticking.`;
 }
 
 function renderUnstickQuote() {
@@ -2448,6 +3169,10 @@ function renderUnstickQuote() {
   const gross = curveReclaim(pool, count);
   const net = afterFee(gross, pool.reward);
   const amt = (v) => `${formatUnits(v, pool.decimals)} ${pool.symbol}`;
+  if (pool.reward === MAX_TAX) {
+    el.textContent = "100% stickiness bonus: unsticking burns your sticky tokens and returns no underlying tokens.";
+    return;
+  }
   if (count >= pool.supply) {
     el.textContent = pool.reward > 0n
       ? `full exit — the last one out takes the whole pool: ≈ ${amt(net)} after the 2.5% protocol fee`
@@ -2464,67 +3189,69 @@ function renderUnstickQuote() {
 }
 
 async function unstake() {
+  const action = beginAction();
+  const { holder } = action;
   const info = await projectInfo(ctx.currentId);
-  // Cash out counts are in the staked copy's 18 decimals regardless of the staked token's decimals.
-  const count = parseUnits($("unstake-amount").value, 18);
-  const pretty = `${formatUnits(count, 18)} ${info.symbol}`;
-  // Quote against fresh pool state so the reviewed numbers match what the chain will do.
-  const quote = await poolBacking(ctx.currentId, info).then((pool) => {
-    if (pool.supply === 0n) return null;
-    const gross = curveReclaim(pool, count);
-    const net = afterFee(gross, pool.reward);
-    return { gross, net, bonus: (pool.sigma * (count > pool.supply ? pool.supply : count)) / pool.supply - gross, full: count >= pool.supply };
-  }).catch(() => null);
+  // Wallet balances are authoritative if a direct controller burn left the hook's tranche book overstated.
+  const count = positiveAmount($("unstake-amount").value, 18);
+  const balance = decUint(await view(info.stToken, SEL.balanceOf, encAddress(holder)));
+  if (count > balance) throw new Error("the unstick amount exceeds your sticky token balance");
+  const pretty = `${formatUnits(count, 18, 18)} ${info.stSymbol}`;
+  const encodeUnstake = (minimum) => SEL.cashOutTokensOf + encode(
+    ["address", "uint256", "uint256", "address", "uint256", "address", "bytes"],
+    [holder, ctx.currentId, count, info.stakedToken, minimum, holder, "0x"],
+  );
+  // Simulate the actual terminal, including feeless exceptions and fee-free-surplus accounting. The reviewed
+  // amount becomes the on-chain minimum; a worse outcome must be reviewed again rather than silently accepted.
+  const result = await actionCall(ctx.terminal, encodeUnstake(0n), holder);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(result)) throw new Error("the terminal did not return a valid unstick quote");
+  const reclaim = decUint(result);
   const txs = [];
-  // A full exit with auto-stick still on could be reopened by a later reward compound. Disable it first, in the
-  // same reviewed plan, before the unstick lands.
-  if (ctx.autoStick?.enabled) {
-    const staked = decUint(await view(ctx.hook, SEL.stakedBalanceOf, word(ctx.currentId) + encAddress(account())));
-    if (count >= staked) txs.push(...asDisableTxs(info, ctx.autoStick));
-  }
+  const state = await autoStickState();
+  ctx.autoStick = state;
+  if (state?.enabled && count === balance) txs.push(...asDisableTxs(info, state));
+  const receive = `${formatUnits(reclaim, info.decimals, info.decimals)} ${info.symbol}`;
   txs.push({
-    label: "Unstick",
+    label: reclaim === 0n ? "Unstick without reclaiming tokens" : "Unstick",
     to: ctx.terminal,
     fn: "cashOutTokensOf(address holder, uint256 projectId, uint256 cashOutCount, address tokenToReclaim, uint256 minTokensReclaimed, address beneficiary, bytes metadata)",
     args: [
-      ["HOLDER", account()],
+      ["HOLDER", holder],
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
       ["UNWIND", pretty],
       ["RECLAIM AS", `${info.stakedToken} — ${info.symbol}`],
-      ["BENEFICIARY", account()],
-      ...(info.reward > 0n && quote
-        ? [["STICKINESS REWARD", `≈ ${formatUnits(quote.bonus, info.decimals)} ${info.symbol} stays with remaining holders (${pct(info.reward)} bonus, discounted for group exits)`]]
-        : []),
+      ["MINIMUM RECEIVED", receive],
+      ["BENEFICIARY", holder],
+      ...(reclaim === 0n ? [["EFFECT", "your sticky tokens are burned and no underlying tokens are returned"]] : []),
     ],
-    data: SEL.cashOutTokensOf
-      + encode(
-        ["address", "uint256", "uint256", "address", "uint256", "address", "bytes"],
-        [account(), ctx.currentId, count, info.stakedToken, 0n, account(), "0x"],
-      ),
+    data: encodeUnstake(reclaim),
   });
-  const receipt = quote
-    ? quote.full
-      ? `≈ ${formatUnits(quote.net, info.decimals)} ${info.symbol} — full exit takes the whole pool${info.reward > 0n ? " (2.5% protocol fee applies)" : ""}`
-      : info.reward > 0n
-        ? `≈ ${formatUnits(quote.net, info.decimals)} ${info.symbol} after the stickiness bonus + 2.5% protocol fee`
-        : `${formatUnits(quote.gross, info.decimals)} ${info.symbol} — your share of the backing`
-    : info.reward > 0n
-      ? `${info.symbol} on the bonus curve — up to ${pct(info.reward)} stays behind`
-      : `${formatUnits(count, 18)} ${info.symbol}, one for one`;
-  if (!(await confirmAndRun(`Unstick — ${pretty}`, txs, [["Unstick", pretty], ["You get back", receipt]]))) return;
+  if (!(await reviewAction(action, `Unstick — ${pretty}`, txs, [["Unstick", pretty], ["Minimum you receive", receive]]))) return;
   try { $("unstick-dialog").close(); } catch {}
   txStatus("Unstick confirmed", "ok");
   await renderProject(ctx.currentId);
 }
 
 async function deployStreaks() {
+  return withStickyLaunchLock(async () => {
+    const saved = stickyLaunchStore().load();
+    if (saved) {
+      showStickyLaunchDialog();
+      await stickyLaunchController().run();
+      return;
+    }
+    await prepareStickyLaunch();
+  });
+}
+
+async function prepareStickyLaunch() {
   const token = dTokenResolved ?? $("d-token").value.trim();
   if (!/^0x[0-9a-fA-F]{40}$/.test(token)) throw new Error("enter a token address or a Juicebox project id");
   const rewardPercent = $("d-add-reward").checked ? effectiveRewardPct() : 0;
   if (!Number.isFinite(rewardPercent) || rewardPercent < 0 || rewardPercent > 100) {
     throw new Error("stickiness bonus must be between 0% and 100%");
   }
-  const reward = BigInt(Math.round(rewardPercent * 100));
+  const reward = parseUnits(String(rewardPercent), 2);
   const soulbound = $("d-soulbound").value === "1";
   // Launch-time trusted senders (Extras). The auto-stick adapter is appended below regardless.
   const humanGranters = $("d-add-granters").checked
@@ -2569,9 +3296,11 @@ async function deployStreaks() {
   const name = (useCustom && $("d-name").value.trim()) || `Sticky ${tokenName}`;
   const symbol = (useCustom && $("d-symbol").value.trim()) || `STICKY${tokenSymbol.toUpperCase()}`;
   const chainIds = targets.map((target) => target.chainId);
+  const launchId = crypto.randomUUID();
   const projectUri = `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({
     protocol: "JBSticky",
     version: 1,
+    launchId,
     environment: createEnvironment,
     chains: chainIds,
   }))}`;
@@ -2592,7 +3321,7 @@ async function deployStreaks() {
         ["LOCKS", `${token} — ${tokenSymbol}`],
         ["NAME", name],
         ["SYMBOL", symbol],
-        ["STICKINESS BONUS", reward > 0n ? `${pct(reward)} of every unstick stays with those still sticking` : "none"],
+        ["CASH OUT TAX", reward === 10000n ? "100% — unsticking permanently returns zero underlying tokens" : reward > 0n ? `${pct(reward)} — reclaim depends on backing and the share of supply unstuck` : "none"],
         ["TRUSTED SENDERS", humanGranters.length ? humanGranters.join(", ") : "none"],
         ["AUTO-STICK", target.autoStickAdapter
           ? `pre-approved through ${target.autoStickAdapter}; each holder still opts in`
@@ -2608,15 +3337,255 @@ async function deployStreaks() {
         ),
     };
   });
-  if (!(await confirmAndRun(`Create ${symbol}`, txs, [
-    ["Create", `${name} (${symbol})`],
-    ["Backed by", tokenSymbol],
-    ["On", targets.map((target) => target.name).join(", ")],
-  ]))) return;
+  const owner = txAccount();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(owner || "")) throw new Error("Connect a wallet to create a Sticky token.");
+  const fundingRpcs = Object.fromEntries(chainsForEnvironment(createEnvironment)
+    .map((chain) => [chain.chainId, stickyDeploymentFor(chain.chainId).rpcUrl])
+    .filter(([, url]) => typeof url === "string" && url));
+  stickyLaunchController().prepare({
+    id: launchId, owner, mode: targets.length > 1 ? "relayr" : "direct", name, symbol,
+    tokenSymbol, environment: createEnvironment, fundingRpcs,
+    summary: [["Create", `${name} (${symbol})`], ["Backed by", tokenSymbol],
+      ["On", targets.map((target) => target.name).join(", ")]],
+    txs: txs.map((tx, i) => ({ ...tx, rpcUrl: targets[i].rpcUrl, from: owner, sessionTag: launchId })),
+    targets: targets.map((target) => ({ chainId: target.chainId, name: target.name,
+      deployer: target.deployer, controller: target.controller, projects: target.projects, rpcUrl: target.rpcUrl,
+      expected: { stakedToken: token, cashOutTaxRate: reward.toString(), soulbound },
+    })),
+  });
   $("create-dialog").close();
-  txStatus(`Sticky token deployed on ${targets.length} ${targets.length === 1 ? "chain" : "chains"}`, "ok");
-  await renderHome();
+  showStickyLaunchDialog();
+  await stickyLaunchController().run();
 }
+
+
+// Launch state is independent of the editable create form and survives reloads.
+let stickyLaunchControllerInstance = null;
+let stickyLaunchStoreInstance = null;
+let stickyLaunchChoiceResolve = null;
+let stickyLaunchBusy = false;
+function stickyLaunchStore() {
+  if (!window.StickyLaunch) throw new Error("Launch recovery could not load. Reload this page before deploying.");
+  return stickyLaunchStoreInstance ||= StickyLaunch.createStore(localStorage);
+}
+function stickyLaunchRelayr() {
+  return StickyRelayr.createClient({ rpc: (chainId, method, params) => {
+    const saved = stickyLaunchStore().load();
+    const target = saved?.targets.find((item) => item.chainId === Number(chainId));
+    const rpcUrl = target?.rpcUrl || saved?.fundingRpcs[chainId];
+    if (!rpcUrl) throw new Error(`No saved RPC for chain ${chainId}.`);
+    return rpcAt(rpcUrl, method, params);
+  } });
+}
+function stickyLaunchController() {
+  return stickyLaunchControllerInstance ||= StickyLaunch.createController({
+    store: stickyLaunchStore(), relayr: stickyLaunchRelayr(),
+    choosePayment: chooseStickyLaunchPayment,
+    runPayment: runStickyLaunchPayment,
+    runDirect: (session, options) => runStickyLaunchWallet(session, session.txs, options),
+    acknowledge: async (session) => {
+      const pending = getTxEngine().load();
+      if (pending?.steps.every((step) => step.tx.sessionTag === session.id)) {
+        await getTxEngine().acknowledge(pending.id);
+        if (!session.paymentIntent && !session.directIntent
+          && pending.steps.every((step) => ["ready", "rejected"].includes(step.state))) await getTxEngine().clear();
+      }
+    },
+    onChange: renderStickyLaunchRecovery,
+  });
+}
+async function withStickyLaunchLock(fn) {
+  if (stickyLaunchBusy) throw new Error("This launch is already being processed.");
+  if (!navigator.locks) throw new Error("This browser does not support safe launch recovery. Use a current browser over HTTPS.");
+  return navigator.locks.request("sticky-launch-write", { ifAvailable: true }, async (lock) => {
+    if (!lock) throw new Error("This Sticky launch is being processed in another tab.");
+    stickyLaunchBusy = true;
+    try { return await fn(); }
+    catch (error) {
+      ensureStickyLaunchUI();
+      $("sl-error").textContent = error.message;
+      throw error;
+    } finally { stickyLaunchBusy = false; renderStickyLaunchRecovery(); }
+  });
+}
+function ensureStickyLaunchUI() {
+  if ($("sticky-launch-dialog")) return;
+  const dialog = document.createElement("dialog");
+  dialog.id = "sticky-launch-dialog";
+  dialog.setAttribute("aria-labelledby", "sl-title");
+  dialog.innerHTML = `<button type="button" class="dlg-x" id="sl-close" aria-label="Close launch">✕</button>
+    <div class="cd-eyebrow">Create a Sticky token</div><h2 class="cd-title" id="sl-title">Launch</h2>
+    <div id="sl-summary" class="cd-summary"></div><p id="sl-status" role="status" aria-live="polite"></p>
+    <div id="sl-progress" class="cd-steps"></div><div id="sl-funding" class="hide"></div>
+    <p id="sl-error" role="alert" style="color:var(--err);overflow-wrap:anywhere"></p>
+    <details id="sl-recovery"><summary>Recover a destination transaction</summary>
+      <p class="mut">If a chain explorer shows a completed deployment, paste its execution transaction hash. Sticky verifies the exact saved deployment before marking it complete.</p>
+      <label for="sl-chain">Destination chain</label><select id="sl-chain"></select>
+      <label for="sl-hash">Execution transaction hash</label><input id="sl-hash" autocomplete="off" spellcheck="false" placeholder="0x…">
+      <button type="button" class="ghost" id="sl-check-hash">Verify transaction</button>
+    </details><details style="margin-top:16px"><summary>Review saved deployment transactions</summary><div id="sl-transactions"></div></details>
+    <div class="dlg-actions"><button type="button" class="ghost" id="sl-clear">Discard draft</button>
+      <button type="button" class="ghost" id="sl-refresh">Check progress</button><button type="button" id="sl-resume">Continue launch</button></div>`;
+  document.body.appendChild(dialog);
+  const banner = document.createElement("div");
+  banner.id = "sticky-launch-banner";
+  banner.className = "hide";
+  banner.style.cssText = "max-width:1068px;margin:16px auto;padding:14px;border:1px solid var(--line);border-radius:4px;overflow-wrap:anywhere";
+  banner.innerHTML = `<span id="sl-banner-text"></span> <button type="button" class="ghost" id="sl-open">View launch</button>`;
+  const main = document.querySelector("main");
+  if (main) main.prepend(banner); else document.body.insertBefore(banner, document.querySelector(".site-footer"));
+  const close = () => {
+    if (stickyLaunchChoiceResolve) { const resolve = stickyLaunchChoiceResolve; stickyLaunchChoiceResolve = null; resolve(null); }
+    dialog.close();
+  };
+  $("sl-close").onclick = close;
+  dialog.oncancel = (event) => { event.preventDefault(); close(); };
+  $("sl-open").onclick = showStickyLaunchDialog;
+  $("sl-resume").onclick = guard(() => withStickyLaunchLock(async () => {
+    $("sl-error").textContent = "";
+    await stickyLaunchController().run();
+  }));
+  $("sl-refresh").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().refresh()));
+  $("sl-check-hash").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().addHash(Number($("sl-chain").value), $("sl-hash").value.trim())));
+  $("sl-clear").onclick = guard(() => withStickyLaunchLock(async () => {
+    const saved = stickyLaunchStore().load();
+    await stickyLaunchController().clear(); dialog.close();
+    if (saved && StickyLaunch.complete(saved)) {
+      txStatus(`${saved.symbol} deployed on ${saved.targets.length} ${saved.targets.length === 1 ? "chain" : "chains"}.`, "ok");
+      await renderHome();
+    }
+  }));
+  $("create-toggle").addEventListener("click", (event) => {
+    try {
+      if (!stickyLaunchStore().load()) return;
+      event.stopImmediatePropagation(); event.preventDefault(); showStickyLaunchDialog();
+    } catch (error) {
+      event.stopImmediatePropagation(); event.preventDefault();
+      showStickyLaunchDialog(); $("sl-error").textContent = error.message;
+    }
+  }, true);
+}
+function showStickyLaunchDialog() {
+  ensureStickyLaunchUI(); renderStickyLaunchRecovery();
+  if (!$("sticky-launch-dialog").open) $("sticky-launch-dialog").showModal();
+}
+function renderStickyLaunchRecovery() {
+  ensureStickyLaunchUI();
+  let session;
+  try { session = stickyLaunchStore().load(); }
+  catch (error) {
+    $("sticky-launch-banner").classList.remove("hide");
+    $("sl-banner-text").textContent = "A saved launch needs recovery.";
+    $("sl-error").textContent = error.message;
+    for (const id of ["sl-clear", "sl-resume", "sl-refresh", "sl-check-hash"]) $(id).disabled = true;
+    return;
+  }
+  $("sticky-launch-banner").classList.toggle("hide", !session);
+  if (!session) return;
+  const done = StickyLaunch.complete(session);
+  const confirmed = Object.values(session.results).filter((result) => result.status === "confirmed").length;
+  $("sl-title").textContent = `${done ? "Created" : "Create"} ${session.symbol}`;
+  $("sl-banner-text").textContent = `${session.symbol}: ${confirmed} of ${session.targets.length} chains confirmed.`;
+  $("sl-summary").innerHTML = session.summary.map(([key, value]) => `<div class="cd-summary-row"><span class="k">${esc(key)}</span><span class="v">${esc(value)}</span></div>`).join("");
+  $("sl-status").textContent = done ? "Your Sticky token is deployed on every selected chain."
+    : session.paymentConfirmed ? "Your payment is confirmed. Relayr is deploying on the selected chains. Keep this saved launch until every chain confirms."
+    : session.paymentIntent ? "Your saved payment is being recovered. Check your wallet and use Continue launch to verify its result."
+    : session.published && !session.quote ? (stickyLaunchBusy ? "Getting a launch quote from Relayr…" : "Relayr may have received this launch, but its quote ID was not returned. Submitting again could deploy duplicates. Keep this recovery record.")
+    : session.mode === "relayr" ? (session.quote ? "Choose where to pay this launch quote. One payment covers the quoted destination gas and creation fees." : "Getting funding options for your saved launch…")
+    : "Review the saved deployment, then confirm it in your wallet.";
+  $("sl-progress").innerHTML = session.targets.map((target, i) => {
+    const result = session.results[target.chainId];
+    return `<div class="cd-step ${result?.status === "confirmed" ? "done" : "pending"}"><i>${result?.status === "confirmed" ? "✓" : i + 1}</i><span>${esc(target.name)}${result?.status === "confirmed" ? ` — <a class="link" href="?chain=${target.chainId}#/project/${esc(result.projectId)}">project #${esc(result.projectId)}</a>` : " — awaiting confirmation"}</span></div>`;
+  }).join("");
+  const currentChain = $("sl-chain").value;
+  $("sl-chain").innerHTML = session.targets.map((target) => `<option value="${target.chainId}">${esc(target.name)}</option>`).join("");
+  if (session.targets.some((target) => String(target.chainId) === currentChain)) $("sl-chain").value = currentChain;
+  $("sl-transactions").innerHTML = session.txs.map((tx) => `<div class="txstep"><h3>${esc(tx.label)}</h3><div class="rawbox" style="white-space:pre-wrap;overflow-wrap:anywhere">to: ${esc(tx.to)}\nvalue: ${esc(BigInt(tx.value).toString())} wei\ndata: ${esc(tx.data)}</div></div>`).join("");
+  $("sl-clear").textContent = done ? "Done" : "Discard draft";
+  $("sl-clear").classList.toggle("hide", !StickyLaunch.canClear(session));
+  $("sl-clear").disabled = stickyLaunchBusy;
+  $("sl-resume").classList.toggle("hide", done || Boolean(session.paymentConfirmed));
+  $("sl-resume").disabled = stickyLaunchBusy;
+  $("sl-refresh").disabled = stickyLaunchBusy;
+  $("sl-check-hash").disabled = stickyLaunchBusy || done;
+  $("sl-recovery").classList.toggle("hide", done);
+  if (session.lastStatusError) $("sl-error").textContent = session.lastStatusError;
+}
+function chooseStickyLaunchPayment(options, session) {
+  // A quote can finish after the launch review was closed. Preserve it without trapping a lock.
+  if (!$("sticky-launch-dialog").open) return null;
+  if (!options.length) throw new Error("Relayr returned no valid funding options. Keep this launch saved and check again later.");
+  const client = stickyLaunchRelayr();
+  $("sl-funding").classList.remove("hide");
+  $("sl-funding").innerHTML = `<label for="sl-payment-chain">Pay the launch quote on</label><select id="sl-payment-chain"><option value="">Choose a quoted chain</option>${options.map((payment, i) => {
+    const details = client.paymentDetails(payment, session.quote.bundle_uuid);
+    return `<option value="${i}">${esc(chainById(details.chainId)?.name || details.chainId)} — ${formatUnits(details.amount, 18, 18)} ETH</option>`;
+  }).join("")}</select><p class="mut">One payment covers the quoted destination gas and creation fees. You will review the exact amount before paying.</p><button type="button" id="sl-review-payment" disabled>Review payment</button>`;
+  return new Promise((resolve) => {
+    stickyLaunchChoiceResolve = (payment) => { $("sl-funding").classList.add("hide"); resolve(payment); };
+    $("sl-payment-chain").onchange = () => { $("sl-review-payment").disabled = $("sl-payment-chain").value === ""; };
+    $("sl-review-payment").onclick = () => {
+      if ($("sl-payment-chain").value === "") return;
+      const settle = stickyLaunchChoiceResolve; stickyLaunchChoiceResolve = null;
+      settle(options[Number($("sl-payment-chain").value)]);
+    };
+  });
+}
+async function runStickyLaunchPayment(session, options) {
+  const details = stickyLaunchRelayr().paymentDetails(session.paymentIntent, session.quote.bundle_uuid, { allowExpired: options.recovering });
+  const tx = {
+    chainId: details.chainId, rpcUrl: session.fundingRpcs[details.chainId], from: session.owner,
+    to: details.target, data: details.calldata, value: `0x${details.amount.toString(16)}`, sessionTag: session.id,
+    label: `Pay Relayr to create ${session.symbol}`, contractName: "Relayr payment contract", fn: "Pay this Relayr launch quote",
+    valueLabel: `${formatUnits(details.amount, 18, 18)} ETH`,
+    args: [["LAUNCH", session.symbol], ["CHAINS", session.targets.map((target) => target.name).join(", ")],
+      ["QUOTE", session.quote.bundle_uuid], ["TOTAL", `${formatUnits(details.amount, 18, 18)} ETH`]],
+  };
+  return runStickyLaunchWallet(session, [tx], options);
+}
+async function runStickyLaunchWallet(session, txs, { recovering }) {
+  if (txAccount()?.toLowerCase() !== session.owner.toLowerCase()) throw new Error(`Connect ${session.owner} to resume this launch.`);
+  const engine = getTxEngine();
+  const pending = engine.load();
+  const matching = pending?.steps.every((step) => step.tx.sessionTag === session.id)
+    && pending.steps.length === txs.length;
+  if (recovering && !matching) throw new Error("The saved wallet transaction record is missing or belongs to another action. Keep this launch saved and recover its execution transaction; a new payment will not be sent.");
+  let completed;
+  try { completed = await confirmAndRun(`Create ${session.symbol}`, txs, session.summary); }
+  catch (error) {
+    // A failure before this tagged plan exists cannot have submitted this launch.
+    const after = engine.load();
+    if (!recovering && !after?.steps.some((step) => step.tx.sessionTag === session.id)) {
+      $("sl-error").textContent = error.message;
+      return { status: "cancelled" };
+    }
+    throw error;
+  }
+  const latest = engine.load();
+  const receipt = txs[0].receipt || latest?.steps[0]?.receipt;
+  if (!completed && latest?.steps.every((step) => ["ready", "rejected"].includes(step.state))) return { status: "cancelled" };
+  // Closing a recovery review cannot erase an unknown or previously submitted payment.
+  return { status: receipt ? "confirmed" : "pending", hash: receipt?.transactionHash || latest?.steps[0]?.hash, receipt };
+}
+async function pollStickyLaunchProgress() {
+  try {
+    const saved = stickyLaunchStore().load();
+    if (!stickyLaunchBusy && saved?.quote && !StickyLaunch.complete(saved) && navigator.locks) {
+      await navigator.locks.request("sticky-launch-write", { ifAvailable: true }, async (lock) => {
+        if (!lock || stickyLaunchBusy) return;
+        stickyLaunchBusy = true;
+        try { await stickyLaunchController().refresh(); }
+        finally { stickyLaunchBusy = false; renderStickyLaunchRecovery(); }
+      });
+    }
+  } catch (error) { if ($("sl-error")) $("sl-error").textContent = error.message; }
+  setTimeout(pollStickyLaunchProgress, 12000);
+}
+queueMicrotask(() => {
+  renderStickyLaunchRecovery();
+  window.addEventListener("storage", (event) => { if (event.key === StickyLaunch.KEY) renderStickyLaunchRecovery(); });
+  setTimeout(pollStickyLaunchProgress, 12000);
+});
 
 
 // ------------------------------------------------------------ wallet (ported from juicescan)
@@ -2657,16 +3626,25 @@ function getWalletProviders() {
   }));
 }
 
+const boundWalletProviders = new WeakSet();
 function bindWalletEvents(provider) {
-  if (!provider?.on) return;
+  if (!provider?.on || boundWalletProviders.has(provider)) return;
+  boundWalletProviders.add(provider);
   try {
     provider.on("accountsChanged", (accounts) => {
+      if (provider !== activeProvider) return;
       walletAccount = accounts?.[0] ?? null;
       try { walletAccount ? localStorage.setItem(WALLET_FLAG, "1") : localStorage.removeItem(WALLET_FLAG); } catch {}
       updateConnectButton();
       route();
     });
-    provider.on("chainChanged", () => updateConnectButton());
+    provider.on("chainChanged", () => { if (provider === activeProvider) updateConnectButton(); });
+    provider.on("disconnect", () => {
+      if (provider !== activeProvider) return;
+      walletAccount = null;
+      updateConnectButton();
+      route();
+    });
   } catch {}
 }
 if (activeProvider) bindWalletEvents(activeProvider);
@@ -2929,6 +3907,7 @@ function route() {
   try { $("fund-dialog").close(); } catch {}
   try { $("autostick-dialog").close(); } catch {}
   if (confirmResolve) settleConfirm(false);
+  if (!ctx.loaded) return;
   const accountMatch = location.hash.match(/^#\/account\/(0x[0-9a-fA-F]{40})$/);
   if (accountMatch) {
     ctx.currentId = null;
@@ -2965,14 +3944,23 @@ window.onhashchange = route;
 
 // ---------------------------------------------------------------------- wire
 function guard(fn) {
-  return (event) => {
+  let active = false;
+  return async (event) => {
+    if (active) return;
+    active = true;
     const anchor = event?.currentTarget || document.activeElement;
+    const wasDisabled = anchor && "disabled" in anchor ? anchor.disabled : null;
+    if (wasDisabled !== null) anchor.disabled = true;
     const oldNotice = anchor?.closest?.("dialog, section, .card-item, .list-card")?.querySelector?.(".inline-status");
     oldNotice?.remove();
-    return fn(event).catch((error) => {
+    try { return await fn(event); } catch (error) {
       if (confirmProgress >= 0 || $("confirm-dialog").open) txStatus(error.message, "err");
       else inlineStatus(anchor, error.message, "err");
-    });
+    } finally {
+      active = false;
+      if (wasDisabled !== null) anchor.disabled = wasDisabled;
+      try { if (txEngine) renderTxRecovery(txEngine.load()); } catch {}
+    }
   };
 }
 $("load").onclick = guard(async () => {
@@ -2980,6 +3968,7 @@ $("load").onclick = guard(async () => {
   $("connection-dialog").close();
 });
 $("stake").onclick = guard(stake);
+$("transfer-send")?.addEventListener("click", guard(transferSticky));
 $("unstake").onclick = guard(unstake);
 $("trust").onclick = guard(async () => {
   await setTrust($("trust-addr").value, true);
@@ -3127,9 +4116,11 @@ function renderCurve() {
   const note = $("d-curve-note");
   if (note) {
     const sym = lockedSymbol ? ` ${lockedSymbol}` : "";
-    note.textContent = r > 0
-      ? `Stick 100${sym}: get ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym} back right away, and more as you stick around.`
-      : "No bonus: unsticks return exactly what was stuck.";
+    note.textContent = r === 1
+      ? "At 100%, unsticking returns no underlying tokens. This setting is permanent."
+      : r > 0
+        ? `For a small unstick at 1:1 backing, 100${sym} returns approximately ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. The actual reclaim depends on backing, supply and fee eligibility; review the live quote before unsticking.`
+        : "No cash out tax: unsticks return a proportional share of the pool. Donations can increase backing.";
   }
   $("d-fee-details")?.classList.toggle("hide", r === 0);
   renderBonusSplit(r);
@@ -3158,7 +4149,7 @@ function renderBonusSplit(r, o = {}) {
   const wLeaver = (toLeaver / value) * W;
   const wStays = (stays / value) * W;
   el.innerHTML = `
-    <div class="mut" style="font-size:13px;margin:10px 0 6px">When 100 ${esc(stSym) || "sticky tokens"} unstick…</div>
+    <div class="mut" style="font-size:13px;margin:10px 0 6px">Illustration for 100 ${esc(stSym) || "sticky tokens"} forming a small share of the supply</div>
     <svg viewBox="0 0 ${W} ${BH}" style="width:100%;max-width:${W}px;border-radius:4px" preserveAspectRatio="none">
       <rect x="0" y="0" width="${wLeaver.toFixed(1)}" height="${BH}" fill="#2fb3c7"/>
       <rect x="${wLeaver.toFixed(1)}" y="0" width="${wStays.toFixed(1)}" height="${BH}" fill="#0e7c91"/>
@@ -3217,14 +4208,19 @@ $("create-toggle").onclick = () => {
 };
 $("create-close").onclick = () => $("create-dialog").close();
 $("cd-cancel").onclick = () => settleConfirm(false);
-$("cd-confirm").onclick = () => settleConfirm(true);
+const guardedResumeTransactions = guard(resumeSavedTransactions);
+$("cd-confirm").onclick = (event) => {
+  if (confirmResolve) settleConfirm(true);
+  else return guardedResumeTransactions(event);
+};
 $("cd-close").onclick = () => settleConfirm(false);
 $("cd-audit").onclick = guard(async () => {
   await navigator.clipboard.writeText(await auditPrompt());
   inlineStatus($("cd-audit"), "Audit prompt copied — paste it into your AI.", "ok");
 });
 $("tx-status-close").onclick = () => txStatus("");
-$("confirm-dialog").oncancel = () => settleConfirm(false);
+$("confirm-dialog").oncancel = (event) => { event.preventDefault(); settleConfirm(false); };
+$("confirm-dialog").addEventListener("close", () => { if (confirmResolve) settleConfirm(false); });
 // Clicking the backdrop (the dialog element itself, not its children) closes the dialog.
 $("create-dialog").onclick = (event) => {
   if (event.target === $("create-dialog")) $("create-dialog").close();
@@ -3516,11 +4512,37 @@ if (config.demoMode) {
   $("rpc").value = "demo";
   $("deployer").value = D.deployer;
   $("account").value = D.you;
+  $("demo-notice").classList.remove("hide");
   guard(loadDeployer)();
 } else {
-  $("rpc").value = config.rpcUrl ?? "http://localhost:8545";
-  if (config.deployer) $("deployer").value = config.deployer;
-  if (config.account) $("account").value = config.account;
-  if (config.deployer) guard(loadDeployer)();
+  const selectedId = Number(new URL(location.href).searchParams.get("chain") || config.defaultChainId || 1);
+  const selected = chainById(selectedId);
+  const chainConfig = StickyRuntime.deployment(config, selectedId);
+  const isDefault = selectedId === Number(config.defaultChainId || 1);
+  $("rpc").value = chainConfig.rpcUrl || (isDefault && config.rpcUrl) || selected?.rpcUrl || "";
+  $("deployer").value = chainConfig.deployer || "";
+  if (config.account && config.localMode === true && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("account").value = config.account;
+  const picker = $("site-chain");
+  picker.replaceChildren(...ORIGINS.filter(chain => StickyRuntime.deployment(config, chain.chainId).deployer).map(chain => {
+    const option = document.createElement("option");
+    option.value = String(chain.chainId);
+    option.textContent = chain.name;
+    return option;
+  }));
+  if (picker.options.length) {
+    picker.value = String(selectedId);
+    picker.classList.remove("hide");
+  }
+  picker.onchange = () => {
+    const url = new URL(location.href);
+    url.searchParams.set("chain", picker.value);
+    url.hash = "#/";
+    location.assign(url.href);
+  };
+  if (!selected) status("This chain is not supported. Select a configured chain to continue.", "err");
+  else if ($("deployer").value) guard(loadDeployer)();
+  else status("Sticky is not configured on this chain yet. Transactions will be available after its contracts are deployed and verified.", "err");
 }
 setInterval(() => refreshPosition().catch(() => {}), 15_000);
+
+installTxRecoveryUI();

@@ -6,7 +6,7 @@ The contracts are silent on rewards. They expose the data that reward programs n
 
 ## How it works
 
-- `JBStickyDeployer. The deployer owns the project forever and exposes no way to change its rules: a single eternal ruleset with 1:1 issuance, a fixed cash out tax (the project's "commitment reward"), zero reserved percent, no fund access limits, and every mutation flag disabled.
+- `JBStickyDeployer` owns the project forever and exposes no way to change its rules: a single eternal ruleset with 1:1 issuance, a fixed cash out tax (the project's "commitment reward"), zero reserved percent, no fund access limits, and every mutation flag disabled.
 - **Stake** by paying the project through `JBMultiTerminal.pay(...)` with the staked token. The payment mints the soulbound token 1:1 (normalized to 18 decimals) and `JBStickyHook` records a tranche with its own timestamp.
 - **Unstake** through `JBMultiTerminal.cashOutTokensOf(...)`. With a zero commitment reward the reclaim is proportional and fee-free — 1:1 against the staked backing. With a non-zero commitment reward, leavers forfeit a share of their reclaim to remaining stakers (and the Juicebox protocol takes its standard fee on taxed cash outs). The hook consumes tranches newest-first (LIFO); a partially consumed tranche keeps its original timestamp, so unstaking 2 out of a 5-token tranche doesn't reset the clock on the 3 that stay.
 - **Streak clock**: starts when a holder's staked balance becomes non-zero, never moves when more is staked, and resets only when the balance returns to zero. Grants staked on a holder's behalf (any payer, `beneficiary = holder`) auto-add as their own tranche without touching the streak — a long streak can't be used to backdate fresh capital.
@@ -14,7 +14,7 @@ The contracts are silent on rewards. They expose the data that reward programs n
 
 ## Rewards
 
-Sticky tokens plug straight into [`JBTokenDistributor`](https://github.com/Bananapus/nana-distributor-v6): anyone can `fund(stickyToken, rewardToken, amount)` to reward that project's streakers pro-rata to their locked balance at the round's snapshot — snapshot gamers who lock right after a funding get nothing until the next round. The soulbound token self-delegates every holder on first mint and locks delegation, so voting power always equals locked balance and no holder ever needs to register. Rewards vest over rounds and are collected with `beginVesting` + `collectVestedRewards`. The deploy script ships a sticky-tuned distributor (weekly rounds, 4 vesting rounds, 28-day claims) to every supported chain.
+Sticky tokens plug straight into [`JBTokenDistributor`](https://github.com/Bananapus/nana-distributor-v6): anyone can `fund(stickyToken, rewardToken, amount)` to reward that project's streakers pro-rata to their locked balance at the round's snapshot — snapshot gamers who lock right after a funding get nothing until the next round. The soulbound token self-delegates every holder on first mint and locks delegation, so voting power always equals locked balance and no holder ever needs to register. Rewards vest over rounds and are collected with `beginVesting` + `collectVestedRewards`. The deploy script configures a sticky-tuned distributor with weekly rounds, 4 vesting rounds, and a 3-year claim window.
 
 **Rewards from other chains**: every sticky token has a deterministic, chain-identical reward pocket (`JBStickyRewardPockets.predictPocketOf`). A funder on any chain bridges any sucker-mapped project token with the pocket as the sucker-claim beneficiary; when the claim lands, anyone calls `settleFor` and the arrival funds a reward round for the sticky token's holders. The sticky project itself needs no suckers — a Base-only project like ART can receive rewards originated on any chain, as long as the *reward* token bridges. Pockets work counterfactually: tokens can arrive before the pocket contract exists.
 
@@ -28,8 +28,16 @@ Sticky tokens plug straight into [`JBTokenDistributor`](https://github.com/Banan
 
 ## Develop
 
+See [the webclient guide](webclient/README.md) for local site setup, production
+configuration, and browser/server checks.
+
+Contract development uses the protocol workspace layout: this repository at
+`extensions/JBSticky`, alongside `nana-core-v6` and `nana-distributor-v6` at the
+workspace root. [The contract CI workflow](.github/workflows/test.yml) records the
+tested dependency commits and reproduces that layout before installing the lockfile.
+
 ```bash
-npm install
+npm ci
 forge test
 ```
 

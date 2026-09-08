@@ -103,7 +103,10 @@ interface IJBStickyAutoStick {
     /// @param holder The holder whose rewards are compounded.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
-    function compoundFor(uint256 projectId, address holder)
+    function compoundFor(
+        uint256 projectId,
+        address holder
+    )
         external
         returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 
@@ -111,9 +114,7 @@ interface IJBStickyAutoStick {
     /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
     /// @return underlyingAmount The underlying-token amount claimed and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
-    function stickRewardsFor(uint256 projectId)
-        external
-        returns (uint256 underlyingAmount, uint256 stickyTokenCount);
+    function stickRewardsFor(uint256 projectId) external returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 
     /// @notice Sets the caller's auto-stick configuration for a sticky project.
     /// @param projectId The ID of the sticky project.

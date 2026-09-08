@@ -334,9 +334,7 @@ contract JBStickyAutoStickUnitTest is Test {
     function test_compoundRevertsBelowMinimum() public {
         _enable(10e6, 1 days);
         distributor.setCollectable(9e6);
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 9e6, 10e6)
-        );
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 9e6, 10e6));
         adapter.compoundFor(PROJECT_ID, holder);
     }
 
@@ -460,9 +458,7 @@ contract JBStickyAutoStickUnitTest is Test {
         distributor.setCollectable(5e6);
         uint256 availableAt = block.timestamp + 1 days;
         vm.warp(availableAt - 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Cooldown.selector, availableAt)
-        );
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Cooldown.selector, availableAt));
         adapter.compoundFor(PROJECT_ID, holder);
 
         vm.warp(availableAt);

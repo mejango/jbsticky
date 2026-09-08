@@ -1,0 +1,36 @@
+name: webclient
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+jobs:
+  webclient:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: webclient/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install production server
+        run: python -m pip install -r webclient/requirements.txt
+      - name: Validate public configuration and HTTP serving
+        run: python -m unittest discover -s webclient/test -p 'test_*.py' -v
+      - name: Check browser JavaScript
+        run: |
+          for script in webclient/*.js; do node --check "$script"; done
+          node --test webclient/test/*.test.cjs
+      - name: Build an explicit demo
+        run: STICKY_DEMO=true python webclient/build-config.py
+      - name: Verify production entry point
+        run: |
+          PORT=8788 python webclient/serve.py &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:8788/healthz
+          curl --fail http://127.0.0.1:8788/ > /dev/null

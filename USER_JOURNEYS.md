@@ -2,7 +2,7 @@
 
 ## Repo Purpose
 
-This repo owns staking-with-streaks for Juicebox project tokens: locked staking projects, soulbound staked copies, and per-deposit duration accounting. It does not own reward logic, token issuance economics (core does), or any UI. Start here if you're integrating staking into a client, designing a reward program on streak data, or launching a sticky project for a token.
+This repo owns staking-with-streaks for Juicebox project tokens: locked staking projects, soulbound or transferable staked copies, per-deposit duration accounting, and the Sticky webclient. Juicebox core handles token issuance and cash-out economics; the distributor integration handles rewards. Start here if you're integrating staking into a client, designing a reward program on streak data, or launching a sticky project for a token. See [the webclient guide](webclient/README.md) for site configuration and production checks.
 
 ## Primary Actors
 
@@ -22,9 +22,9 @@ This repo owns staking-with-streaks for Juicebox project tokens: locked staking 
 
 **Actor:** community operator.
 
-**Intent:** make their token stakeable with trustless 1:1 unwinding.
+**Intent:** make their token stakeable under permanent, reviewed withdrawal and transfer rules.
 
-Call `deployStickyFor(stakedToken, name, symbol, projectUri, cashOutTaxRate)` with `msg.value` equal to `JBProjects.creationFee()`. Everything is permanent; verify parameters before sending. Failure modes: wrong `msg.value` reverts (`JBController_InvalidCreationFee`); a token without `decimals()` reverts. The returned `projectId` and the `DeploySticky` event carry the soulbound token address.
+Call `deployStickyFor(stakedToken, name, symbol, projectUri, cashOutTaxRate, granters, soulbound)` with `msg.value` equal to `JBProjects.creationFee()`. The tax rate, launch-time granters, and transfer mode are permanent; verify them before sending. A maximum tax rate means cash outs return no underlying tokens. Failure modes include an incorrect creation fee, an out-of-range tax rate, and a token without `decimals()`. The call returns `projectId`; the `DeploySticky` event identifies the deployed sticky token.
 
 ## Journey 2: Stake
 
@@ -32,7 +32,7 @@ Call `deployStickyFor(stakedToken, name, symbol, projectUri, cashOutTaxRate)` wi
 
 **Intent:** lock tokens to start or grow a commitment streak.
 
-Approve the terminal for the staked token, then `pay(projectId, stakedToken, amount, beneficiary: self, minReturnedTokens: 0, ...)`. Receives soulbound tokens 1:1 (18 decimals). First stake (or first after a full exit) starts the streak; later stakes add tranches with their own timestamps and never move the streak's start.
+Approve the terminal for the exact staked-token amount, then `pay(projectId, stakedToken, amount, beneficiary: self, minReturnedTokens: expectedMint, ...)`. The immutable issuance rules mint sticky tokens 1:1, normalized to 18 decimals, even if donations changed the pool's backing. Use that expected amount as the minimum return. First stake (or first after a full exit) starts the streak; later stakes add tranches with their own timestamps and never move the streak's start. Transfer behavior follows the project's launch-time `soulbound` choice.
 
 ## Journey 3: Unstake
 
@@ -40,7 +40,7 @@ Approve the terminal for the staked token, then `pay(projectId, stakedToken, amo
 
 **Intent:** recover staked tokens, keeping as much duration credit as possible.
 
-Call `cashOutTokensOf(holder: self, projectId, cashOutCount, tokenToReclaim: stakedToken, ...)` with `cashOutCount` in 18 decimals. Reclaim is 1:1 (more if donations raised the surplus), fee-free. Tranches are consumed newest-first — there is no position picker because protecting the oldest tranches is always optimal under duration-weighted rewards. A partial unstake never resets the streak or the remaining tranches' timestamps; unstaking everything ends the streak and records it into `longestStreakOf`.
+Call `cashOutTokensOf(holder: self, projectId, cashOutCount, tokenToReclaim: stakedToken, ...)` with `cashOutCount` in 18 decimals. Reclaim depends on the current backing, supply, configured cash-out tax, and terminal fee accounting. A zero-tax pool with unchanged backing normally unwinds 1:1; donations can increase backing, and a maximum tax rate returns zero even for a full exit. Review the terminal's current reclaim quote and set a minimum output before sending. Tranches are consumed newest-first. A partial unstake never resets the streak or the remaining tranches' timestamps; unstaking everything ends the streak and records it into `longestStreakOf`.
 
 ## Journey 4: Grant staked tokens to a streaker
 

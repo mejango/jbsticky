@@ -693,9 +693,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         art.approve({spender: address(adapter), value: type(uint256).max});
         adapter.setConfigFor({projectId: projectId, enabled: false, minimumAmount: 1e6, cooldown: 1 days});
         vm.stopPrank();
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user)
-        );
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user));
         adapter.compoundFor({projectId: projectId, holder: user});
 
         vm.prank(user);

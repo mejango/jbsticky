@@ -229,11 +229,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
 
         // Anything claimable is worth sticking when the holder themself asks.
         (underlyingAmount, stickyTokenCount) = _collectAndStick({
-            projectId: projectId,
-            holder: msg.sender,
-            underlying: underlying,
-            stickyToken: stickyToken,
-            minimumAmount: 1
+            projectId: projectId, holder: msg.sender, underlying: underlying, stickyToken: stickyToken, minimumAmount: 1
         });
     }
 
@@ -243,15 +239,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @param enabled Whether auto-stick should be on.
     /// @param minimumAmount The smallest reward worth compounding, in the underlying token's decimals. Non-zero.
     /// @param cooldown The minimum number of seconds between compounds.
-    function setConfigFor(
-        uint256 projectId,
-        bool enabled,
-        uint128 minimumAmount,
-        uint48 cooldown
-    )
-        external
-        override
-    {
+    function setConfigFor(uint256 projectId, bool enabled, uint128 minimumAmount, uint48 cooldown) external override {
         // Resolve and validate the project through the deployer.
         (IERC20Metadata underlying, IJBToken stickyToken) = _resolveProject(projectId);
         if (address(underlying) == address(0) || address(stickyToken) == address(0)) {

@@ -518,10 +518,12 @@
       <img src="drip-corner.png" alt="">
     </a>
     <div class="right">
+      <select id="site-chain" aria-label="Browse chain" style="width:auto;max-width:160px;font-size:12px" class="hide"></select>
       <button class="connect-btn" id="connect-btn">Connect wallet</button>
     </div>
   </header>
   <div id="status" class="hide" role="status" aria-live="polite">idle</div>
+  <p id="demo-notice" class="hide" role="status">Demo preview — balances and activity are examples. Transactions are disabled.</p>
 
 
   <!-- ============================================================ HOME -->
@@ -567,7 +569,7 @@
           <h1>Sticky</h1>
           <p class="tag" style="font-size:17px">Mark your presence,<br>earn by sticking around.</p>
           <button id="create-toggle">Make your token sticky</button>
-          <p class="foot mut">100% open source, <a class="link" href="https://github.com/Bananapus/nana-sticky-v6" target="_blank" rel="noopener">audit or create with your AI</a>.</p>
+          <p class="foot mut">100% open source, <a class="link" href="https://github.com/mejango/jbsticky" target="_blank" rel="noopener">audit or create with your AI</a>.</p>
         </section>
       </div>
     </div>
@@ -656,6 +658,21 @@
             </div>
           </div>
           <div class="mut" style="margin-top:8px" id="stake-quote"></div>
+          <details style="margin-top:12px">
+            <summary class="mut">Stick for someone else</summary>
+            <label for="stake-beneficiary">Recipient</label>
+            <input id="stake-beneficiary" placeholder="0x… (blank uses your wallet)" autocomplete="off">
+            <p class="mut hint">The recipient must trust your wallet, or you must be a permanent trusted sender for this project.</p>
+          </details>
+          <details id="transfer-sticky" class="hide" style="margin-top:12px">
+            <summary class="mut">Transfer sticky tokens</summary>
+            <label for="transfer-recipient">Recipient</label>
+            <input id="transfer-recipient" placeholder="0x…" autocomplete="off">
+            <label for="transfer-amount">Sticky token amount</label>
+            <input id="transfer-amount" placeholder="0" inputmode="decimal">
+            <p class="mut hint">Moved tokens start a fresh streak for the recipient. Your remaining tokens keep their existing streak.</p>
+            <button id="transfer-send" type="button">Review transfer</button>
+          </details>
         </section>
         <section>
           <h2>Latest</h2>
@@ -830,10 +847,9 @@
       <details class="hint" id="d-fee-details" style="margin-top:14px">
         <summary style="cursor:pointer;color:var(--accent)">Read about fees</summary>
         <p class="mut" style="margin:6px 0 0">
-          Sticking is always free. With a stickiness bonus on, each unstick pays a 2.5% fee to the Juicebox
-          project — the same fee any Juicebox project pays on funds leaving. The unsticker gets $JBP6 tokens
-          back for it, making them a part-owner of Juicebox itself, earning a cut of everyone else's fees.
-          Sticky tokens with no bonus unstick fee-free.
+          Sticking has no protocol fee. Taxed unsticks can incur the Juicebox protocol's cash out fee;
+          eligibility and the amount depend on the project and transaction. The live unstick quote
+          includes applicable fees. Sticky tokens with no cash out tax unstick fee-free.
         </p>
       </details>
     </div>
@@ -883,14 +899,26 @@
         <div class="dd-menu hide" id="r-origin-menu"></div>
       </div>
     </div>
-    <div id="r-token-wrap" style="flex:1;min-width:140px"><label>AIRDROPPED TOKEN</label><input id="r-token" placeholder="0x…"></div>
+    <div id="r-token-wrap" style="flex:1;min-width:140px"><label for="r-token">AIRDROPPED TOKEN</label><input id="r-token" placeholder="0x… or ETH"></div>
   </div>
   <div id="fund-direct" class="fund-direct">
     <div id="r-amount-wrap"><label>AMOUNT</label><input id="r-amount" placeholder="100"></div>
     <button id="fund">Send</button>
   </div>
   <div id="fund-bridge" class="hide">
-    <p class="mut" id="bridge-recipe">on the origin chain, bridge any sucker-mapped project token through its own sucker with this pocket as the claim beneficiary — the streaks project itself needs no suckers | arrivals appear below once claimed here</p>
+    <p class="mut" id="bridge-recipe">Bridge a supported Juicebox project token to this project's reward pocket. Once it arrives, claim and settle it into rewards here.</p>
+    <label for="bridge-source-token">Token address on origin chain</label>
+    <input id="bridge-source-token" placeholder="0x…" autocomplete="off">
+    <label for="bridge-amount">Amount to bridge</label>
+    <input id="bridge-amount" placeholder="100" inputmode="decimal">
+    <div class="dlg-actions"><button id="bridge-find" type="button" class="ghost">Find bridge</button></div>
+    <select id="bridge-route" class="hide" aria-label="Verified bridge route" disabled></select>
+    <button id="bridge-prepare" type="button" disabled>Review bridge transfer</button>
+    <p id="bridge-status" class="mut" role="status"></p>
+    <div id="bridge-movements"></div>
+    <button id="bridge-refresh" type="button" class="ghost">Refresh transfers</button>
+    <label for="bridge-reward-token">Reward token address on this chain</label>
+    <input id="bridge-reward-token" placeholder="0x…" autocomplete="off">
     <table><tbody>
       <tr><th style="width:150px">POCKET ADDRESS</th><td style="word-break:break-all" id="pocket-addr">–</td></tr>
       <tr><th>UNSETTLED</th><td id="pocket-pending">–</td></tr>
@@ -971,8 +999,8 @@
 </dialog>
 <footer class="site-footer">
   <div class="fine">
-    <p>Sticky tokens are open source, enforced by the Juicebox protocol on the Ethereum network.</p>
-    <p>Review the <a class="link" href="https://github.com/Bananapus/nana-sticky-v6" target="_blank" rel="noopener">contract code</a> and the <a class="link" href="https://github.com/Bananapus/nana-sticky-v6/tree/main/webclient" target="_blank" rel="noopener">website code</a>, or check this <span class="link" id="conn-toggle">connection</span>.</p>
+    <p>Sticky tokens are open source, enforced by the Juicebox protocol on each supported chain.</p>
+    <p>Review the <a class="link" href="https://github.com/mejango/jbsticky" target="_blank" rel="noopener">contract code</a> and the <a class="link" href="https://github.com/mejango/jbsticky/tree/main/webclient" target="_blank" rel="noopener">website code</a>, or check this <button type="button" class="link ghost" id="conn-toggle">connection</button>.</p>
     <p>Terms of service: Risks are borne entirely by the users of the open source code.</p>
   </div>
 </footer>
@@ -981,7 +1009,13 @@
   <span id="tx-status-message"></span>
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
-<script src="config.js?v=106"></script>
-<script src="app.js?v=126"></script>
+<script src="config.js?v=127"></script>
+<script src="runtime.js?v=127"></script>
+<script src="tx-safe.js?v=127"></script>
+<script src="tx-engine.js?v=127"></script>
+<script src="relayr.js?v=127"></script>
+<script src="launch-session.js?v=127"></script>
+<script src="bridge.js?v=127"></script>
+<script src="app.js?v=127"></script>
 </body>
 </html>
