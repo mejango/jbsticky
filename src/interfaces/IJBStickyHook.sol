@@ -9,7 +9,7 @@ import {IJBRulesetDataHook} from "@bananapus/core-v6/src/interfaces/IJBRulesetDa
 import {JBStickyTranche} from "../structs/JBStickyTranche.sol";
 
 /// @notice A data hook that tracks staking positions for sticky projects: per-deposit tranches, LIFO unstaking, and a
-/// person-level streak clock.
+/// holder-level streak clock.
 interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @notice Emitted when backing present without any shares is excluded from future holders' claims.
     /// @param projectId The ID of the sticky project.
@@ -87,8 +87,8 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @notice The duration of a holder's active streak, in seconds.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
-    /// @return The number of seconds since the holder's staked balance last became non-zero, or 0 if nothing is
-    /// staked.
+    /// @return duration The number of seconds since the holder's staked balance last became non-zero, or 0 if nothing
+    /// is staked.
     function currentStreakOf(uint256 projectId, address holder) external view returns (uint256);
 
     /// @notice Whether an address can airdrop stakes to any holder of a sticky project.
@@ -107,7 +107,7 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @notice The longest streak a holder has ever had, including their active streak.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
-    /// @return The holder's longest streak duration, in seconds.
+    /// @return duration The holder's longest streak duration, in seconds.
     function longestStreakOf(uint256 projectId, address holder) external view returns (uint256);
 
     /// @notice Backing excluded when the most recent share supply began.
@@ -140,6 +140,7 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     function trancheCountOf(uint256 projectId, address holder) external view returns (uint256);
 
     /// @notice A holder's tranches, oldest first.
+    /// @dev Copies every active tranche. Use the paginated overload for positions with many deposits or transfers.
     /// @param projectId The ID of the sticky project to get the tranches of.
     /// @param holder The address to get the tranches of.
     /// @return tranches The active tranches, oldest first.
@@ -169,7 +170,7 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     function recordBurn(uint256 projectId, address holder, uint256 amount) external;
 
     /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
-    /// tranches are consumed and the receiver gets a fresh tranche — transfers restart the clock on moved tokens.
+    /// tranches are consumed and the receiver gets a fresh tranche. The receiver's existing streak continues.
     /// @dev Can only be called by the project's registered sticky token. Zero and self transfers are no-ops.
     /// @param projectId The ID of the sticky project the transfer belongs to.
     /// @param from The holder the tokens moved from.

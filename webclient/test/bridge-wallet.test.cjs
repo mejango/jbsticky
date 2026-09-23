@@ -20,7 +20,7 @@ function fixture() {
   const fields = { 'bridge-source-token': { value: A(3) }, 'bridge-route': { value: '0' }, 'bridge-amount': { value: '100' }, 'bridge-reward-token': { value: '' } };
   const route = { source: { chainId: 1, name: 'Ethereum', rpcUrl: 'https://one.example' }, destination: { chainId: 10, name: 'OP', rpcUrl: 'https://ten.example' },
     sourceSucker: A(7), sourceToken: A(3), rewardToken: A(4), backingToken: Bridge.NATIVE, sourceMeta: { symbol: 'TOK', decimals: 0 }, rewardMeta: { symbol: 'TOK', decimals: 0 } };
-  const context = { source: route.source, destination: route.destination, pocket: A(5), info: { stToken: A(6) }, owner: A(1), key: 'bridge-key' };
+  const context = { source: route.source, destination: route.destination, receiver: A(5), info: { stToken: A(6) }, owner: A(1), key: 'bridge-key' };
   const record = { metadata: H(9), amount: '100', owner: A(1), route, phase: 'prepared', journalId: 'j1', prepareData: Bridge.SEL.prepare + '00'.repeat(160) };
   const engine = {
     load: () => state.journal,

@@ -43,14 +43,14 @@ class ConfigTests(unittest.TestCase):
     def test_selected_per_chain_configuration_becomes_boot_configuration(self):
         config = build.build_config({
             "STICKY_DEFAULT_CHAIN": "8453", "STICKY_DEPLOYER_8453": DEPLOYER,
-            "STICKY_DISTRIBUTOR_8453": OTHER, "STICKY_POCKETS_8453": OTHER,
+            "STICKY_DISTRIBUTOR_8453": OTHER, "STICKY_REWARD_RECEIVER_FACTORY_8453": OTHER,
             "STICKY_AUTOSTICK_ADAPTER_8453": OTHER, "STICKY_FROM_BLOCK_8453": "25100000",
         })
         self.assertEqual(config["deployer"], DEPLOYER)
         self.assertEqual(config["defaultChainId"], 8453)
         self.assertEqual(config["fromBlock"], "25100000")
         self.assertIs(config["demoMode"], False)
-        for field in ("rpcUrl", "distributor", "pockets", "autoStickAdapter"):
+        for field in ("rpcUrl", "distributor", "rewardReceiverFactory", "autoStickAdapter"):
             self.assertEqual(config[field], config["chains"]["8453"][field])
         self.assertNotIn("deployer", config["chains"]["1"])
 
@@ -68,7 +68,7 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_invalid_configuration_without_echoing_values(self):
         cases = {
             "STICKY_DEFAULT_CHAIN": "999", "STICKY_DEPLOYER_10": "0x" + "0" * 40,
-            "STICKY_POCKETS": "secret-not-an-address", "STICKY_DEMO": "treu",
+            "STICKY_REWARD_RECEIVER_FACTORY": "secret-not-an-address", "STICKY_DEMO": "treu",
             "STICKY_PROJECT_ID": "9007199254740992", "STICKY_FROM_BLOCK": "latest",
             "STICKY_RELAYR_URL": "javascript:private-value", "STICKY_RPC_1": "https://user:private-value@example.com",
         }
@@ -141,6 +141,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(get["headers"], head["headers"])
         self.assertEqual(get["headers"]["X-Frame-Options"], "DENY")
         self.assertEqual(get["headers"]["X-Content-Type-Options"], "nosniff")
+        self.assertIn("script-src 'self'", get["headers"]["Content-Security-Policy"])
         self.assertEqual(get["headers"]["Cache-Control"], "no-cache")
         self.assertIn("text/html", get["headers"]["Content-Type"])
 

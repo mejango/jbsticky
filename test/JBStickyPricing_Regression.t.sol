@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {IJBRulesetApprovalHook} from "@bananapus/core-v6/src/interfaces/IJBRulesetApprovalHook.sol";
+import {IJBSplitHook} from "@bananapus/core-v6/src/interfaces/IJBSplitHook.sol";
+import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
+import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBMultiTerminal} from "@bananapus/core-v6/src/JBMultiTerminal.sol";
+import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
+import {JBCurrencyAmount} from "@bananapus/core-v6/src/structs/JBCurrencyAmount.sol";
+import {JBFundAccessLimitGroup} from "@bananapus/core-v6/src/structs/JBFundAccessLimitGroup.sol";
+import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.sol";
+import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
+import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
+import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
+import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -57,18 +69,6 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         uint256 newcomerReclaim;
         uint256 incumbentReclaim;
         if (newcomerExitsFirst) {
-            newcomerReclaim = _cashOut({holder: _newcomer, count: newcomerShares});
-            incumbentReclaim = _cashOut({holder: _incumbent, count: incumbentShares});
-        } else if (newcomerShares < 1e12) {
-            // An enormous donation can price the newcomer's whole deposit below the supply floor. The incumbent
-            // then cannot be the one to leave a positive dust supply behind, but nobody's backing is lost: the
-            // newcomer exits in full and the incumbent follows.
-            vm.expectRevert(
-                abi.encodeWithSelector(
-                    JBStickyHook.JBStickyHook_SupplyBelowMinimum.selector, _projectId, newcomerShares, 1e12
-                )
-            );
-            _cashOut({holder: _incumbent, count: incumbentShares});
             newcomerReclaim = _cashOut({holder: _newcomer, count: newcomerShares});
             incumbentReclaim = _cashOut({holder: _incumbent, count: incumbentShares});
         } else {
@@ -159,7 +159,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         assertLe(reclaim, 9_999_999_999);
     }
 
-    function test_bootstrapBelowSupplyFloorPreviewsZeroAndRevertsAtomically() public {
+    function test_bootstrapBelowInitialMinimumPreviewsZeroAndRevertsAtomically() public {
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         assertEq(_preview({holder: _newcomer, amount: 1e12 - 1}), 0);
@@ -233,6 +233,33 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         assertEq(_backing(), 30e6);
     }
 
+    /// @notice A holder can reclaim all their backing without another holder burning their last atom.
+    function test_holderCanExitIndependentlyWhenAnotherHolderRetainsOneAtom() public {
+        _underlying = new JBStickyPricingToken(18);
+        _projectId = _deploy({underlying: _underlying, tax: 0});
+
+        // Establish an exact ratio of 100 underlying tokens to the minimum bootstrap share supply.
+        uint256 incumbentShares = _stake({holder: _incumbent, amount: 1e12, minimum: 1e12});
+        _donate(100e18 - 1e12);
+        uint256 newcomerShares = _stake({holder: _newcomer, amount: 200e18, minimum: 2e12});
+        assertEq(newcomerShares, 2e12);
+
+        // The initial holder can reclaim almost all the initial backing while retaining a single share atom.
+        assertEq(_cashOut({holder: _incumbent, count: incumbentShares - 1}), 100e18 - 1e8);
+        assertEq(_shares().balanceOf(_incumbent), 1);
+
+        // A partial withdrawal leaves the supply at the initial minimum, with 100 underlying tokens behind.
+        uint256 initialReclaim = _cashOut({holder: _newcomer, count: 1e12 + 1});
+        assertEq(initialReclaim, 100e18 + 1e8);
+        assertEq(_backing(), 100e18);
+        assertEq(_shares().totalSupply(), 1e12);
+
+        // The holder's final withdrawal does not depend on the dust holder's cooperation.
+        uint256 finalReclaim = _cashOut({holder: _newcomer, count: newcomerShares - 1e12 - 1});
+        assertEq(initialReclaim + finalReclaim, 200e18);
+        assertEq(_shares().balanceOf(_newcomer), 0);
+    }
+
     function test_hundredPercentTaxLeavesOrphanForNextSupply() public {
         _projectId = _deploy({underlying: _underlying, tax: 10_000});
         uint256 shares = _stake({holder: _incumbent, amount: 10e6, minimum: 10e18});
@@ -302,10 +329,10 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         _exerciseFirstMintBoundary(24);
     }
 
-    function test_soleHolderDonationCannotForceExactMultipleDeposits() public {
+    function test_initialMinimumKeepsInexactDepositsUsableAfterDonation() public {
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
-        // The smallest allowed bootstrap plus a large donation is the coarsest atom price a sole holder can set.
+        // The smallest allowed bootstrap retains useful precision after this large donation.
         assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
         _donate(1000e18);
         uint256 quote = _preview({holder: _newcomer, amount: 100e18 + 1});
@@ -317,28 +344,64 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         assertLe(_cashOut({holder: _newcomer, count: shares}), 100e18 + 1);
     }
 
-    function test_voluntaryBurnCannotLeaveSupplyBelowFloor() public {
+    /// @notice Documents accepted behavior: value added to a Sticky balance accrues to current holders at once, so a
+    /// holder who enters just before a `preferAddToBalance` payout split and exits right after captures its share.
+    function test_acceptedRisk_payoutSplitInflowCapturedByTransientHolder() public {
+        // An honest holder owns 1% of the supply before the transient holder arrives.
+        _stake({holder: _incumbent, amount: 1e6, minimum: 1});
+        uint256 payoutProjectId = _launchPayoutProjectSplittingTo(_projectId);
+        _fund({holder: _donor, amount: 1000e6});
+        vm.prank(_donor);
+        jbMultiTerminal().pay({
+            projectId: payoutProjectId,
+            token: address(_underlying),
+            amount: 1000e6,
+            beneficiary: _donor,
+            minReturnedTokens: 0,
+            memo: "",
+            metadata: bytes("")
+        });
+
+        // In one transaction: enter with 99% of supply, trigger the payout split, then exit.
+        uint256 deposit = 99e6;
+        uint256 shares = _stake({holder: _newcomer, amount: deposit, minimum: 1});
+        assertEq(shares * 100, _shares().totalSupply() * 99);
+        uint256 backingBefore = _backing();
+        jbMultiTerminal().sendPayoutsOf({
+            projectId: payoutProjectId,
+            token: address(_underlying),
+            amount: 1000e6,
+            currency: uint32(uint160(address(_underlying))),
+            minTokensPaidOut: 0
+        });
+        uint256 inflow = _backing() - backingBefore;
+        assertGt(inflow, 0);
+        uint256 reclaimed = _cashOut({holder: _newcomer, count: shares});
+        uint256 captured = reclaimed - deposit;
+        emit log_named_uint("inflow added to Sticky balance", inflow);
+        emit log_named_uint("transient holder captured", captured);
+
+        // The transient holder keeps its 99% share of the inflow, less the 2.5% fee its cash out owes on the whole
+        // fee-free surplus the split created.
+        assertApproxEqAbs({left: captured, right: inflow * 99 / 100 - inflow * 25 / 1000, maxDelta: 2});
+    }
+
+    function test_voluntaryBurnCanLeaveOneAtomAndUnsafeDepositsRevert() public {
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         _stake({holder: _incumbent, amount: 1e18, minimum: 1e18});
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyHook.JBStickyHook_SupplyBelowMinimum.selector, _projectId, 1, 1e12)
-        );
         _burn({holder: _incumbent, count: 1e18 - 1});
-        _burn({holder: _incumbent, count: 1e18 - 1e12});
-        assertEq(_shares().totalSupply(), 1e12);
-        vm.expectRevert(
-            abi.encodeWithSelector(JBStickyHook.JBStickyHook_SupplyBelowMinimum.selector, _projectId, 1e12 - 1, 1e12)
-        );
-        _burn({holder: _incumbent, count: 1});
+        assertEq(_shares().totalSupply(), 1);
         _donate(20e18);
-        // Deposits that are not whole multiples of the atom price still issue shares.
-        uint256 quote = _preview({holder: _newcomer, amount: 21e18 + 3});
-        assertGt(quote, 0);
-        assertEq(_stake({holder: _newcomer, amount: 21e18 + 3, minimum: quote}), quote);
-        // Emptying the supply entirely remains allowed.
-        _cashOut({holder: _newcomer, count: quote});
-        _burn({holder: _incumbent, count: 1e12});
+
+        // Coarse prices may make an inexact payment unissuable, but rejected payments cannot take funds.
+        assertEq(_preview({holder: _newcomer, amount: 21e18 + 3}), 0);
+        _assertZeroIssuanceRevertsAtomically(21e18 + 3);
+
+        // An exact payment still buys its fair share, and either holder can leave independently.
+        assertEq(_stake({holder: _newcomer, amount: 21e18, minimum: 1}), 1);
+        assertEq(_cashOut({holder: _incumbent, count: 1}), 21e18);
+        assertEq(_cashOut({holder: _newcomer, count: 1}), 21e18);
         assertEq(_shares().totalSupply(), 0);
     }
 
@@ -407,11 +470,72 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         });
     }
 
+    /// @notice Launch an ordinary project whose whole payout goes to `stickyProjectId` through a same-terminal
+    /// `preferAddToBalance` split.
+    function _launchPayoutProjectSplittingTo(uint256 stickyProjectId) internal returns (uint256) {
+        uint32 currency = uint32(uint160(address(_underlying)));
+        JBRulesetConfig[] memory rulesets = new JBRulesetConfig[](1);
+        rulesets[0].weight = 1e18;
+        rulesets[0].approvalHook = IJBRulesetApprovalHook(address(0));
+        rulesets[0].metadata = JBRulesetMetadata({
+            reservedPercent: 0,
+            cashOutTaxRate: 0,
+            baseCurrency: currency,
+            pausePay: false,
+            pauseCreditTransfers: false,
+            allowOwnerMinting: false,
+            allowSetCustomToken: false,
+            allowTerminalMigration: false,
+            allowSetTerminals: false,
+            allowSetController: false,
+            allowAddAccountingContext: false,
+            allowAddPriceFeed: false,
+            ownerMustSendPayouts: false,
+            holdFees: false,
+            scopeCashOutsToLocalBalances: false,
+            useDataHookForPay: false,
+            useDataHookForCashOut: false,
+            dataHook: address(0),
+            metadata: 0
+        });
+        JBSplit[] memory splits = new JBSplit[](1);
+        splits[0] = JBSplit({
+            percent: JBConstants.SPLITS_TOTAL_PERCENT,
+            // forge-lint: disable-next-line(unsafe-typecast)
+            projectId: uint64(stickyProjectId),
+            beneficiary: payable(address(0)),
+            preferAddToBalance: true,
+            lockedUntil: 0,
+            hook: IJBSplitHook(address(0))
+        });
+        rulesets[0].splitGroups = new JBSplitGroup[](1);
+        rulesets[0].splitGroups[0] = JBSplitGroup({groupId: uint256(uint160(address(_underlying))), splits: splits});
+        JBCurrencyAmount[] memory payoutLimits = new JBCurrencyAmount[](1);
+        payoutLimits[0] = JBCurrencyAmount({amount: 1000e6, currency: currency});
+        rulesets[0].fundAccessLimitGroups = new JBFundAccessLimitGroup[](1);
+        rulesets[0].fundAccessLimitGroups[0] = JBFundAccessLimitGroup({
+            terminal: address(jbMultiTerminal()),
+            token: address(_underlying),
+            payoutLimits: payoutLimits,
+            surplusAllowances: new JBCurrencyAmount[](0)
+        });
+        JBAccountingContext[] memory contexts = new JBAccountingContext[](1);
+        contexts[0] = JBAccountingContext({token: address(_underlying), decimals: 6, currency: currency});
+        JBTerminalConfig[] memory terminals = new JBTerminalConfig[](1);
+        terminals[0] =
+            JBTerminalConfig({terminal: IJBTerminal(address(jbMultiTerminal())), accountingContextsToAccept: contexts});
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        return jbController().launchProjectFor{value: fee}({
+            owner: _donor, projectUri: "", rulesetConfigurations: rulesets, terminalConfigurations: terminals, memo: ""
+        });
+    }
+
     function _exerciseFirstMintBoundary(uint8 decimals) internal {
         _underlying = new JBStickyPricingToken(decimals);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         uint256 oneShareAtom = 10 ** (decimals - 18);
-        // The bootstrap must reach the supply floor; one atom short previews zero and reverts atomically.
+        // The bootstrap must reach the initial minimum; one atom short previews zero and reverts atomically.
         uint256 floorAmount = oneShareAtom * 1e12;
         assertEq(_preview({holder: _newcomer, amount: floorAmount - 1}), 0);
         _assertZeroIssuanceRevertsAtomically(floorAmount - 1);
@@ -449,8 +573,8 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         uint256 backing = donation + 1e12;
 
         // Rounding an exchange rate before multiplication previously made every payment return zero here. The exact
-        // backing denominator and the supply floor let a deposit that is not a whole multiple of the atom price buy
-        // shares without minting extra claims.
+        // backing denominator and the initial share precision let a deposit that is not a whole multiple of the atom
+        // price buy shares without minting extra claims.
         uint256 quote = _preview({holder: _newcomer, amount: backing + 7});
         assertGt(quote, 0);
         assertEq(_stake({holder: _newcomer, amount: backing + 7, minimum: quote}), quote);

@@ -10,7 +10,8 @@ import {Script} from "forge-std/Script.sol";
 import {JBStickyAutoStick} from "../../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
-import {JBStickyRewardPockets} from "../../src/JBStickyRewardPockets.sol";
+import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
+
 import {JBStickyCoreDeployment} from "../structs/JBStickyCoreDeployment.sol";
 import {JBStickyDeploymentAddresses} from "../structs/JBStickyDeploymentAddresses.sol";
 import {JBStickyImmutableReference} from "../structs/JBStickyImmutableReference.sol";
@@ -25,16 +26,22 @@ abstract contract JBStickyDeployment is Script {
 
     /// @notice A deployed contract has unexpected immutable dependencies or configuration.
     error JBStickyDeployment_BindingMismatch(address target, string binding);
+
     /// @notice A core deployment artifact belongs to a different chain than the connected RPC.
     error JBStickyDeployment_ChainMismatch(string path, uint256 expected, uint256 actual);
+
     /// @notice The deterministic factory did not deploy code at the predicted address.
     error JBStickyDeployment_DeploymentFailed(address predicted);
+
     /// @notice The compiler artifact has unsupported or inconsistent immutable reference data.
     error JBStickyDeployment_InvalidArtifact(string name);
+
     /// @notice A required deployed contract has no runtime code.
     error JBStickyDeployment_MissingCode(address target);
+
     /// @notice Deployed executable bytecode differs from the expected compiled artifact.
     error JBStickyDeployment_RuntimeMismatch(address target, string name);
+
     /// @notice The connected chain has no supported core deployment folder.
     error JBStickyDeployment_UnsupportedChain(uint256 chainId);
 
@@ -45,16 +52,18 @@ abstract contract JBStickyDeployment is Script {
     /// @notice The canonical deterministic deployment proxy used throughout Juicebox V6.
     address public constant DETERMINISTIC_FACTORY = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
-    /// @notice Salt retained from the original Sticky deployment script.
+    /// @notice The CREATE2 salt used for the Sticky deployer, distributor and reward receiver factory.
     bytes32 public constant STICKY_SALT = "JBStickyDeployerV6";
 
-    /// @notice Salt retained from the original auto-stick deployment script.
+    /// @notice The CREATE2 salt used for the auto-stick adapter.
     bytes32 public constant AUTO_STICK_SALT = "JBStickyAutoStickV6";
 
     //*********************************************************************//
     // ------------------------ private constants ------------------------ //
     //*********************************************************************//
 
+    /// @notice The expected runtime hash of the canonical CREATE2 deployment proxy.
+    /// @dev Checked before deployment and reuse so a matching address cannot substitute different factory behavior.
     bytes32 private constant _FACTORY_CODEHASH = keccak256(
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
     );
@@ -70,14 +79,18 @@ abstract contract JBStickyDeployment is Script {
         internal
         returns (JBStickyDeploymentAddresses memory deployed)
     {
+        // Refuse mismatched dependencies before predicting or sending any singleton deployment.
         _verifyCore(core);
         _verifyFactory();
         deployed = _predict(core);
+        // Verify each dependency before using its address in another singleton's constructor arguments.
         _deployIfNeeded({name: "JBStickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal)});
         _verifyDeployer({core: core, deployed: deployed});
         _deployIfNeeded({name: "JBTokenDistributor", salt: STICKY_SALT, args: _distributorArgs(core)});
         _verifyDistributor({core: core, deployed: deployed});
-        _deployIfNeeded({name: "JBStickyRewardPockets", salt: STICKY_SALT, args: abi.encode(deployed.distributor)});
+        _deployIfNeeded({
+            name: "JBStickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
+        });
         _deployIfNeeded({
             name: "JBStickyAutoStick", salt: AUTO_STICK_SALT, args: abi.encode(deployed.deployer, deployed.distributor)
         });
@@ -90,13 +103,16 @@ abstract contract JBStickyDeployment is Script {
     /// @param args The ABI-encoded constructor arguments.
     /// @return predicted The expected deployment address.
     function _deployIfNeeded(string memory name, bytes32 salt, bytes memory args) internal returns (address predicted) {
+        // Include constructor arguments in the address prediction so immutable dependencies bind the deployment.
         bytes memory initCode = abi.encodePacked(vm.getCode(string.concat(name, ".sol:", name)), args);
         predicted =
             vm.computeCreate2Address({salt: salt, initCodeHash: keccak256(initCode), deployer: DETERMINISTIC_FACTORY});
         if (predicted.code.length == 0) {
+            // The canonical proxy accepts the salt followed directly by the complete creation code.
             (bool success,) = DETERMINISTIC_FACTORY.call(abi.encodePacked(salt, initCode));
             if (!success || predicted.code.length == 0) revert JBStickyDeployment_DeploymentFailed(predicted);
         }
+        // Existing code must match the artifact before a repeated run can reuse it.
         _verifyRuntime({name: name, target: predicted});
     }
 
@@ -112,15 +128,24 @@ abstract contract JBStickyDeployment is Script {
     )
         internal
     {
+        // A manifest certifies the inspected state only after runtime and dependency checks succeed.
         _verify({core: core, deployed: deployed});
         string memory key = string.concat("sticky-", vm.toString(block.chainid), "-", kind);
         vm.serializeString({objectKey: key, valueKey: "kind", value: kind});
         vm.serializeUint({objectKey: key, valueKey: "chainId", value: block.chainid});
-        vm.serializeUint({objectKey: key, valueKey: "blockNumber", value: block.number});
+        vm.serializeUint({objectKey: key, valueKey: "evmBlockNumber", value: block.number});
         vm.serializeUint({objectKey: key, valueKey: "timestamp", value: block.timestamp});
+        // The grouped runner pins the fork to this RPC block, which can differ from the EVM height on Arbitrum.
+        uint256 rpcBlockNumber = vm.envOr({name: "STICKY_RPC_BLOCK_NUMBER", defaultValue: uint256(0)});
+        if (rpcBlockNumber != 0) {
+            vm.serializeUint({objectKey: key, valueKey: "rpcBlockNumber", value: rpcBlockNumber});
+            vm.serializeBytes32({
+                objectKey: key, valueKey: "rpcBlockHash", value: vm.envBytes32("STICKY_RPC_BLOCK_HASH")
+            });
+        }
         vm.serializeBytes32({
             objectKey: key,
-            valueKey: "parentBlockHash",
+            valueKey: "evmParentBlockHash",
             value: block.number == 0 ? bytes32(0) : blockhash(block.number - 1)
         });
         vm.serializeString({
@@ -135,7 +160,7 @@ abstract contract JBStickyDeployment is Script {
         _serializeContract({key: key, name: "deployer", target: deployed.deployer});
         _serializeContract({key: key, name: "hook", target: deployed.hook});
         _serializeContract({key: key, name: "distributor", target: deployed.distributor});
-        _serializeContract({key: key, name: "pockets", target: deployed.pockets});
+        _serializeContract({key: key, name: "rewardReceiverFactory", target: deployed.rewardReceiverFactory});
         _serializeContract({key: key, name: "autoStick", target: deployed.autoStick});
         vm.serializeBytes32({objectKey: key, valueKey: "stickySalt", value: STICKY_SALT});
         string memory json = vm.serializeBytes32({objectKey: key, valueKey: "autoStickSalt", value: AUTO_STICK_SALT});
@@ -162,6 +187,11 @@ abstract contract JBStickyDeployment is Script {
     /// @param root The path containing one folder per network.
     /// @return core The validated core dependencies.
     function _loadCoreFrom(string memory root) internal view returns (JBStickyCoreDeployment memory core) {
+        // Bind grouped rehearsals and verification to the requested destination before selecting its artifacts.
+        uint256 expectedChainId = vm.envOr({name: "STICKY_EXPECTED_CHAIN_ID", defaultValue: uint256(0)});
+        if (expectedChainId != 0 && expectedChainId != block.chainid) {
+            revert JBStickyDeployment_ChainMismatch({path: "RPC", expected: expectedChainId, actual: block.chainid});
+        }
         string memory directory = string.concat(root, "/", _network(block.chainid), "/");
         core.controller = IJBController(_readAddress(string.concat(directory, "JBController.json")));
         core.directory = IJBDirectory(_readAddress(string.concat(directory, "JBDirectory.json")));
@@ -198,8 +228,8 @@ abstract contract JBStickyDeployment is Script {
         deployed.hook = vm.computeCreateAddress({deployer: deployed.deployer, nonce: 1});
         deployed.distributor =
             _predictContract({name: "JBTokenDistributor", salt: STICKY_SALT, args: _distributorArgs(core)});
-        deployed.pockets = _predictContract({
-            name: "JBStickyRewardPockets", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
+        deployed.rewardReceiverFactory = _predictContract({
+            name: "JBStickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
         });
         deployed.autoStick = _predictContract({
             name: "JBStickyAutoStick", salt: AUTO_STICK_SALT, args: abi.encode(deployed.deployer, deployed.distributor)
@@ -217,10 +247,12 @@ abstract contract JBStickyDeployment is Script {
         }
         _verifyDeployer({core: core, deployed: deployed});
         _verifyDistributor({core: core, deployed: deployed});
-        _verifyRuntime({name: "JBStickyRewardPockets", target: deployed.pockets});
+        _verifyRuntime({name: "JBStickyRewardReceiverFactory", target: deployed.rewardReceiverFactory});
         _verifyRuntime({name: "JBStickyAutoStick", target: deployed.autoStick});
-        if (address(JBStickyRewardPockets(deployed.pockets).DISTRIBUTOR()) != deployed.distributor) {
-            revert JBStickyDeployment_BindingMismatch({target: deployed.pockets, binding: "DISTRIBUTOR"});
+        if (
+            address(JBStickyRewardReceiverFactory(deployed.rewardReceiverFactory).DISTRIBUTOR()) != deployed.distributor
+        ) {
+            revert JBStickyDeployment_BindingMismatch({target: deployed.rewardReceiverFactory, binding: "DISTRIBUTOR"});
         }
         JBStickyAutoStick adapter = JBStickyAutoStick(deployed.autoStick);
         if (
@@ -249,6 +281,8 @@ abstract contract JBStickyDeployment is Script {
                 || address(core.terminal.DIRECTORY()) != address(core.directory)
                 || address(core.terminal.STORE().DIRECTORY()) != address(core.directory)
                 || address(core.terminal.STORE().PRICES()) != address(core.controller.PRICES())
+                || address(core.terminal.STORE().RULESETS()) != address(core.controller.RULESETS())
+                || !core.directory.isAllowedToSetFirstController(address(core.controller))
                 || address(core.directory.PROJECTS()) != address(core.controller.PROJECTS())
                 || address(core.terminal.PROJECTS()) != address(core.controller.PROJECTS())
                 || address(core.terminal.TOKENS()) != address(core.controller.TOKENS())
@@ -263,6 +297,7 @@ abstract contract JBStickyDeployment is Script {
     /// @param name The compiled artifact name.
     /// @param target The deployed contract to inspect.
     function _verifyRuntime(string memory name, address target) internal view {
+        // Compare compiled executable bytes while accounting for constructor-patched immutable values.
         _requireCode(target);
         string memory artifact = string.concat("out/", name, ".sol/", name, ".json");
         string memory json = vm.readFile(artifact);
@@ -335,7 +370,7 @@ abstract contract JBStickyDeployment is Script {
         if (nameHash == keccak256("JBStickyDeployer")) return 4;
         if (nameHash == keccak256("JBStickyHook")) return 2;
         if (nameHash == keccak256("JBTokenDistributor")) return 8;
-        if (nameHash == keccak256("JBStickyRewardPockets")) return 1;
+        if (nameHash == keccak256("JBStickyRewardReceiverFactory")) return 1;
         if (nameHash == keccak256("JBStickyAutoStick")) return 5;
         revert JBStickyDeployment_InvalidArtifact(name);
     }

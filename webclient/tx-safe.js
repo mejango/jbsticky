@@ -70,7 +70,7 @@
    * and confirmations. A Safe service response is only a candidate hash.
    * expected.safeTxHash optionally binds the saved Safe proposal to its event.
    */
-  function inspectSafeOutcome(transaction, receipt, expected) {
+  function inspectSafeTransaction(transaction, receipt, expected) {
     try {
       if (!transaction || !receipt || !expected) return null;
       const status = receipt.status === 'success' ? 1n : receipt.status === 'reverted' ? 0n : quantity(receipt.status);
@@ -97,7 +97,8 @@
 
       // A reverted outer transaction cannot retain logs or execute its inner
       // call. Finality must still be proven by the caller before permitting retry.
-      if (status === 0n) return Array.isArray(receipt.logs) && receipt.logs.length === 0 ? 'failure' : null;
+      if (status === 0n) return Array.isArray(receipt.logs) && receipt.logs.length === 0
+        ? { outcome: 'failure', safeTxHash: null } : null;
       if (!Array.isArray(receipt.logs)) return null;
       let outcome = null;
       for (const log of receipt.logs) {
@@ -111,15 +112,19 @@
         if (!eventData || eventData.length !== 130) return null;
         if (log.transactionHash !== undefined && (!transactionHash || hash(log.transactionHash) !== transactionHash)) return null;
         if (proposal && eventData.slice(0, 66) !== proposal) return null;
-        outcome = topic === SUCCESS ? 'success' : 'failure';
+        outcome = { outcome: topic === SUCCESS ? 'success' : 'failure', safeTxHash: eventData.slice(0, 66) };
       }
       return outcome;
     } catch (_) { return null; }
+  }
+
+  function inspectSafeOutcome(transaction, receipt, expected) {
+    return inspectSafeTransaction(transaction, receipt, expected)?.outcome || null;
   }
 
   function inspectSafeExecution(transaction, receipt, expected) {
     return inspectSafeOutcome(transaction, receipt, expected) === 'success';
   }
 
-  return Object.freeze({ inspectSafeExecution, inspectSafeOutcome });
+  return Object.freeze({ inspectSafeExecution, inspectSafeOutcome, inspectSafeTransaction });
 });

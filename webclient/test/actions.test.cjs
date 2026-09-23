@@ -12,8 +12,8 @@ const STICKY = address('3');
 const TERMINAL = address('4');
 const DISTRIBUTOR = address('5');
 const ADAPTER = address('6');
-const POCKETS = address('7');
-const POCKET = address('8');
+const RECEIVER_FACTORY = address('7');
+const RECEIVER = address('8');
 const OTHER = address('9');
 const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 const uint = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
@@ -44,7 +44,7 @@ function fixture(overrides = {}) {
   const reads = [];
   const context = vm.createContext({
     TextEncoder, TextDecoder, Uint8Array, console,
-    ctx: { chainId: 1, currentId: 12n, terminal: TERMINAL, hook: POCKETS, store: DISTRIBUTOR, autoStick: null },
+    ctx: { chainId: 1, currentId: 12n, terminal: TERMINAL, hook: RECEIVER_FACTORY, store: DISTRIBUTOR, autoStick: null },
     window: {},
     $: (id) => {
       if (!fields.has(id)) fields.set(id, { value: '', close() {} });
@@ -54,7 +54,7 @@ function fixture(overrides = {}) {
     account: () => HOLDER,
     distributor: () => DISTRIBUTOR,
     autoStickAdapter: () => ADAPTER,
-    stickyDeploymentFor: () => ({ pockets: POCKETS }),
+    stickyDeploymentFor: () => ({ rewardReceiverFactory: RECEIVER_FACTORY }),
     projectInfo: async () => info,
     stickyLabel: () => 'Sticky Artizen',
     shortAddr: (value) => value,
@@ -464,13 +464,13 @@ test('claim-and-stick supports more than 18 decimals and discloses a changing ba
   assert.ok(plans[0].summary.some(([label, value]) => label === 'Rate' && value.includes('can change')));
 });
 
-test('pocket settlement uses the selected destination reward token, verifies distributor, and rejects empty arrivals', async () => {
+test('receiver settlement uses the selected destination reward token, verifies distributor, and rejects empty arrivals', async () => {
   const { context: c, plans } = fixture();
   c.$('bridge-reward-token').value = OTHER;
   const baseView = c.view;
   c.view = async (to, selector, data) => {
     if (selector === '0x9c26149f') return uint(BigInt(DISTRIBUTOR));
-    if (selector === '0x7780193e') return uint(BigInt(POCKET));
+    if (selector === '0x0a88000f') return uint(BigInt(RECEIVER));
     return baseView(to, selector, data);
   };
   await c.settleArrivals();
@@ -479,14 +479,14 @@ test('pocket settlement uses the selected destination reward token, verifies dis
   await assert.rejects(c.settleArrivals(), /different distributor/);
   c.view = async (to, selector, data) => {
     if (selector === '0x9c26149f') return uint(BigInt(DISTRIBUTOR));
-    if (selector === '0x7780193e') return uint(BigInt(POCKET));
+    if (selector === '0x0a88000f') return uint(BigInt(RECEIVER));
     if (selector === '0x70a08231') return uint(0);
     return baseView(to, selector, data);
   };
   await assert.rejects(c.settleArrivals(), /no ART arrivals/);
 });
 
-test('pockets reject native ETH rather than falsely describing an ERC20 settlement', async () => {
+test('receivers reject native ETH rather than falsely describing an ERC20 settlement', async () => {
   const { context: c, plans } = fixture();
   c.$('bridge-reward-token').value = 'ETH';
   await assert.rejects(c.settleArrivals(), /settle ERC-20/);

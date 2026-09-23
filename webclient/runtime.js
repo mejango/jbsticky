@@ -24,7 +24,7 @@
   function deployment(config, chainId) {
     const entry = config.chains?.[String(chainId)] || {};
     const result = {};
-    for (const key of ['deployer', 'distributor', 'pockets', 'autoStickAdapter', 'fromBlock']) {
+    for (const key of ['deployer', 'distributor', 'rewardReceiverFactory', 'autoStickAdapter', 'fromBlock']) {
       // Generated globals describe only the default chain. They are not evidence
       // that the same contract exists on an unconfigured destination.
       const fallback = config.defaultChainId === undefined || Number(config.defaultChainId) === Number(chainId) ? config[key] : undefined;

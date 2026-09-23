@@ -49,7 +49,7 @@ const SEL = {
   ROUND_DURATION: "0x6641ea08",
   VESTING_ROUNDS: "0xaf29da14",
   distBalanceOf: "0xf7888aec",
-  predictPocketOf: "0x7780193e",
+  predictReceiverOf: "0x0a88000f",
   settleFor: "0x85713bc6",
   ensReverseWithGateways: "0xb7d6ca64",
   handleOf: "0xd9b0da2d",
@@ -435,13 +435,14 @@ async function resolveTokenLogoUrl(addr) {
 }
 
 async function hydrateProjectName(projectId, info) {
+  const current = currentView();
   const override = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)];
   if (override) {
     $("h-name").textContent = override;
     return;
   }
   const metadata = await resolveProjectMetadata(info.stakedToken);
-  if (ctx.currentId === projectId && metadata?.name) $("h-name").textContent = metadata.name;
+  if (current() && ctx.currentId === projectId && metadata?.name) $("h-name").textContent = metadata.name;
 }
 
 function parseStickyProjectUri(uri) {
@@ -601,6 +602,13 @@ const ctx = {
   homeChartCleanup: null,
 };
 
+let viewSequence = 0;
+function currentView() {
+  const sequence = viewSequence, chainId = ctx.chainId, projectId = ctx.currentId, holder = account();
+  return () => sequence === viewSequence && ctx.loaded && ctx.chainId === chainId
+    && ctx.currentId === projectId && account() === holder;
+}
+
 async function loadDeployer() {
   ctx.loaded = false;
   const deployer = $("deployer").value;
@@ -723,7 +731,7 @@ async function activityItems(logs, includeProject) {
       html = `<span class="addr">${holder}</span> <span class="verb out">came unstuck after ${formatDuration(decUint(log.data, 0))}</span>`;
     }
     const nameLine = includeProject
-      ? `<div><span class="link" onclick="location.hash='#/project/${id}'">${esc(stickyLabel(info))}</span></div>`
+      ? `<div><a class="link" href="#/project/${id}">${esc(stickyLabel(info))}</a></div>`
       : "";
     items.push(
       `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}` +
@@ -756,7 +764,7 @@ async function airdropItems(logs) {
     items.push(
       `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}`
       + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>`
-      + `<div><span class="link" onclick="location.hash='#/project/${id}'">${esc(stickyLabel(info))}</span></div>`
+      + `<div><a class="link" href="#/project/${id}">${esc(stickyLabel(info))}</a></div>`
       + `<div><span class="addr">${addressLabel(holder)}${self}</span> received ${amount} ${esc(info.stSymbol)}`
       + ` from <span class="addr">${addressLabel(payer)}</span></div></div></div></div>`,
     );
@@ -798,7 +806,7 @@ async function configuredAirdropItems() {
     items.push(
       `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}`
       + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(now - Number(row.hoursAgo) * 3600)}</div>`
-      + `<div><span class="link" onclick="location.hash='#/project/${row.projectId}'">${esc(stickyLabel(info))}</span></div>`
+      + `<div><a class="link" href="#/project/${esc(row.projectId)}">${esc(stickyLabel(info))}</a></div>`
       + `<div><span class="addr">${addressLabel(row.holder)}${self}</span> received ${esc(String(row.amount))} ${esc(info.symbol)}`
       + ` from <span class="addr">${addressLabel(row.payer)}</span></div></div></div></div>`,
     );
@@ -816,6 +824,7 @@ function setHomeListTab(active) {
     const selected = name === active;
     $("home-tab-" + name).classList.toggle("on", selected);
     $("home-tab-" + name).setAttribute("aria-selected", String(selected));
+    $("home-tab-" + name).tabIndex = selected ? 0 : -1;
     $("home-panel-" + name).classList.toggle("on", selected);
   }
 }
@@ -828,11 +837,31 @@ function setHomeRankingTab(active) {
     const selected = name === active;
     $("home-rank-" + name).classList.toggle("on", selected);
     $("home-rank-" + name).setAttribute("aria-selected", String(selected));
+    $("home-rank-" + name).tabIndex = selected ? 0 : -1;
     $("home-panel-" + name).classList.toggle("ranking-on", selected);
   }
 }
 $("home-rank-stickiest").onclick = () => setHomeRankingTab("stickiest");
 $("home-rank-airdrops").onclick = () => setHomeRankingTab("airdrops");
+
+for (const [prefix, names, select] of [
+  ["home-tab-", ["latest", "stickiest", "airdrops"], setHomeListTab],
+  ["home-rank-", ["stickiest", "airdrops"], setHomeRankingTab],
+]) {
+  names.forEach((name, index) => {
+    const button = $(prefix + name);
+    button.tabIndex = index === 0 ? 0 : -1;
+    button.onkeydown = (event) => {
+      const next = event.key === "Home" ? 0 : event.key === "End" ? names.length - 1
+        : event.key === "ArrowRight" ? (index + 1) % names.length
+        : event.key === "ArrowLeft" ? (index + names.length - 1) % names.length : null;
+      if (next === null) return;
+      event.preventDefault();
+      select(names[next]);
+      $(prefix + names[next]).focus();
+    };
+  });
+}
 
 // ------------------------------------------------------ home secured chart
 const groupAmount = (value, decimals = 18, dp = 2) => {
@@ -1330,13 +1359,17 @@ function pieSvg(active, symbol, tokenSupply) {
 
 // ---------------------------------------------------------------------- home
 async function renderHome() {
+  ++viewSequence;
+  const current = currentView();
   clearHomeSecuredChart();
   $("view-home").classList.remove("hide");
   $("view-project").classList.add("hide");
   if (!ctx.loaded) return;
 
   const ids = await projectIds();
+  if (!current()) return;
   const logs = await hookLogs(undefined);
+  if (!current()) return;
 
   // Stickiest: project cards sorted by amount stuck, jbm-style key:value pairs, one logo — the stuck token's.
   const cards = (
@@ -1353,24 +1386,29 @@ async function renderHome() {
       }),
     )
   ).filter(Boolean);
+  if (!current()) return;
   cards.sort((a, b) => (b.totalStaked > a.totalStaked ? 1 : b.totalStaked < a.totalStaked ? -1 : 0));
   const prices = await backingUsdPrices(cards);
+  if (!current()) return;
   mountHomeSecuredChart(homeSecuredSeries(logs, cards, prices));
   const homeCards = [...cards, ...configuredStickiestCards()];
   $("projects").innerHTML = homeCards.length
     ? homeCards.map((card, i) =>
-        `<div class="card-item${card.demo ? "" : " pickc"}"${card.demo ? "" : ` onclick="location.hash='#/project/${card.id}'"`}><div class="card-head">` +
+        `<${card.demo ? "div" : "a"} class="card-item${card.demo ? "" : " pickc"}"${card.demo ? "" : ` href="#/project/${card.id}"`}><div class="card-head">` +
         `<span class="rank">${i + 1}</span>${tokenLogo(card.info.stakedToken, card.info.symbol, 26)}` +
         `<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(stickyLabel(card.info))} <span class="mut">#${card.id}</span></div>` +
         `<div class="kv"><span class="mut">Backing:</span> ${formatUnits(card.pool?.sigma ?? card.totalStaked, card.info.decimals ?? 18)} ${esc(card.info.symbol)}</div>` +
         `<div class="kv"><span class="mut">Sticks:</span> ${card.sticks}</div>` +
         `<div class="kv"><span class="mut">Bonus:</span> ${pct(card.info.reward)}</div>` +
-        `</div></div></div>`,
+        `</div></div></${card.demo ? "div" : "a"}>`,
       ).join("")
     : `<div class="card-item mut">no sticky tokens yet — create one</div>`;
 
-  renderFeed($("activity"), await activityItems(logs, true));
+  const activity = await activityItems(logs, true);
+  if (!current()) return;
+  renderFeed($("activity"), activity);
   const [liveAirdrops, demoAirdrops] = await Promise.all([airdropItems(logs), configuredAirdropItems()]);
+  if (!current()) return;
   renderFeed($("airdrops"), [...liveAirdrops, ...demoAirdrops], "no airdrops yet");
   hydrateLogos().catch(() => {});
 }
@@ -1378,8 +1416,11 @@ async function renderHome() {
 // ------------------------------------------------------------------- project
 async function renderProject(projectId) {
   if (!ctx.loaded) return;
+  ++viewSequence;
   clearHomeSecuredChart();
   ctx.currentId = projectId;
+  ctx.pool = null;
+  const current = currentView();
   $("view-home").classList.add("hide");
   $("view-project").classList.remove("hide");
   // A verified handle stays in the address bar while tabs change and across post-transaction refreshes.
@@ -1389,6 +1430,7 @@ async function renderProject(projectId) {
   $("tab-btn-rewards").href = `${projectRoute}/airdrops`;
 
   const info = await projectInfo(projectId);
+  if (!current()) return;
   syncTransferSticky(info);
   $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
   $("h-symbol").textContent = stickyLabel(info);
@@ -1403,10 +1445,12 @@ async function renderProject(projectId) {
     : `no cash out tax | review the exact reclaim and any fees | newest tranche first | streak resets only at zero`;
 
   const logs = await hookLogs(projectId);
+  if (!current()) return;
   const [rows, pool] = await Promise.all([
     holderRows(projectId, logs),
     poolBacking(projectId, info),
   ]);
+  if (!current()) return;
   const totalStaked = pool.supply;
   ctx.pool = pool;
   renderUnstickQuote();
@@ -1432,13 +1476,16 @@ async function renderProject(projectId) {
     : 0;
   $("h-average").textContent = formatDuration(averageActive);
   $("h-top").textContent = formatDuration(active.reduce((m, row) => Math.max(m, row.current), 0));
-  renderProjectChains(await projectChainIds(projectId));
+  const projectChains = await projectChainIds(projectId);
+  if (!current()) return;
+  renderProjectChains(projectChains);
 
   // OVERVIEW: chart + my position.
   const chart = chartSvg(logs, info, projectId);
   $("chart").innerHTML = chart.svg;
   chart.bind?.($("chart"));
   await refreshPosition();
+  if (!current()) return;
 
   // OWNERS: token info, pie, leaderboard.
   let granters = [];
@@ -1446,6 +1493,7 @@ async function renderProject(projectId) {
     const granterLogs = await getLogs(ctx.hook, [TOPIC.SetGranter, "0x" + word(projectId)]);
     granters = [...new Set(granterLogs.map((log) => decAddress(log.topics[2])))];
   } catch {}
+  if (!current()) return;
   const transferMode = info.soulbound ? "No" : "Yes";
   const transferRule = info.soulbound
     ? "Transfers are disabled. Sticky tokens are minted by sticking. Unsticking burns them; a voluntary burn returns no backing."
@@ -1511,7 +1559,9 @@ async function renderProject(projectId) {
 
   $("r-token").value ||= info.stakedToken;
   renderRewards().catch(() => {});
-  renderFeed($("p-activity"), await activityItems(logs, false));
+  const activity = await activityItems(logs, false);
+  if (!current()) return;
+  renderFeed($("p-activity"), activity);
   hydrateLogos().catch(() => {});
 }
 
@@ -1595,7 +1645,7 @@ function contractNameOf(addr) {
   if (lower === ctx.hook?.toLowerCase()) return "JBStickyHook";
   if (lower === distributor()?.toLowerCase()) return "JBTokenDistributor";
   if (lower === autoStickAdapter()?.toLowerCase()) return "JBStickyAutoStick";
-  if (lower === window.STICKY_CONFIG?.pockets?.toLowerCase()) return "JBStickyRewardPockets";
+  if (lower === window.STICKY_CONFIG?.rewardReceiverFactory?.toLowerCase()) return "JBStickyRewardReceiverFactory";
   for (const info of Object.values(ctx.projects)) {
     if (lower === info.stakedToken.toLowerCase()) return `the ${info.symbol} token`;
     if (lower === info.stToken.toLowerCase()) return `the ${info.stSymbol} token`;
@@ -1791,7 +1841,10 @@ function installTxRecoveryUI() {
     $("cd-confirm").textContent = "Resume saved plan";
     $("cd-confirm").disabled = false;
     if (!$("confirm-dialog").open) $("confirm-dialog").showModal();
-    inlineStatus($("cd-recover-hash"), "Execution verified. Resume the saved plan to continue.", "ok");
+    const reverted = saved.steps.some((step) => step.state === "reverted");
+    inlineStatus($("cd-recover-hash"), reverted
+      ? "The transaction reverted and is finalized. Review the saved plan before retrying or dismissing it."
+      : "Execution verified. Resume the saved plan to continue.", reverted ? "err" : "ok");
   });
   try { renderTxRecovery(getTxEngine().load()); } catch (error) {
     banner.classList.remove("hide");
@@ -1835,23 +1888,29 @@ async function auditPrompt() {
 
 async function renderTrustedSenders() {
   if (ctx.currentId === null || !account()) return;
+  const isCurrent = currentView();
   const idArg = word(ctx.currentId);
   // Candidates come from the holder's trust events; current state is re-read from the contract.
   const logs = await getLogs(ctx.hook, [TOPIC.SetTrustedSender, "0x" + idArg, "0x" + encAddress(account())]);
+  if (!isCurrent()) return;
   // The auto-stick adapter's trust is presented through the auto-stick card, not as a generic airdropper.
   const candidates = [...new Set(logs.map((log) => decAddress(log.topics[3])))]
     .filter((sender) => sender.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
   const current = [];
   for (const sender of candidates) {
     const trusted = decUint(await view(ctx.hook, SEL.isTrustedSenderOf, idArg + encAddress(account()) + encAddress(sender)));
+    if (!isCurrent()) return;
     if (trusted === 1n) current.push(sender);
   }
   $("trusted-list").innerHTML = current.length
     ? current.map((sender) =>
         `<tr><td style="word-break:break-all">${sender}</td>` +
-        `<td style="width:90px"><button class="danger" style="margin:0;padding:4px 10px" onclick="untrustSender('${sender}')">Untrust</button></td></tr>`,
+        `<td style="width:90px"><button type="button" class="danger" style="margin:0;padding:4px 10px" data-untrust="${sender}">Untrust</button></td></tr>`,
       ).join("")
     : `<tr><td class="trusted-empty"><strong>None yet</strong><span>Only you and the project's airdrop senders can add to your streak.</span></td></tr>`;
+  for (const button of $("trusted-list").querySelectorAll("[data-untrust]")) {
+    button.onclick = guard(() => setTrust(button.dataset.untrust, false));
+  }
 }
 
 async function setTrust(sender, trusted) {
@@ -1878,7 +1937,6 @@ async function setTrust(sender, trusted) {
   await renderTrustedSenders();
 }
 
-window.untrustSender = (sender) => guard(() => setTrust(sender, false))({ currentTarget: document.activeElement });
 
 const CHAIN_ICON_SVG = {
   eth: `<svg viewBox="0 0 24 24" width="15" height="15"><circle cx="12" cy="12" r="12" fill="#627EEA"/><path d="M12 4v5.9l5 2.25z" fill="#fff" fill-opacity=".6"/><path d="M12 4L7 12.15l5-2.25z" fill="#fff"/><path d="M12 16v3.99l5-6.92z" fill="#fff" fill-opacity=".6"/><path d="M12 19.99V16l-5-3.07z" fill="#fff"/><path d="M12 15.07l5-2.92-5-2.24z" fill="#fff" fill-opacity=".2"/><path d="M7 12.15l5 2.92v-5.16z" fill="#fff" fill-opacity=".6"/></svg>`,
@@ -1911,7 +1969,7 @@ function stickyDeploymentFor(chainId) {
     deployer: current ? $("deployer").value : configured.deployer,
     autoStickAdapter: configured.autoStickAdapter,
     distributor: configured.distributor,
-    pockets: configured.pockets,
+    rewardReceiverFactory: configured.rewardReceiverFactory,
     fromBlock: configured.fromBlock ?? "earliest",
   };
 }
@@ -2001,20 +2059,19 @@ function selectCreateEnvironment(environment) {
 }
 let originKey = null;
 
-const originLabel = (origin) =>
-  origin.chainId === ctx.chainId ? `${origin.label} <span class="mut">— THIS CHAIN</span>` : origin.label;
-
 function renderOriginPills() {
   const family = chainById(ctx.chainId)?.environment || "production";
   const origins = chainsForEnvironment(family);
   const selected = origins.find((origin) => origin.key === originKey)
     ?? origins.find((origin) => origin.chainId === ctx.chainId) ?? origins[0];
   originKey = selected.key;
-  $("r-origin-btn").innerHTML = `${CHAIN_ICON_SVG[selected.icon]}${selected.label}`;
-  $("r-origin-menu").innerHTML = origins.map((origin) =>
-    `<div class="dd-item${origin.key === originKey ? " on" : ""}" onclick="setOrigin('${origin.key}')">` +
-    `${CHAIN_ICON_SVG[origin.icon]}${originLabel(origin)}</div>`,
-  ).join("");
+  $("r-origin").replaceChildren(...origins.map((origin) => {
+    const option = document.createElement("option");
+    option.value = origin.key;
+    option.textContent = origin.chainId === ctx.chainId ? `${origin.label} — this chain` : origin.label;
+    return option;
+  }));
+  $("r-origin").value = originKey;
   const here = selected.chainId === ctx.chainId;
   $("fund-direct").classList.toggle("hide", !here);
   $("fund-bridge").classList.toggle("hide", here);
@@ -2022,14 +2079,13 @@ function renderOriginPills() {
   $("r-amount-wrap").classList.toggle("hide", !here);
 };
 
-window.setOrigin = (key) => {
-  originKey = key;
+$("r-origin").onchange = (event) => {
+  originKey = event.target.value;
   renderOriginPills();
-  $("r-origin-menu").classList.add("hide");
 };
 
 // Cross-chain rewards use the reward token's own V6 sucker pair. The Sticky
-// project receives the destination tokens through its deterministic pocket.
+// project receives the destination tokens through its deterministic receiver.
 let bridgeApi = null;
 let bridgeContextKey = "";
 let bridgeRoutes = [];
@@ -2059,11 +2115,11 @@ async function bridgeContext() {
   if (source.environment !== destination.environment) throw new Error("Choose an origin in the same network environment.");
   const info = await projectInfo(projectId);
   if (ctx.currentId !== projectId || ctx.chainId !== chainId) throw new Error("The project changed. Review the bridge again.");
-  const pockets = stickyDeploymentFor(chainId).pockets;
-  if (!pockets || !distributor()) throw new Error("Cross-chain rewards are unavailable until this chain's reward pocket and distributor are deployed.");
-  const pocket = await getBridgeApi().pocketFor(destination, info.stToken, pockets, distributor());
+  const rewardReceiverFactory = stickyDeploymentFor(chainId).rewardReceiverFactory;
+  if (!rewardReceiverFactory || !distributor()) throw new Error("Cross-chain rewards are unavailable until this chain's reward receiver factory and distributor are deployed.");
+  const receiver = await getBridgeApi().receiverFor(destination, info.stToken, rewardReceiverFactory, distributor());
   const owner = /^0x[0-9a-f]{40}$/i.test(txAccount() || "") ? txAccount().toLowerCase() : null;
-  return { source: bridgeRuntime(source.chainId), destination, info, pocket, owner,
+  return { source: bridgeRuntime(source.chainId), destination, info, receiver, owner,
     key: `sticky:bridge:v1:${chainId}:${info.stToken.toLowerCase()}:${owner || "disconnected"}` };
 }
 
@@ -2125,7 +2181,7 @@ async function reconcileBridgeRecord(context, record, rows) {
   for (const candidate of candidates) {
     try { await getBridgeApi().verifySource(rehydrateBridgeRoute(record.route), candidate, record.owner, record.prepareData); found = candidate; break; } catch { /* A copied reference or noncanonical log must not release the saved wallet transfer. */ }
   }
-  if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary !== "0x" + encAddress(context.pocket))) throw new Error("The recovered bridge leaf does not match the saved transfer.");
+  if (found && (found.leaf.projectTokenCount !== BigInt(record.amount) || found.leaf.beneficiary !== "0x" + encAddress(context.receiver))) throw new Error("The recovered bridge leaf does not match the saved transfer.");
   await mutateBridgeRecords(context.key, records => {
     const index = records.findIndex(item => item.metadata === record.metadata);
     if (index < 0) return records; // A coordinated cancellation may finish while a read is in flight.
@@ -2157,7 +2213,7 @@ async function renderBridgeFunding() {
       $("bridge-prepare").disabled = true;
       $("bridge-movements").replaceChildren();
     }
-    $("pocket-addr").textContent = context.pocket;
+    $("receiver-addr").textContent = context.receiver;
     const records = context.owner ? bridgeRecords(context.key).filter(record => record.route.source.chainId === context.source.chainId) : [];
     const routes = new Map(bridgeRoutes.map(route => [bridgeRouteId(route), route]));
     for (const record of records) {
@@ -2167,7 +2223,7 @@ async function renderBridgeFunding() {
     }
     const displayed = [];
     for (const route of routes.values()) {
-      const rows = await getBridgeApi().movements(route, context.pocket);
+      const rows = await getBridgeApi().movements(route, context.receiver);
       for (const record of records.filter(item => bridgeRouteId(item.route) === bridgeRouteId(route))) {
         const verified = await reconcileBridgeRecord(context, record, rows);
         if (!verified) displayed.push({ route, record, status: "recover" });
@@ -2183,7 +2239,7 @@ async function renderBridgeFunding() {
       container.style.cssText = "border-top:1px solid var(--line);padding:12px 0;overflow-wrap:anywhere";
       const amount = item.row?.leaf.projectTokenCount || BigInt(item.record.amount);
       const meta = item.route.sourceMeta || { symbol: shortAddr(item.route.sourceToken), decimals: 18 };
-      const labels = { queued: "Queued on origin — ready to send", "in-flight": "Crossing chains — refresh after the bridge delivers", claimable: "Arrived — ready to claim into rewards", claimed: "Claimed into the pocket — settle any remaining balance below", recover: "Saved transfer — review its wallet status before continuing" };
+      const labels = { queued: "Queued on origin — ready to send", "in-flight": "Crossing chains — refresh after the bridge delivers", claimable: "Arrived — ready to claim into rewards", claimed: "Claimed into the receiver — settle any remaining balance below", recover: "Saved transfer — review its wallet status before continuing" };
       const summary = document.createElement("p");
       summary.textContent = `${formatUnits(amount, meta.decimals, meta.decimals)} ${meta.symbol}: ${labels[item.status]}`;
       container.append(summary);
@@ -2279,21 +2335,21 @@ async function prepareBridgeFunding() {
   for (const record of saved) {
     const previousRoute = rehydrateBridgeRoute(record.route);
     const key = bridgeRouteId(previousRoute);
-    if (!previousMovements.has(key)) previousMovements.set(key, await getBridgeApi().movements(previousRoute, context.pocket));
+    if (!previousMovements.has(key)) previousMovements.set(key, await getBridgeApi().movements(previousRoute, context.receiver));
     if (!(await reconcileBridgeRecord(context, record, previousMovements.get(key)))) throw new Error("Recover the saved origin transfer before starting another bridge transfer.");
   }
   const journal = getTxEngine().load();
   if (journal && (journal.steps.some(step => step.state !== "confirmed") || (!journal.acknowledged && journal.steps.some(step => step.tx.sessionTag)))) throw new Error("Finish the saved wallet transaction before starting a bridge transfer.");
   const amount = parseUnits($("bridge-amount").value, route.sourceMeta.decimals);
   const metadata = "0x" + [...crypto.getRandomValues(new Uint8Array(32))].map(value => value.toString(16).padStart(2, "0")).join("");
-  const plan = await getBridgeApi().prepare({ route, amount, owner: context.owner, pocket: context.pocket, metadata });
+  const plan = await getBridgeApi().prepare({ route, amount, owner: context.owner, receiver: context.receiver, metadata });
   const record = { metadata, owner: context.owner, amount: amount.toString(), route, prepareData: plan.txs.at(-1).data, createdAt: Date.now(), status: "review", phase: "created" };
   await mutateBridgeRecords(context.key, records => [...records, record]);
   let mayRun = false;
   let complete;
   try { complete = await confirmAndRun("Bridge rewards to " + stickyLabel(context.info), plan.txs, [
     ["Send", `${formatUnits(amount, route.sourceMeta.decimals, route.sourceMeta.decimals)} ${route.sourceMeta.symbol} on ${route.source.name}`],
-    ["Receive", `${formatUnits(amount, route.rewardMeta.decimals, route.rewardMeta.decimals)} ${route.rewardMeta.symbol} in this project's pocket on ${route.destination.name}`],
+    ["Receive", `${formatUnits(amount, route.rewardMeta.decimals, route.rewardMeta.decimals)} ${route.rewardMeta.symbol} in this project's receiver on ${route.destination.name}`],
     ["Afterward", "Send the queued bridge batch, wait for delivery, claim the arrival, then settle it into rewards."],
   ], { onPrepared: async session => {
     mayRun = true;
@@ -2315,7 +2371,7 @@ async function prepareBridgeFunding() {
     await discardBridgeDraft(context, bridgeRecords(context.key).find(item => item.metadata === metadata) || record);
     return;
   }
-  await reconcileBridgeRecord(context, record, await getBridgeApi().movements(route, context.pocket));
+  await reconcileBridgeRecord(context, record, await getBridgeApi().movements(route, context.receiver));
   txStatus("Rewards queued on the origin chain. Send the queued batch to begin crossing chains.", "ok");
 }
 
@@ -2353,12 +2409,12 @@ async function actOnBridgeMovement(index) {
       await discardBridgeDraft(context, item.record);
       return;
     }
-    await reconcileBridgeRecord(context, item.record, await getBridgeApi().movements(item.route, context.pocket));
+    await reconcileBridgeRecord(context, item.record, await getBridgeApi().movements(item.route, context.receiver));
     return;
   }
-  const tx = item.status === "queued" ? await getBridgeApi().flush(item.route, context.owner, context.pocket)
-    : await getBridgeApi().claim(item.route, item.row, context.owner, context.pocket);
-  if (!(await confirmAndRun(tx.label, [tx], [["Reward token on destination", item.route.rewardToken], ["Destination pocket", context.pocket]]))) return;
+  const tx = item.status === "queued" ? await getBridgeApi().flush(item.route, context.owner, context.receiver)
+    : await getBridgeApi().claim(item.route, item.row, context.owner, context.receiver);
+  if (!(await confirmAndRun(tx.label, [tx], [["Reward token on destination", item.route.rewardToken], ["Destination receiver", context.receiver]]))) return;
   await renderRewards();
 }
 
@@ -2494,7 +2550,9 @@ async function rewardTokenMeta(addr) {
 
 async function renderRewards() {
   if (ctx.currentId === null || !distributor()) return;
+  const current = currentView();
   const info = await projectInfo(ctx.currentId);
+  if (!current()) return;
   const holder = account();
   const key = ctx.currentId.toString();
   const known = (rewardTokens[key] ??= new Set([info.stakedToken.toLowerCase()]));
@@ -2505,24 +2563,29 @@ async function renderRewards() {
   // silently hiding funded tokens.
   try {
     const logs = await getLogs(undefined, [TOPIC.Transfer, null, "0x" + encAddress(distributor())]);
+    if (!current()) return;
     for (const log of logs) known.add(log.address.toLowerCase());
   } catch (error) {
     console.error("reward token discovery failed", error);
   }
-  // Cross-chain pocket: show the selected destination token's arrivals, including rewards other than the backing token.
-  const pocketsAddr = stickyDeploymentFor(ctx.chainId).pockets;
-  if (pocketsAddr) {
+  if (!current()) return;
+  // Cross-chain receiver: show the selected destination token's arrivals, including rewards other than the backing token.
+  const receiverFactoryAddr = stickyDeploymentFor(ctx.chainId).rewardReceiverFactory;
+  if (receiverFactoryAddr) {
     try {
-      const pocket = decAddress(await view(pocketsAddr, SEL.predictPocketOf, encAddress(info.stToken)));
-      ctx.pocket = pocket;
-      $("pocket-addr").textContent = pocket;
+      const receiver = decAddress(await view(receiverFactoryAddr, SEL.predictReceiverOf, encAddress(info.stToken)));
+      if (!current()) return;
+      ctx.receiver = receiver;
+      $("receiver-addr").textContent = receiver;
       const rewardToken = rewardTokenAddress($("bridge-reward-token")?.value || $("r-token").value, info.stakedToken);
-      if (rewardToken.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("pockets accept ERC-20 rewards");
+      if (rewardToken.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("receivers accept ERC-20 rewards");
       const meta = await rewardTokenMeta(rewardToken);
-      const pending = decUint(await view(rewardToken, SEL.balanceOf, encAddress(pocket)));
-      $("pocket-pending").textContent = `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`;
+      const pending = decUint(await view(rewardToken, SEL.balanceOf, encAddress(receiver)));
+      if (!current()) return;
+      $("receiver-pending").textContent = `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`;
     } catch {
-      $("pocket-pending").textContent = "Select a destination reward token to check arrivals";
+      if (!current()) return;
+      $("receiver-pending").textContent = "Select a destination reward token to check arrivals";
     }
   }
   // The direct split route: the distributor is itself a split hook, and the split's beneficiary field names the
@@ -2530,10 +2593,12 @@ async function renderRewards() {
   $("rr-hook").textContent = distributor();
   $("rr-beneficiary").textContent = info.stToken;
   await renderAutoStick();
+  if (!current()) return;
   const tbody = $("rewards-list");
   tbody.innerHTML = "";
   for (const tokenAddr of known) {
     const meta = await rewardTokenMeta(tokenAddr).catch(() => null);
+    if (!current()) return;
     // Anyone can emit a Transfer log naming the distributor. Bad token metadata must not hide valid rewards.
     if (!meta) continue;
     const [pool, collectable] = await Promise.all([
@@ -2542,20 +2607,24 @@ async function renderRewards() {
         ? view(distributor(), SEL.collectableFor, encAddress(info.stToken) + encAddress(holder) + encAddress(tokenAddr)).then(decUint).catch(() => 0n)
         : Promise.resolve(0n),
     ]);
+    if (!current()) return;
     if (pool === 0n && collectable === 0n && tokenAddr !== info.stakedToken.toLowerCase()) continue;
     // The underlying-token row defaults to one-click claim-and-stick wherever the hook accepts the adapter as
     // payer (creator pre-approval or personal trust); every other reward token keeps normal claiming.
-    let action = `<button class="ghost" style="margin:0;padding:4px 10px" onclick="claimRewardFor('${tokenAddr}')">Claim</button>`;
+    let action = `<button type="button" class="ghost" style="margin:0;padding:4px 10px" data-claim>Claim</button>`;
     const as = ctx.autoStick;
     const canStick = as && (as.projectGranter || as.personallyTrusted);
     if (tokenAddr === info.stakedToken.toLowerCase() && canStick && collectable > 0n) {
-      action = `<button style="margin:0;padding:4px 10px" onclick="claimAndStickNow()">Claim &amp; stick</button>`
-        + `<div style="margin-top:2px"><span class="link" style="font-size:12px" onclick="claimRewardFor('${tokenAddr}')">Claim only</span></div>`;
+      action = `<button type="button" style="margin:0;padding:4px 10px" data-claim-stick>Claim &amp; stick</button>`
+        + `<div style="margin-top:2px"><button type="button" class="link text-button" style="font-size:12px" data-claim>Claim only</button></div>`;
     }
     const row = document.createElement("tr");
     row.innerHTML = `<td>${esc(meta.symbol)}</td><td>${formatUnits(pool, meta.decimals)}</td>` +
       `<td>${formatUnits(collectable, meta.decimals)}</td>` +
       `<td style="min-width:80px">${action}</td>`;
+    row.querySelector("[data-claim]").onclick = guard(() => claimReward(tokenAddr));
+    const claimAndStickButton = row.querySelector("[data-claim-stick]");
+    if (claimAndStickButton) claimAndStickButton.onclick = guard(claimAndStick);
     tbody.appendChild(row);
   }
   if (!tbody.children.length) tbody.innerHTML = `<tr><td colspan="4" class="mut">no rewards yet — fund some</td></tr>`;
@@ -2622,7 +2691,6 @@ async function claimReward(tokenAddr) {
   txStatus(collectable > 0n ? "Rewards collected; eligible past rewards are unlocking" : "Eligible past rewards are unlocking", "ok");
   await renderRewards();
 }
-window.claimRewardFor = (tokenAddr) => guard(() => claimReward(tokenAddr))({ currentTarget: document.activeElement });
 
 // ---------------------------------------------------------------- auto-stick
 // Opt-in compounding: unlocked underlying-token rewards are collected and restuck for the same holder by the
@@ -2712,11 +2780,13 @@ function asStatusLine(state) {
 }
 
 async function renderAutoStick() {
+  const current = currentView();
   const card = $("autostick-card");
   let state = null;
   try {
     state = await autoStickState();
   } catch {}
+  if (!current()) return;
   ctx.autoStick = state;
   // Fail closed: no adapter configured (or a misconfigured project) means no auto-stick UI at all.
   if (!state || state.status === AS_STATUS.INVALID_PROJECT) {
@@ -2728,6 +2798,7 @@ async function renderAutoStick() {
   card.classList.remove("hide");
   $("as-heading").textContent = `Auto-stick ${info.symbol} rewards`;
   const schedule = unlockScheduleSentence(await unlockScheduleOf());
+  if (!current()) return;
   $("as-blurb").textContent =
     `Allow anyone to collect your unlocked ${info.symbol} rewards into your ${stickyLabel(info)} position under your settings. `
     + `Each auto-stick creates a new stick starting at that time.`
@@ -2769,6 +2840,7 @@ async function renderAutoStick() {
       canBeginVesting = await hasRewardsToVest(info, account(), info.stakedToken);
     } catch {}
   }
+  if (!current()) return;
   $("as-begin-vesting").classList.toggle("hide", !canBeginVesting);
 }
 
@@ -2856,7 +2928,7 @@ function openAutoStickDialog(mode) {
   $("as-min").value = state.minimum > 0n ? formatUnits(state.minimum, info.decimals, info.decimals) : "1";
   asCooldownChoice = state.cooldown || 604_800;
   for (const preset of document.querySelectorAll("[data-as-cooldown]")) {
-    preset.classList.toggle("on", Number(preset.dataset.asCooldown) === asCooldownChoice);
+    selectPreset(preset, Number(preset.dataset.asCooldown) === asCooldownChoice);
   }
   // Settings changes only touch the on-chain config; the allowance is set during enable/renew.
   $("as-allowance-wrap").classList.toggle("hide", mode === "settings");
@@ -3030,37 +3102,36 @@ async function claimAndStick() {
   txStatus("Rewards claimed and stuck", "ok");
   await renderProject(ctx.currentId);
 }
-window.claimAndStickNow = () => guard(claimAndStick)({ currentTarget: document.activeElement });
 
 async function settleArrivals() {
   const action = beginAction();
   const { holder } = action;
   const info = await projectInfo(ctx.currentId);
-  const pocketsAddr = actionAddress(stickyDeploymentFor(ctx.chainId).pockets, "reward pockets address");
+  const receiverFactoryAddr = actionAddress(stickyDeploymentFor(ctx.chainId).rewardReceiverFactory, "reward receiver factory address");
   const tokenAddr = rewardTokenAddress($("bridge-reward-token")?.value || $("r-token").value, info.stakedToken);
-  if (tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("reward pockets settle ERC-20 tokens; fund ETH rewards directly");
+  if (tokenAddr.toLowerCase() === NATIVE_REWARD_TOKEN) throw new Error("reward receivers settle ERC-20 tokens; fund ETH rewards directly");
   const meta = await rewardTokenMeta(tokenAddr);
-  const configuredDistributor = decAddress(await view(pocketsAddr, "0x9c26149f"));
+  const configuredDistributor = decAddress(await view(receiverFactoryAddr, "0x9c26149f"));
   if (configuredDistributor.toLowerCase() !== distributor()?.toLowerCase()) {
-    throw new Error("the reward pockets use a different distributor");
+    throw new Error("the reward receiver factory uses a different distributor");
   }
-  const pocket = actionAddress(decAddress(await view(pocketsAddr, SEL.predictPocketOf, encAddress(info.stToken))), "reward pocket");
-  const pending = decUint(await view(tokenAddr, SEL.balanceOf, encAddress(pocket)));
+  const receiver = actionAddress(decAddress(await view(receiverFactoryAddr, SEL.predictReceiverOf, encAddress(info.stToken))), "reward receiver");
+  const pending = decUint(await view(tokenAddr, SEL.balanceOf, encAddress(receiver)));
   if (pending === 0n) throw new Error(`there are no ${meta.symbol} arrivals to settle`);
   const txs = [{
     label: "Settle arrivals",
-    to: pocketsAddr,
+    to: receiverFactoryAddr,
     fn: "settleFor(address stickyToken, address token)",
     args: [
       ["STUCK IN", `${info.stToken} — ${stickyLabel(info)}`],
       ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`],
       ["AMOUNT", `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`],
-      ["POCKET", pocket],
-      ["EFFECT", "the pocket's whole balance becomes this round's rewards"],
+      ["RECEIVER", receiver],
+      ["EFFECT", "the receiver's whole balance becomes this round's rewards"],
     ],
     data: SEL.settleFor + encode(["address", "address"], [info.stToken, tokenAddr]),
   }];
-  await actionCall(pocketsAddr, txs[0].data, holder);
+  await actionCall(receiverFactoryAddr, txs[0].data, holder);
   if (!(await reviewAction(action, "Settle cross-chain arrivals", txs))) return;
   try { $("fund-dialog").close(); } catch {}
   txStatus("Arrivals settled into rewards", "ok");
@@ -3775,6 +3846,7 @@ function closeWalletMenu() {
   if (!walletMenu) return;
   walletMenu.remove();
   walletMenu = null;
+  $("connect-btn").setAttribute("aria-expanded", "false");
   document.removeEventListener("click", onWalletMenuDocClick, true);
 }
 function onWalletMenuDocClick(event) {
@@ -3784,7 +3856,14 @@ function onWalletMenuDocClick(event) {
 function newWalletMenu() {
   closeWalletMenu();
   walletMenu = document.createElement("div");
+  walletMenu.id = "wallet-menu";
   walletMenu.className = "wallet-menu";
+  walletMenu.onkeydown = (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    closeWalletMenu();
+    $("connect-btn").focus();
+  };
   const rect = $("connect-btn").getBoundingClientRect();
   walletMenu.style.top = `${rect.bottom + 6}px`;
   walletMenu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
@@ -3792,6 +3871,9 @@ function newWalletMenu() {
 }
 function mountWalletMenu() {
   document.body.appendChild(walletMenu);
+  $("connect-btn").setAttribute("aria-controls", "wallet-menu");
+  $("connect-btn").setAttribute("aria-expanded", "true");
+  walletMenu.querySelector("button")?.focus();
   setTimeout(() => document.addEventListener("click", onWalletMenuDocClick, true), 0);
 }
 function menuItem(text, onClick, cls = "") {
@@ -3812,6 +3894,7 @@ function appendViewAsItem(menu) {
     wrap.className = "viewas-prompt";
     const input = document.createElement("input");
     input.placeholder = "0x address";
+    input.setAttribute("aria-label", "Account address to preview");
     const go = menuItem("View", () => {
       if (!/^0x[0-9a-fA-F]{40}$/.test(input.value)) return;
       viewAs = input.value;
@@ -3864,6 +3947,7 @@ function openWalletPicker() {
     if (p.info?.icon) {
       const img = document.createElement("img");
       img.className = "wallet-pick-icon";
+      img.alt = "";
       img.src = p.info.icon;
       item.appendChild(img);
     }
@@ -3927,6 +4011,8 @@ function updateConnectButton() {
 
 // ------------------------------------------------------------------- account view
 async function renderAccount(address) {
+  ++viewSequence;
+  const current = currentView();
   clearHomeSecuredChart();
   $("view-home").classList.add("hide");
   $("view-project").classList.add("hide");
@@ -3936,38 +4022,45 @@ async function renderAccount(address) {
   $("a-address").textContent = address;
   if (!ctx.loaded) return;
   const ids = await projectIds();
+  if (!current()) return;
   const logs = await hookLogs(undefined);
+  if (!current()) return;
   const rows = [];
   for (const id of ids) {
     try {
       const info = await projectInfo(id);
+      if (!current()) return;
       const args = word(id) + encAddress(address);
       const [staked, streakStart, longest] = await Promise.all([
         view(ctx.hook, SEL.stakedBalanceOf, args).then(decUint),
         view(ctx.hook, SEL.streakStartOf, args).then(decUint),
         view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
       ]);
+      if (!current()) return;
       if (staked === 0n && longest === 0n) continue;
       const current = streakStart === 0n ? 0 : Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart));
       rows.push(
-        `<div class="card-item pickc" onclick="location.hash='#/project/${id}'"><div class="card-head">` +
+        `<a class="card-item pickc" href="#/project/${id}"><div class="card-head">` +
         `${tokenLogo(info.stakedToken, info.symbol, 26)}<div style="flex:1;min-width:0">` +
         `<div style="font-weight:700">${esc(stickyLabel(info))} <span class="mut">#${id}</span></div>` +
         `<div class="kv"><span class="mut">Stuck:</span> ${formatUnits(staked, 18)} ${esc(info.stSymbol)}</div>` +
         `<div class="kv"><span class="mut">Time:</span> ${formatDuration(current)}</div>` +
         `<div class="kv"><span class="mut">Longest:</span> ${formatDuration(Math.max(Number(longest), current))}</div>` +
-        `</div></div></div>`,
+        `</div></div></a>`,
       );
     } catch {}
   }
   $("a-positions").innerHTML = rows.length ? rows.join("") : `<div class="card-item mut">no positions yet</div>`;
   const mine = logs.filter((log) => decAddress(log.topics[2]).toLowerCase() === address.toLowerCase());
-  renderFeed($("a-activity"), await activityItems(mine, true));
+  const activity = await activityItems(mine, true);
+  if (!current()) return;
+  renderFeed($("a-activity"), activity);
   hydrateLogos().catch(() => {});
 }
 
 // -------------------------------------------------------------------- router
 function route() {
+  const sequence = ++viewSequence;
   closeWalletMenu();
   try { $("create-dialog").close(); } catch {}
   try { $("connection-dialog").close(); } catch {}
@@ -3990,6 +4083,7 @@ function route() {
     const tab = { overview: "overview", tokens: "owners", airdrops: "rewards" }[handleMatch[2] || "overview"];
     setTab(tab);
     projectIdForHandle(handle).then((projectId) => {
+      if (sequence !== viewSequence) return;
       if (projectId === null) throw new Error(`no sticky token is published at @${handle}`);
       ctx.alias = `@${handle}`;
       return renderProject(projectId);
@@ -4054,11 +4148,6 @@ $("rr-copy-beneficiary").onclick = guard(async () => {
   inlineStatus($("rr-copy-beneficiary"), "Beneficiary address copied.", "ok");
 });
 renderOriginPills();
-$("r-origin-btn").onclick = (event) => {
-  event.stopPropagation();
-  $("r-origin-menu").classList.toggle("hide");
-};
-document.addEventListener("click", () => $("r-origin-menu").classList.add("hide"));
 $("r-add").onclick = guard(async () => {
   const addr = $("r-check").value;
   if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) throw new Error("bad token address");
@@ -4067,12 +4156,6 @@ $("r-add").onclick = guard(async () => {
 });
 const fillStakeMax = () => { if (ctx.walletMax) { $("stake-amount").value = ctx.walletMax; renderStickQuote(); } };
 $("stake-balance").onclick = fillStakeMax;
-$("stake-balance").onkeydown = (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    fillStakeMax();
-  }
-};
 $("unstake-max").onclick = () => { if (ctx.stakedMax) { $("unstake-amount").value = ctx.stakedMax; renderUnstickQuote(); } };
 $("unstake-amount").oninput = renderUnstickQuote;
 $("stake-amount").oninput = renderStickQuote;
@@ -4233,8 +4316,8 @@ function renderBonusSplit(r, o = {}) {
       <rect x="${wLeaver.toFixed(1)}" y="0" width="${wStays.toFixed(1)}" height="${BH}" fill="#0e7c91"/>
       <rect x="${(wLeaver + wStays).toFixed(1)}" y="0" width="${(W - wLeaver - wStays).toFixed(1)}" height="${BH}" fill="#e2d7bd"/>
     </svg>
-    <div style="display:flex;gap:16px;white-space:nowrap;overflow-x:auto;margin-top:6px" class="kv mut">
-      <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#2fb3c7"></i>${qty(toLeaver)}${unit} to the unstickers</span>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 16px;overflow-wrap:anywhere;margin-top:6px" class="kv mut">
+      <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#2fb3c7"></i>${qty(toLeaver)}${esc(unit)} to the unstickers</span>
       <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#0e7c91"></i>${qty(stays)} stays with stickers</span>
       <span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:#e2d7bd"></i>${qty(fee)} protocol fee</span>
     </div>`;
@@ -4256,10 +4339,14 @@ $("d-add-reward").onchange = () => {
   renderCurve();
 };
 $("d-reward").oninput = renderCurve;
-for (const preset of document.querySelectorAll(".preset")) {
+function selectPreset(button, selected) {
+  button.classList.toggle("on", selected);
+  button.setAttribute("aria-pressed", String(selected));
+}
+for (const preset of document.querySelectorAll("[data-v]")) {
   preset.onclick = () => {
     rewardChoice = preset.dataset.v;
-    for (const other of document.querySelectorAll(".preset")) other.classList.toggle("on", other === preset);
+    for (const other of document.querySelectorAll("[data-v]")) selectPreset(other, other === preset);
     $("d-reward-custom-row").classList.toggle("hide", rewardChoice !== "custom");
     renderCurve();
   };
@@ -4275,7 +4362,7 @@ $("create-toggle").onclick = () => {
   }
   $("d-extras").open = false;
   rewardChoice = "10";
-  for (const preset of document.querySelectorAll(".preset")) preset.classList.toggle("on", preset.dataset.v === "10");
+  for (const preset of document.querySelectorAll("[data-v]")) selectPreset(preset, preset.dataset.v === "10");
   $("d-reward-custom-row").classList.add("hide");
   $("d-soulbound").value = "1";
   soulboundHint();
@@ -4328,12 +4415,16 @@ $("sort-longest").onclick = () => {
   boardSort = "longest";
   $("sort-longest").classList.add("on");
   $("sort-largest").classList.remove("on");
+  $("sort-longest").setAttribute("aria-pressed", "true");
+  $("sort-largest").setAttribute("aria-pressed", "false");
   renderBoard();
 };
 $("sort-largest").onclick = () => {
   boardSort = "largest";
   $("sort-largest").classList.add("on");
   $("sort-longest").classList.remove("on");
+  $("sort-longest").setAttribute("aria-pressed", "false");
+  $("sort-largest").setAttribute("aria-pressed", "true");
   renderBoard();
 };
 $("open-fund").onclick = () => $("fund-dialog").showModal();
@@ -4359,13 +4450,13 @@ $("autostick-dialog").onclick = (event) => {
 for (const preset of document.querySelectorAll("[data-as-cooldown]")) {
   preset.onclick = () => {
     asCooldownChoice = Number(preset.dataset.asCooldown);
-    for (const other of document.querySelectorAll("[data-as-cooldown]")) other.classList.toggle("on", other === preset);
+    for (const other of document.querySelectorAll("[data-as-cooldown]")) selectPreset(other, other === preset);
   };
 }
 for (const preset of document.querySelectorAll("[data-as-allowance]")) {
   preset.onclick = () => {
     asAllowanceChoice = preset.dataset.asAllowance;
-    for (const other of document.querySelectorAll("[data-as-allowance]")) other.classList.toggle("on", other === preset);
+    for (const other of document.querySelectorAll("[data-as-allowance]")) selectPreset(other, other === preset);
     $("as-allowance-custom-row").classList.toggle("hide", asAllowanceChoice !== "custom");
   };
 }

@@ -8,7 +8,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
-import {JBStickyRewardPockets} from "../src/JBStickyRewardPockets.sol";
+import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
 import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
 import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
@@ -175,7 +175,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         assertEq(art.balanceOf(granter) - granterBalanceBefore, 25e6);
     }
 
-    function test_crossChainRewardPocketsSettleArrivalsIntoRewards() public {
+    function test_crossChainRewardReceiversSettleArrivalsIntoRewards() public {
         JBTokenDistributor distributor = new JBTokenDistributor({
             directory: jbDirectory(),
             controller: jbController(),
@@ -185,7 +185,8 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
             initialVestingRounds: 2,
             initialClaimDuration: 30 days
         });
-        JBStickyRewardPockets pockets = new JBStickyRewardPockets(IJBDistributor(address(distributor)));
+        JBStickyRewardReceiverFactory receiverFactory =
+            new JBStickyRewardReceiverFactory(IJBDistributor(address(distributor)));
 
         // Two streakers: 30 and 10 ART locked.
         _stake(user, user, 30e6);
@@ -204,20 +205,20 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.stopPrank();
         vm.roll(vm.getBlockNumber() + 1);
 
-        // A cross-chain arrival lands at the PREDICTED pocket address before the pocket exists — exactly how a
+        // A cross-chain arrival lands at the PREDICTED receiver address before the receiver exists — exactly how a
         // sucker claim would deliver bridged project tokens to a counterfactual beneficiary.
-        address pocket = pockets.predictPocketOf(address(token));
-        assertEq(pocket.code.length, 0);
-        art.mint({to: pocket, amount: 100e6});
+        address receiver = receiverFactory.predictReceiverOf(address(token));
+        assertEq(receiver.code.length, 0);
+        art.mint({to: receiver, amount: 100e6});
 
-        // Anyone settles: the pocket is deployed at the predicted address and the arrival becomes a reward round.
-        uint256 settled = pockets.settleFor({stickyToken: address(token), token: IERC20(address(art))});
+        // Anyone settles: the receiver is deployed at the predicted address and the arrival becomes a reward round.
+        uint256 settled = receiverFactory.settleFor({stickyToken: address(token), token: IERC20(address(art))});
         assertEq(settled, 100e6);
-        assertEq(pockets.pocketOf(address(token)), pocket);
+        assertEq(receiverFactory.receiverOf(address(token)), receiver);
         assertEq(distributor.balanceOf(address(token), IERC20(address(art))), 100e6);
 
-        // Settling again with nothing in the pocket is a harmless no-op.
-        assertEq(pockets.settleFor({stickyToken: address(token), token: IERC20(address(art))}), 0);
+        // Settling again with nothing in the receiver is a harmless no-op.
+        assertEq(receiverFactory.settleFor({stickyToken: address(token), token: IERC20(address(art))}), 0);
 
         // The streakers collect their shares of the arrival like any other reward round.
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);

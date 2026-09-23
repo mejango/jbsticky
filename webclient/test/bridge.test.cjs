@@ -18,13 +18,13 @@ function fixture(changes = {}) {
     sourceToken: A(31), rewardToken: A(32), backingToken: NATIVE, remoteBackingToken: NATIVE,
     terminal: CONTRACTS.terminal,
   };
-  const owner = A(40), pocket = A(41), metadata = abi(99);
-  const leaf = { index: 0n, beneficiary: abi(pocket), projectTokenCount: 1000n, terminalTokenAmount: 500n, metadata };
+  const owner = A(40), receiver = A(41), metadata = abi(99);
+  const leaf = { index: 0n, beneficiary: abi(receiver), projectTokenCount: 1000n, terminalTokenAmount: 500n, metadata };
   const calls = [];
   let api;
   const sourceHash = abi(1001);
   const blockHash = abi(1002);
-  const prepareData = SEL.prepare + word(1000) + addressWord(pocket) + word(965) + addressWord(NATIVE) + metadata.slice(2);
+  const prepareData = SEL.prepare + word(1000) + addressWord(receiver) + word(965) + addressWord(NATIVE) + metadata.slice(2);
   const event = () => {
     const hashed = api.leafHash(leaf);
     const root = api.branchRoot(hashed, api.proofFor([hashed], 0), 0);
@@ -67,7 +67,7 @@ function fixture(changes = {}) {
     if (selector === SEL.allSuckersOf) return array([route.sourceSucker]);
     if (selector === SEL.state) return abi(0);
     if (selector === SEL.DISTRIBUTOR) return abi(state.distributor || A(51));
-    if (selector === SEL.predictPocketOf) return abi(pocket);
+    if (selector === SEL.predictReceiverOf) return abi(receiver);
     if (selector === SEL.decimals) return abi(18);
     if (selector === SEL.symbol) return abi(32, 3) + Buffer.from('TOK').toString('hex').padEnd(64, '0');
     if (selector === SEL.balanceOf) return abi(state.balance);
@@ -98,7 +98,7 @@ function fixture(changes = {}) {
     throw new Error('unexpected selector ' + selector);
   };
   api = Bridge.create({ rpc, keccak256 });
-  return { api, route, state, calls, owner, pocket, metadata, leaf, sourceHash, prepareData };
+  return { api, route, state, calls, owner, receiver, metadata, leaf, sourceHash, prepareData };
 }
 
 test('Merkle reconstruction uses the exact canonical V6 empty root', () => {
@@ -157,20 +157,21 @@ test('mainnet and testnet routes are never mixed', async () => {
   await assert.rejects(api.validateRoute(route), /same environment/);
 });
 
-test('pockets are verified against the intended distributor before creating a beneficiary', async () => {
-  const { api, route, pocket } = fixture();
-  assert.equal(await api.pocketFor(route.destination, A(80), A(81), A(51)), pocket);
-  await assert.rejects(api.pocketFor(route.destination, A(80), A(81), A(52)), /distributor/);
+test('receiver factory is verified against the intended distributor before creating a beneficiary', async () => {
+  assert.equal(SEL.predictReceiverOf, keccak256('0x' + Buffer.from('predictReceiverOf(address)').toString('hex')).slice(0, 10));
+  const { api, route, receiver } = fixture();
+  assert.equal(await api.receiverFor(route.destination, A(80), A(81), A(51)), receiver);
+  await assert.rejects(api.receiverFor(route.destination, A(80), A(81), A(52)), /distributor/);
 });
 
 test('prepare returns exact, chain-pinned approval and protected queue requests with a recovery tag', async () => {
-  const { api, route, owner, pocket, metadata } = fixture();
-  const result = await api.prepare({ route, owner, pocket, metadata, amount: 1000n });
+  const { api, route, owner, receiver, metadata } = fixture();
+  const result = await api.prepare({ route, owner, receiver, metadata, amount: 1000n });
   assert.equal(result.txs.length, 2);
   assert.equal(result.txs[0].to, route.sourceToken);
   assert.equal(result.txs[0].data, SEL.approve + addressWord(route.sourceSucker) + word(1000));
   const tx = result.txs[1];
-  assert.equal(tx.data, SEL.prepare + word(1000) + addressWord(pocket) + word(965) + addressWord(NATIVE) + metadata.slice(2));
+  assert.equal(tx.data, SEL.prepare + word(1000) + addressWord(receiver) + word(965) + addressWord(NATIVE) + metadata.slice(2));
   assert.equal(tx.chainId, 1);
   assert.equal(tx.rpcUrl, route.source.rpcUrl);
   assert.equal(tx.from, owner);
@@ -197,8 +198,8 @@ test('zero amounts, insufficient balances, untagged attempts and disabled routes
 });
 
 test('movements prove source preimages, dense history, live outbox branch and destination root', async () => {
-  const { api, route, pocket, sourceHash } = fixture();
-  const rows = await api.movements(route, pocket);
+  const { api, route, receiver, sourceHash } = fixture();
+  const rows = await api.movements(route, receiver);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].status, 'claimable');
   assert.equal(rows[0].proof.length, 32);
@@ -213,34 +214,34 @@ for (const [name, changes, pattern] of [
   ['wrong live branch root', { badBranch: true }, /source contract/],
   ['wrong executed leaf', { badExecution: true }, /different bridge leaf/],
 ]) test('movement reconstruction rejects ' + name, async () => {
-  const { api, route, pocket } = fixture(changes);
-  await assert.rejects(api.movements(route, pocket), pattern);
+  const { api, route, receiver } = fixture(changes);
+  await assert.rejects(api.movements(route, receiver), pattern);
 });
 
 test('already-executed leaves never expose a replayable claim proof', async () => {
   const f = fixture({ executed: true });
-  const [row] = await f.api.movements(f.route, f.pocket);
+  const [row] = await f.api.movements(f.route, f.receiver);
   assert.equal(row.status, 'claimed');
   assert.equal(row.proof, null);
-  await assert.rejects(f.api.claim(f.route, row, f.owner, f.pocket), /not ready/);
+  await assert.rejects(f.api.claim(f.route, row, f.owner, f.receiver), /not ready/);
 });
 
 test('claim uses an exact static V6 tuple and rechecks the proof before simulation', async () => {
   const f = fixture();
-  const [row] = await f.api.movements(f.route, f.pocket);
-  const tx = await f.api.claim(f.route, row, f.owner, f.pocket);
+  const [row] = await f.api.movements(f.route, f.receiver);
+  const tx = await f.api.claim(f.route, row, f.owner, f.receiver);
   assert.equal(tx.chainId, 10);
   assert.equal(tx.to, f.route.destinationSucker);
   assert.equal(tx.data.length, 10 + 38 * 64);
-  assert.equal(tx.data.slice(10, 10 + 6 * 64), addressWord(NATIVE) + word(0) + addressWord(f.pocket) + word(1000) + word(500) + f.metadata.slice(2));
+  assert.equal(tx.data.slice(10, 10 + 6 * 64), addressWord(NATIVE) + word(0) + addressWord(f.receiver) + word(1000) + word(500) + f.metadata.slice(2));
   assert.ok(f.calls.some(call => call.method === 'eth_call' && call.params[0].data === tx.data && call.url === f.route.destination.rpcUrl));
   f.state.rejectClaim = true;
-  await assert.rejects(f.api.claim(f.route, row, f.owner, f.pocket), /claim reverted/);
+  await assert.rejects(f.api.claim(f.route, row, f.owner, f.receiver), /claim reverted/);
 });
 
 test('CCIP flushing uses a positive native transport budget plus the registry fee', async () => {
   const f = fixture({ delivered: false, successfulBudget: 5n * 10n ** 15n });
-  const tx = await f.api.flush(f.route, f.owner, f.pocket);
+  const tx = await f.api.flush(f.route, f.owner, f.receiver);
   assert.equal(tx.chainId, 1);
   assert.equal(BigInt(tx.value), 100n + 5n * 10n ** 15n);
   const probes = f.calls.filter(call => call.method === 'eth_call' && call.params[0].data?.startsWith(SEL.toRemote));
@@ -249,14 +250,14 @@ test('CCIP flushing uses a positive native transport budget plus the registry fe
 
 test('a failed transport probe never silently becomes a native bridge', async () => {
   const f = fixture({ delivered: false, transport: 'unknown' });
-  await assert.rejects(f.api.flush(f.route, f.owner, f.pocket), /cannot be verified/);
+  await assert.rejects(f.api.flush(f.route, f.owner, f.receiver), /cannot be verified/);
 });
 
 test('native flush requires successful exact fee simulation; delivered batches cannot be sent again', async () => {
   const f = fixture({ delivered: false, transport: 'native', successfulBudget: 0n });
-  assert.equal(BigInt((await f.api.flush(f.route, f.owner, f.pocket)).value), 100n);
+  assert.equal(BigInt((await f.api.flush(f.route, f.owner, f.receiver)).value), 100n);
   f.state.delivered = true;
-  await assert.rejects(f.api.flush(f.route, f.owner, f.pocket), /No rewards are waiting/);
+  await assert.rejects(f.api.flush(f.route, f.owner, f.receiver), /No rewards are waiting/);
 });
 
 test('ABI parsing refuses truncation, over-wide addresses and impossible arrays', () => {
@@ -268,7 +269,7 @@ test('ABI parsing refuses truncation, over-wide addresses and impossible arrays'
 
 test('source recovery verifies the exact caller, transaction, canonical block inclusion and receipt event', async () => {
   const f = fixture();
-  const [row] = await f.api.movements(f.route, f.pocket);
+  const [row] = await f.api.movements(f.route, f.receiver);
   const receipt = await f.api.verifySource(f.route, row, f.owner, f.prepareData);
   assert.equal(receipt.transactionHash, f.sourceHash);
 });
@@ -281,38 +282,38 @@ for (const [name, change, pattern] of [
   ['wrong block transaction index', { wrongBlockTx: true }, /no longer canonical/],
 ]) test('source recovery refuses ' + name, async () => {
   const f = fixture(change);
-  const [row] = await f.api.movements(f.route, f.pocket);
+  const [row] = await f.api.movements(f.route, f.receiver);
   await assert.rejects(f.api.verifySource(f.route, row, f.owner, f.prepareData), pattern);
 });
 
 test('Arbitrum L1 to L2 explicitly quotes a positive retryable-ticket budget', async () => {
   const f = fixture({ delivered: false, transport: 'arbitrum-l1', successfulBudget: 5n * 10n ** 15n });
   f.route.destination.chainId = 42161;
-  const tx = await f.api.flush(f.route, f.owner, f.pocket);
+  const tx = await f.api.flush(f.route, f.owner, f.receiver);
   assert.equal(BigInt(tx.value), 100n + 5n * 10n ** 15n);
 });
 
 test('Arbitrum L2 to L1 supports the zero transport route without an L1 inbox', async () => {
   const f = fixture({ delivered: false, transport: 'arbitrum-l2', successfulBudget: 0n, sourceChain: 42161n });
   f.route.source.chainId = 42161; f.route.destination.chainId = 1;
-  const tx = await f.api.flush(f.route, f.owner, f.pocket);
+  const tx = await f.api.flush(f.route, f.owner, f.receiver);
   assert.equal(BigInt(tx.value), 100n);
 });
 
 test('terminal migrations preserve queued transfers and claims but require a new preparation quote', async () => {
   const f = fixture({ migratedTerminal: true });
-  const [row] = await f.api.movements(f.route, f.pocket);
+  const [row] = await f.api.movements(f.route, f.receiver);
   assert.equal(row.status, 'claimable');
-  await f.api.claim(f.route, row, f.owner, f.pocket);
+  await f.api.claim(f.route, row, f.owner, f.receiver);
   await assert.rejects(f.api.prepare({ ...f, amount: 1n }), /terminal changed/);
   f.state.delivered = false;
-  await f.api.flush(f.route, f.owner, f.pocket);
+  await f.api.flush(f.route, f.owner, f.receiver);
 });
 
 test('destination outbound remapping does not invalidate existing inbound claims', async () => {
   const f = fixture({ changedReverse: true });
-  const [row] = await f.api.movements(f.route, f.pocket);
-  await f.api.claim(f.route, row, f.owner, f.pocket);
+  const [row] = await f.api.movements(f.route, f.receiver);
+  await f.api.claim(f.route, row, f.owner, f.receiver);
   await assert.rejects(f.api.prepare({ ...f, amount: 1n }), /mappings/);
 });
 

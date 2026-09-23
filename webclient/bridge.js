@@ -28,7 +28,7 @@
     outboxOf: "0x802c8fa0", inboxOf: "0x6d9e384b", executedLeafHashOf: "0x4035d3b1",
     CCIP_ROUTER: "0xfe5f42ca", OPMESSENGER: "0xfc8fa43d", ARBINBOX: "0xb1012368", LAYER: "0xc86719b7", GATEWAYROUTER: "0xdefbb697",
     toRemoteFee: "0x42115915", toRemote: "0xb71c1179", prepare: "0xaf629bbb", claim: "0xcbb2adce",
-    DISTRIBUTOR: "0x9c26149f", predictPocketOf: "0x7780193e", decimals: "0x313ce567",
+    DISTRIBUTOR: "0x9c26149f", predictReceiverOf: "0x0a88000f", decimals: "0x313ce567",
     symbol: "0x95d89b41", balanceOf: "0x70a08231", allowance: "0xdd62ed3e", approve: "0x095ea7b3",
   });
   function address(value) {
@@ -141,11 +141,11 @@
       const symbol = await call(runtime, token, "symbol").then(text).catch(() => token.slice(0, 8));
       return { symbol: symbol || token.slice(0, 8), decimals };
     }
-    async function pocketFor(destination, stickyToken, pockets, distributor) {
+    async function receiverFor(destination, stickyToken, rewardReceiverFactory, distributor) {
       await chain(destination);
-      await code(destination, pockets);
-      if (addr(await call(destination, pockets, "DISTRIBUTOR")) !== address(distributor)) throw new Error("The destination reward pocket does not use this project's distributor.");
-      return addr(await call(destination, pockets, "predictPocketOf", aw(stickyToken)));
+      await code(destination, rewardReceiverFactory);
+      if (addr(await call(destination, rewardReceiverFactory, "DISTRIBUTOR")) !== address(distributor)) throw new Error("The destination reward receiver factory does not use this project's distributor.");
+      return addr(await call(destination, rewardReceiverFactory, "predictReceiverOf", aw(stickyToken)));
     }
     async function validateRoute(route, { sending = false, preparing = false } = {}) {
       const { source, destination, sourceSucker, destinationSucker, sourceToken, rewardToken, sourceProjectId, destinationProjectId, backingToken, remoteBackingToken } = route;
@@ -214,13 +214,13 @@
       return routes;
     }
     const txFor = (runtime, to, data, label, args = [], value = 0n) => ({ chainId: runtime.chainId, rpcUrl: runtime.rpcUrl, to: address(to), data, value: "0x" + value.toString(16), label, args });
-    async function prepare({ route, amount, owner, pocket, metadata }) {
-      amount = BigInt(amount); owner = address(owner); pocket = address(pocket); metadata = hash(metadata);
+    async function prepare({ route, amount, owner, receiver, metadata }) {
+      amount = BigInt(amount); owner = address(owner); receiver = address(receiver); metadata = hash(metadata);
       if (amount <= 0n || metadata === ZERO) throw new Error("A positive bridge amount and unique transfer reference are required.");
       await validateRoute(route, { sending: true, preparing: true });
       // Check that this RPC can reconstruct existing transfers before burning any new
       // source tokens. A truncated log service must fail before the wallet is asked.
-      await movements(route, pocket);
+      await movements(route, receiver);
       const { source, sourceSucker, sourceToken, backingToken, terminal, sourceProjectId } = route;
       const [balance, allowance, preview, feeFree, feeless] = await Promise.all([
         call(source, sourceToken, "balanceOf", aw(owner)).then(uint), call(source, sourceToken, "allowance", aw(owner) + aw(sourceSucker)).then(uint),
@@ -235,11 +235,11 @@
         if (allowance > 0n) txs.push({ ...txFor(source, sourceToken, SEL.approve + aw(sourceSucker) + word(0), "Reset bridge allowance"), fn: "approve(address,uint256)" });
         txs.push({ ...txFor(source, sourceToken, SEL.approve + aw(sourceSucker) + word(amount), "Approve bridge transfer", [["SPENDER", sourceSucker], ["AMOUNT", amount.toString() + " smallest units"]]), fn: "approve(address,uint256)" });
       }
-      txs.push({ ...txFor(source, sourceSucker, SEL.prepare + word(amount) + aw(pocket) + word(quote.minimum) + aw(backingToken) + metadata.slice(2), "Queue cross-chain rewards", [["SOURCE TOKEN", sourceToken], ["DESTINATION TOKEN", route.rewardToken], ["DESTINATION POCKET", pocket], ["MINIMUM BACKING", quote.minimum.toString() + " smallest units"], ["SLIPPAGE", "1% below the live net backing quote"]]), fn: "prepare(uint256,bytes32,uint256,address,bytes32)" });
+      txs.push({ ...txFor(source, sourceSucker, SEL.prepare + word(amount) + aw(receiver) + word(quote.minimum) + aw(backingToken) + metadata.slice(2), "Queue cross-chain rewards", [["SOURCE TOKEN", sourceToken], ["DESTINATION TOKEN", route.rewardToken], ["DESTINATION RECEIVER", receiver], ["MINIMUM BACKING", quote.minimum.toString() + " smallest units"], ["SLIPPAGE", "1% below the live net backing quote"]]), fn: "prepare(uint256,bytes32,uint256,address,bytes32)" });
       return { txs: txs.map(tx => ({ ...tx, from: owner, sessionTag: "sticky-bridge:" + metadata })), ...quote };
     }
 
-    async function movements(route, pocket) {
+    async function movements(route, receiver) {
       await validateRoute(route);
       const source = route.source, destination = route.destination;
       const data = await call(source, route.sourceSucker, "outboxOf", aw(route.backingToken));
@@ -281,7 +281,7 @@
       const inboxRoot = "0x" + words(inbox)[1];
       const delivered = inboxRoot === ZERO ? 0 : dense.findIndex(item => item.root.toLowerCase() === inboxRoot.toLowerCase()) + 1;
       if (inboxRoot !== ZERO && !delivered) throw new Error("The destination root is absent from the verified source history.");
-      const selected = dense.filter(item => item.leaf.beneficiary === "0x" + aw(pocket));
+      const selected = dense.filter(item => item.leaf.beneficiary === "0x" + aw(receiver));
       const deliveredHashes = hashes.slice(0, delivered);
       const deliveredLevels = treeLevels(deliveredHashes);
       return Promise.all(selected.map(async item => {
@@ -294,9 +294,9 @@
         return { ...item, status, proof, remoteToken: route.remoteBackingToken };
       }));
     }
-    async function flush(route, owner, pocket) {
+    async function flush(route, owner, receiver) {
       await validateRoute(route, { sending: true });
-      if (!(await movements(route, pocket)).some(row => row.status === "queued")) throw new Error("No rewards are waiting to leave the origin chain. Refresh their status.");
+      if (!(await movements(route, receiver)).some(row => row.status === "queued")) throw new Error("No rewards are waiting to leave the origin chain. Refresh their status.");
       let transport = "unknown";
       for (const probe of ["CCIP_ROUTER", "OPMESSENGER"]) {
         try { addr(await call(route.source, route.sourceSucker, probe)); transport = probe === "CCIP_ROUTER" ? "ccip" : "native"; break; } catch { /* A failed probe is never a positive match. */ }
@@ -320,12 +320,12 @@
       }
       throw new Error("The bridge transport could not be quoted. The queued rewards remain recoverable; refresh and try again.");
     }
-    async function claim(route, row, owner, pocket) {
-      const live = (await movements(route, pocket)).find(item => item.leaf.index === row.leaf.index && item.leafHash === row.leafHash);
+    async function claim(route, row, owner, receiver) {
+      const live = (await movements(route, receiver)).find(item => item.leaf.index === row.leaf.index && item.leafHash === row.leafHash);
       if (!live || live.status !== "claimable" || live.proof?.length !== 32) throw new Error("This transfer is not ready to claim. Refresh its bridge status.");
       const leaf = live.leaf;
       const data = SEL.claim + aw(route.remoteBackingToken) + word(leaf.index) + hash(leaf.beneficiary).slice(2) + word(leaf.projectTokenCount) + word(leaf.terminalTokenAmount) + hash(leaf.metadata).slice(2) + live.proof.map(x => hash(x).slice(2)).join("");
-      const tx = { ...txFor(route.destination, route.destinationSucker, data, "Claim arriving rewards", [["REWARD TOKEN", route.rewardToken], ["POCKET", address(pocket)], ["EFFECT", "deliver project tokens into this Sticky project's reward pocket"]]), from: address(owner), fn: "claim((address,(uint256,bytes32,uint256,uint256,bytes32),bytes32[32]))" };
+      const tx = { ...txFor(route.destination, route.destinationSucker, data, "Claim arriving rewards", [["REWARD TOKEN", route.rewardToken], ["RECEIVER", address(receiver)], ["EFFECT", "deliver project tokens into this Sticky project's reward receiver"]]), from: address(owner), fn: "claim((address,(uint256,bytes32,uint256,uint256,bytes32),bytes32[32]))" };
       await request(route.destination, "eth_call", [{ from: tx.from, to: tx.to, data: tx.data }, "latest"]);
       return tx;
     }
@@ -359,7 +359,7 @@
       if (!direct && !safe) throw new Error("The source transaction does not match the exact saved bridge call.");
       return receipt;
     }
-    return { discover, validateRoute, pocketFor, prepare, movements, flush, claim, verifySource, tokenMeta, leafHash, proofFor, branchRoot };
+    return { discover, validateRoute, receiverFor, prepare, movements, flush, claim, verifySource, tokenMeta, leafHash, proofFor, branchRoot };
   }
   return { create, CONTRACTS, SEL, INSERT, NATIVE, ZERO, EMPTY_ROOT, minimumOutput, address, word, words, uint, addr, array };
 });

@@ -9,7 +9,7 @@ window.STICKY_CONFIG = {
   "relayrUrl": "https://api.relayr.ba5ed.com",
   "deployer": "",
   "distributor": "",
-  "pockets": "",
+  "rewardReceiverFactory": "",
   "autoStickAdapter": "",
   "projectId": null,
   "fromBlock": "earliest",

@@ -6,7 +6,11 @@ const { once } = require('node:events')
 const test = require('node:test')
 
 const { checkRequiredTomlOptions } = require('@sphinx-labs/plugins/dist/foundry/options')
-const { assertValidVersions, validateProposalNetworks } = require('@sphinx-labs/plugins/dist/foundry/utils')
+const { readSphinxLock } = require('@sphinx-labs/core')
+const { getGnosisSafeProxyAddress } = require('@sphinx-labs/contracts')
+const { assertValidVersions, getSphinxConfigFromScript, readInterface, validateProposalNetworks } = require('@sphinx-labs/plugins/dist/foundry/utils')
+
+const EXPECTED_SAFE = '0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18'
 
 // Exercise the installed Sphinx validator and its real JSON-RPC client without contacting public networks.
 test('Sphinx accepts both configured network groups and the required Foundry artifact output', async () => {
@@ -65,6 +69,31 @@ test('the installed Sphinx library and pinned Foundry state-diff recorder are co
   process.env.FOUNDRY_PROFILE = 'deploy'
   try {
     await assertValidVersions('script/Deploy.s.sol', 'Deploy')
+  } finally {
+    if (previous === undefined) delete process.env.FOUNDRY_PROFILE
+    else process.env.FOUNDRY_PROFILE = previous
+  }
+})
+
+// Load the committed public organization/project through Sphinx's own readers and resolve its Safe locally.
+test('Sphinx loads the reviewed V6 project and Safe without a proposal or RPC', async () => {
+  const lock = await readSphinxLock()
+  const source = readFileSync('script/Deploy.s.sol', 'utf8')
+  const projectName = source.match(/sphinxConfig\.projectName\s*=\s*"([^"]+)"/)[1]
+  assert.equal(projectName, 'v6-deployment')
+  const project = lock.projects[projectName]
+  assert.equal(project.projectName, projectName)
+  const previous = process.env.FOUNDRY_PROFILE
+  process.env.FOUNDRY_PROFILE = 'deploy'
+  try {
+    const config = await getSphinxConfigFromScript(
+      'script/Deploy.s.sol', readInterface('out', 'SphinxPluginTypes'), 'Deploy',
+    )
+    assert.equal(config.projectName, projectName)
+    assert.equal(config.safeAddress.toLowerCase(), EXPECTED_SAFE.toLowerCase())
+    assert.equal(config.safeAddress.toLowerCase(), getGnosisSafeProxyAddress(
+      project.defaultSafe.owners, project.defaultSafe.threshold, project.defaultSafe.saltNonce,
+    ).toLowerCase())
   } finally {
     if (previous === undefined) delete process.env.FOUNDRY_PROFILE
     else process.env.FOUNDRY_PROFILE = previous

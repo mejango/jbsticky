@@ -143,6 +143,7 @@ contract StubTerminal {
     {
         beneficiaryTokenCount = _quote(amount);
         hookSpecifications = new JBPayHookSpecification[](0);
+        return (ruleset, beneficiaryTokenCount, reservedTokenCount, hookSpecifications);
     }
 
     function _quote(uint256 amount) internal view returns (uint256 count) {

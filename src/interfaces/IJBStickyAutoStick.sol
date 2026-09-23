@@ -6,6 +6,7 @@ import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 
 import {JBAutoStickStatus} from "../enums/JBAutoStickStatus.sol";
+
 import {IJBStickyDeployer} from "./IJBStickyDeployer.sol";
 import {IJBStickyHook} from "./IJBStickyHook.sol";
 
@@ -88,7 +89,8 @@ interface IJBStickyAutoStick {
         view
         returns (uint128 minimumAmount, uint48 cooldown, uint48 lastCompoundedAt, bool enabled);
 
-    /// @notice Why a holder's next compound can or cannot happen right now, plus the reads the UI needs.
+    /// @notice The first condition preventing a holder's next automated compound, with reward and approval amounts.
+    /// @dev A ready status is a preview; balances, approvals, backing and configuration can change before execution.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder to check.
     /// @return status The current auto-stick status.
@@ -121,6 +123,7 @@ interface IJBStickyAutoStick {
         returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 
     /// @notice Sets the caller's auto-stick configuration for a sticky project.
+    /// @dev The minimum and cooldown must be valid even when disabling. Disabling preserves the last compound time.
     /// @param projectId The ID of the sticky project.
     /// @param enabled Whether auto-stick should be on.
     /// @param minimumAmount The smallest reward worth compounding, in the underlying token's decimals. Non-zero.

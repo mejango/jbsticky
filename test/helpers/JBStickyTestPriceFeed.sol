@@ -14,10 +14,9 @@ contract JBStickyTestPriceFeed is IJBPriceFeed {
         PRICE = price;
     }
 
-    /// @notice Return the configured denominator.
-    /// @param decimals The requested precision, deliberately ignored by this test feed.
-    /// @return price The fixed test denominator.
-    function currentUnitPrice(uint256 decimals) external view override returns (uint256 price) {
+    /// @inheritdoc IJBPriceFeed
+    /// @dev Returns the fixed denominator regardless of requested precision.
+    function currentUnitPrice(uint256) external view override returns (uint256 price) {
         return PRICE;
     }
 }

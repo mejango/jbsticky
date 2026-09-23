@@ -13,7 +13,7 @@ import {console2} from "forge-std/console2.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
-import {JBStickyRewardPockets} from "../src/JBStickyRewardPockets.sol";
+import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
 import {JBStickyDeployment} from "./helpers/JBStickyDeployment.sol";
 import {MockArt} from "./mocks/MockArt.sol";
 import {MockBan} from "./mocks/MockBan.sol";
@@ -66,7 +66,8 @@ contract DeployLocal is JBStickyDeployment {
 
         JBStickyAutoStick autoStick =
             new JBStickyAutoStick({deployer: deployer, distributor: IJBDistributor(address(distributor))});
-        JBStickyRewardPockets pockets = new JBStickyRewardPockets(IJBDistributor(address(distributor)));
+        JBStickyRewardReceiverFactory rewardReceiverFactory =
+            new JBStickyRewardReceiverFactory(IJBDistributor(address(distributor)));
 
         // The immutable adapter is available to every holder from launch. This does not enable auto-stick or grant a
         // token allowance for anyone; each holder still opts in and approves their own underlying token.
@@ -108,6 +109,6 @@ contract DeployLocal is JBStickyDeployment {
         console2.log({p0: "banProjectId", p1: banProjectId});
         console2.log({p0: "JBTokenDistributor", p1: address(distributor)});
         console2.log({p0: "JBStickyAutoStick", p1: address(autoStick)});
-        console2.log({p0: "JBStickyRewardPockets", p1: address(pockets)});
+        console2.log({p0: "JBStickyRewardReceiverFactory", p1: address(rewardReceiverFactory)});
     }
 }

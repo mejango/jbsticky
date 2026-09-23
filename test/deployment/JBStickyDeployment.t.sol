@@ -187,6 +187,22 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         _deployment.deployFor(_core);
     }
 
+    function test_rejectsControllerWithoutProjectLaunchAuthorization() public {
+        vm.mockCall(
+            address(_core.directory),
+            abi.encodeWithSignature("isAllowedToSetFirstController(address)", address(_core.controller)),
+            abi.encode(false)
+        );
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor(_core);
+    }
+
+    function test_rejectsDifferentCoreRulesetRegistries() public {
+        vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("RULESETS()"), abi.encode(address(0xdead)));
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor(_core);
+    }
+
     function test_allNetworkFoldersMatchCurrentCoreLayout() public view {
         assertEq(_deployment.network(1), "ethereum");
         assertEq(_deployment.network(10), "optimism");
@@ -211,6 +227,18 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         assertEq(address(loaded.terminal), address(_core.terminal));
     }
 
+    function test_rejectsWrongRpcChainBeforeReadingArtifacts() public {
+        vm.chainId(10);
+        vm.setEnv("STICKY_EXPECTED_CHAIN_ID", "1");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyDeployment.JBStickyDeployment_ChainMismatch.selector, "RPC", uint256(1), uint256(10)
+            )
+        );
+        _deployment.loadCore("deployments/_missing");
+        vm.setEnv("STICKY_EXPECTED_CHAIN_ID", "0");
+    }
+
     function test_rejectsWrongCoreArtifactChain() public {
         vm.chainId(11_155_111);
         string memory root = _writeCoreArtifacts(1);
@@ -228,6 +256,22 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         assertEq(vm.parseJsonBytes32(json, ".autoStickCodehash"), deployed.autoStick.codehash);
         assertEq(vm.parseJsonUint(json, ".chainId"), 11_155_111);
         assertEq(vm.parseJsonString(json, ".kind"), "test");
+    }
+
+    function test_manifestDistinguishesRpcBlockFromEvmHeight() public {
+        vm.chainId(42_161);
+        vm.roll(42);
+        vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "100");
+        bytes32 rpcBlockHash = keccak256("canonical RPC block");
+        vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(rpcBlockHash));
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        _deployment.writeManifest(_core, deployed);
+        string memory json = vm.readFile("deployments/arbitrum/test.json");
+        assertEq(vm.parseJsonUint(json, ".evmBlockNumber"), 42);
+        assertEq(vm.parseJsonUint(json, ".rpcBlockNumber"), 100);
+        assertEq(vm.parseJsonBytes32(json, ".rpcBlockHash"), rpcBlockHash);
+        vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "0");
+        vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(bytes32(0)));
     }
 
     function _writeCoreArtifacts(uint256 chainId) internal returns (string memory root) {

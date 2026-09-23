@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Bananapus/nana-core-v6
-          ref: 898f08b96194391d545df31a62f9d89ef6759f9a
+          ref: feff600654aee6fb1747dded692f18068b2230a6
           path: nana-core-v6
       - uses: actions/checkout@v4
         with:

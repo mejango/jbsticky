@@ -12,13 +12,12 @@ import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
 
 /// @notice An ERC-20 representing a staked position in a sticky project, minted by staking and burned by cashing out
-/// or voluntarily through the controller.
-/// Deployed soulbound (transfers revert — locked means locked) or transferable (transfers restart the streak clock on
-/// the moved tokens: the sender's newest tranches are consumed and the receiver gets a fresh tranche, so durations
-/// can't be laundered between wallets either way).
+/// or voluntarily through the controller. Its transfer policy is permanent: soulbound tokens reject transfers;
+/// transferable tokens consume the sender's newest tranches and create a fresh tranche for the recipient.
 /// @dev Checkpointed votes make the token a valid stake source for `JBTokenDistributor` rewards: every holder is
 /// self-delegated automatically on first mint and delegation can never be changed, so each holder's voting power
 /// always equals their staked balance and the active-vote total always equals the total supply.
+/// A recipient's existing streak continues when tokens arrive; the incoming tranche carries its own timestamp.
 contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
@@ -33,7 +32,7 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     /// @notice Thrown when calling `setMetadata`. This token's name and symbol are immutable.
     error JBStickyToken_MetadataIsImmutable();
 
-    /// @notice Thrown when attempting to transfer the token between accounts.
+    /// @notice Thrown when attempting a transfer while the token is soulbound, preserving its transfer policy.
     error JBStickyToken_Soulbound();
 
     /// @notice Thrown when the caller is not the `JBTokens` contract that manages this token.
@@ -80,9 +79,16 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
         ERC20(name, symbol)
         EIP712(name, "1")
     {
+        // Restrict supply changes to the token manager used by the project's controller.
         TOKENS = tokens;
+
+        // Bind this token permanently to one project so balances cannot be shared across staking ledgers.
         PROJECT_ID = projectId;
+
+        // Keep transfers and burns connected to the same authority that records payment tranches and streaks.
         HOOK = hook;
+
+        // Fix whether holder-to-holder transfers are allowed so the policy cannot change after staking.
         SOULBOUND = soulbound;
     }
 
@@ -91,11 +97,15 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     //*********************************************************************//
 
     /// @notice Only the `JBTokens` contract can call this function.
-    // forge-lint: disable-next-line(unwrapped-modifier-logic)
+    // Keep the single access check beside its modifier; a forwarding helper would add no shared behavior.
+    // forge-lint: disable-next-item(unwrapped-modifier-logic)
     modifier onlyTokens() {
+        // Reject direct supply changes that would bypass the controller's authorization and accounting.
         if (msg.sender != address(TOKENS)) {
             revert JBStickyToken_Unauthorized({caller: msg.sender, tokens: address(TOKENS)});
         }
+
+        // Run the mint or burn only after authenticating the project's token manager.
         _;
     }
 
@@ -108,14 +118,15 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     /// @param account The address to burn tokens from.
     /// @param amount The amount of tokens to burn, as a fixed point number with 18 decimals.
     function burn(address account, uint256 amount) external override onlyTokens {
+        // Use the ERC-20 burn path so `_update` consumes stake accounting and checkpoints the reduced balance.
         _burn({account: account, value: amount});
     }
 
     /// @notice This token is initialized by its constructor and can't be initialized again.
-    /// @param name The unused proposed token name.
-    /// @param symbol The unused proposed token symbol.
-    /// @param tokensAddress The unused proposed token manager.
-    function initialize(string memory name, string memory symbol, address tokensAddress) external pure override {
+    /// @dev The proposed name, symbol and token manager are unused; every call reverts.
+    /// @inheritdoc IJBToken
+    function initialize(string memory, string memory, address) external pure override {
+        // Preserve the constructor's immutable bindings instead of allowing an initializer to replace them.
         revert JBStickyToken_AlreadyInitialized();
     }
 
@@ -124,13 +135,15 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     /// @param account The address to mint the new tokens to.
     /// @param amount The amount of tokens to mint, as a fixed point number with 18 decimals.
     function mint(address account, uint256 amount) external override onlyTokens {
+        // Use the ERC-20 mint path so `_update` establishes self-delegation and checkpoints the issued shares.
         _mint({account: account, value: amount});
     }
 
     /// @notice This token's name and symbol are immutable.
-    /// @param name The unused proposed token name.
-    /// @param symbol The unused proposed token symbol.
-    function setMetadata(string memory name, string memory symbol) external pure override {
+    /// @dev The proposed name and symbol are unused; every call reverts.
+    /// @inheritdoc IJBToken
+    function setMetadata(string memory, string memory) external pure override {
+        // Keep the token's public identity fixed for every holder throughout the project's lifetime.
         revert JBStickyToken_MetadataIsImmutable();
     }
 
@@ -140,8 +153,9 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
 
     /// @notice This token can only be attached to the sticky project it was deployed for.
     /// @param projectId The ID of the project to check.
-    /// @return A flag indicating whether the token can be added to the project.
+    /// @return canBeAdded Whether the token can be added to the project.
     function canBeAddedTo(uint256 projectId) external view override returns (bool) {
+        // Permit attachment only to the project whose tranches and streaks this token reports to the hook.
         return projectId == PROJECT_ID;
     }
 
@@ -151,12 +165,14 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     /// @param blockNumber The past block number to look up.
     /// @return activeVotes The total voting units delegated at `blockNumber`.
     function getPastTotalActiveVotes(uint256 blockNumber) external view override returns (uint256 activeVotes) {
+        // Every share is self-delegated, so the supply checkpoint is also the historical reward-weight total.
         return getPastTotalSupply(blockNumber);
     }
 
     /// @notice The current total delegated voting units.
     /// @return activeVotes The current total voting units delegated.
     function getTotalActiveVotes() external view override returns (uint256 activeVotes) {
+        // Locked self-delegation leaves no undelegated supply to subtract from the current reward-weight total.
         return totalSupply();
     }
 
@@ -166,20 +182,23 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
 
     /// @notice The balance of the given address.
     /// @param account The account to get the balance of.
-    /// @return The number of tokens owned by the `account`, as a fixed point number with 18 decimals.
+    /// @return balance The number of tokens owned by the account, as a fixed point number with 18 decimals.
     function balanceOf(address account) public view override(ERC20, IJBToken) returns (uint256) {
+        // Expose the ERC-20 ledger through IJBToken so core accounting reads the same balance that transfers update.
         return super.balanceOf(account);
     }
 
     /// @notice The number of decimals used for this token's fixed point accounting.
-    /// @return The number of decimals.
+    /// @return tokenDecimals The number of decimals.
     function decimals() public view override(ERC20, IJBToken) returns (uint8) {
+        // Retain the ERC-20 default of 18 decimals used by Juicebox's project-token accounting.
         return super.decimals();
     }
 
     /// @notice The total supply of this token.
-    /// @return The total supply of this token, as a fixed point number with 18 decimals.
+    /// @return supply The total supply of this token, as a fixed point number with 18 decimals.
     function totalSupply() public view override(ERC20, IJBToken) returns (uint256) {
+        // Expose the ERC-20 supply through IJBToken so issuance and redemption use the outstanding share count.
         return super.totalSupply();
     }
 
@@ -188,30 +207,17 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     //*********************************************************************//
 
     /// @notice Delegation is locked — reward weight always stays with the holder.
-    /// @param delegatee The unused proposed delegate.
-    function delegate(address delegatee) public pure override {
+    /// @dev The proposed delegate is unused; every call reverts.
+    function delegate(address) public pure override {
+        // Keep reward weight with the account holding the shares so balance snapshots determine entitlement.
         revert JBStickyToken_DelegationLocked();
     }
 
     /// @notice Delegation is locked — reward weight always stays with the holder.
-    /// @param delegatee The unused proposed delegate.
-    /// @param nonce The unused signature nonce.
-    /// @param expiry The unused signature expiry.
-    /// @param v The unused recovery identifier.
-    /// @param r The unused first signature word.
-    /// @param s The unused second signature word.
-    function delegateBySig(
-        address delegatee,
-        uint256 nonce,
-        uint256 expiry,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    )
-        public
-        pure
-        override
-    {
+    /// @dev The proposed delegate, nonce, expiry and signature components (`v`, `r`, `s`) are unused; every call
+    /// reverts.
+    function delegateBySig(address, uint256, uint256, uint8, bytes32, bytes32) public pure override {
+        // Close the signature-based delegation path so it cannot bypass the same fixed reward-weight policy.
         revert JBStickyToken_DelegationLocked();
     }
 
@@ -219,8 +225,8 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Allow minting and burning. Transfers between accounts revert when soulbound; otherwise the hook is
-    /// notified so the moved tokens restart their streak clock with the receiver. Every positive burn consumes
+    /// @notice Allow minting and burning. Transfers between accounts revert when soulbound; otherwise the hook
+    /// records a fresh tranche for the recipient. Every positive burn consumes
     /// accounting here, including voluntary controller burns that do not trigger a terminal cash out callback.
     /// @dev Every receiver is self-delegated on first receipt so reward weight always tracks balance.
     /// The terminal can call the staked token between minting and its pay hook. Outgoing movements during that gap
@@ -229,9 +235,15 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     /// @param to The address tokens are moving to. `address(0)` means the tokens are being burned.
     /// @param value The amount of tokens moving.
     function _update(address from, address to, uint256 value) internal override {
+        // Minted shares cannot consume earlier tranches before the terminal records their own payment tranche.
         if (value != 0 && from != address(0) && from != to) {
+            // Read the share balance, which already includes shares minted before the pay callback completes.
             uint256 tokenBalance = balanceOf(from);
+
+            // Compare it with recorded tranches to detect a payment whose accounting callback is still pending.
             uint256 stakedBalance = HOOK.stakedBalanceOf({projectId: PROJECT_ID, holder: from});
+
+            // Block outgoing shares until every minted share has a tranche available for correct age consumption.
             if (tokenBalance != stakedBalance) {
                 revert JBStickyToken_UnrecordedMint({
                     holder: from, tokenBalance: tokenBalance, stakedBalance: stakedBalance
@@ -239,20 +251,26 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
             }
         }
 
+        // Apply the transfer policy only to movements between holders; minting and burning remain available.
         if (from != address(0) && to != address(0)) {
+            // Reject every holder-to-holder transfer when the project's permanent policy is soulbound.
             if (SOULBOUND) revert JBStickyToken_Soulbound();
 
-            // Move the staked accounting: consume the sender's newest tranches, restart the clock for the receiver.
+            // Zero-value and self-transfers leave ownership unchanged, so they must not reset tranche ages.
             if (value != 0 && from != to) {
+                // Consume the sender's newest tranches and record fresh recipient age before balances move.
                 HOOK.recordTransfer({projectId: PROJECT_ID, from: from, to: to, amount: value});
             }
         } else if (from != address(0) && value != 0) {
+            // Every positive burn consumes stake accounting, including voluntary burns without a cash out callback.
+            // Mints and zero-value burns skip this path; the pay callback records minted tranches.
             HOOK.recordBurn({projectId: PROJECT_ID, holder: from, amount: value});
         }
 
         // Self-delegate first-time receivers so voting power always tracks staked balance.
         if (value != 0 && to != address(0) && delegates(to) == address(0)) _delegate({account: to, delegatee: to});
 
+        // Update balances, supply and vote checkpoints after stake bookkeeping and recipient delegation are ready.
         super._update({from: from, to: to, value: value});
     }
 }
