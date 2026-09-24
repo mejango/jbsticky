@@ -41,9 +41,9 @@ Copy `.env.example` to `.env`, provide RPC endpoints for the intended network gr
 | base_sepolia | RPC_BASE_SEPOLIA | base_sepolia |
 | arbitrum_sepolia | RPC_ARBITRUM_SEPOLIA | arbitrum_sepolia |
 
-Sticky uses the registered `v6-deployment` Sphinx project and the public `sphinx.lock`
-from `deploy-all-v6`, so proposal review uses the same 4-of-8 `V6 Deployment` Safe
-(`0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18`, the same address on every chain).
+Sticky uses the registered `sticky` Sphinx project and the public `sphinx.lock`, so
+proposal review uses its 1-of-3 `V6 Jango` Safe
+(`0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437`, the same address on every chain).
 The lock contains public organization/project/Safe configuration, not credentials.
 The proposal runner checks that its organization matches `SPHINX_ORG_ID` and that
 the configured project exists; `Deploy.run()` refuses any other Safe. The installed

@@ -10,7 +10,7 @@ const { readSphinxLock } = require('@sphinx-labs/core')
 const { getGnosisSafeProxyAddress } = require('@sphinx-labs/contracts')
 const { assertValidVersions, getSphinxConfigFromScript, readInterface, validateProposalNetworks } = require('@sphinx-labs/plugins/dist/foundry/utils')
 
-const EXPECTED_SAFE = '0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18'
+const EXPECTED_SAFE = '0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437'
 
 // Exercise the installed Sphinx validator and its real JSON-RPC client without contacting public networks.
 test('Sphinx accepts both configured network groups and the required Foundry artifact output', async () => {
@@ -80,7 +80,7 @@ test('Sphinx loads the reviewed V6 project and Safe without a proposal or RPC', 
   const lock = await readSphinxLock()
   const source = readFileSync('script/Deploy.s.sol', 'utf8')
   const projectName = source.match(/sphinxConfig\.projectName\s*=\s*"([^"]+)"/)[1]
-  assert.equal(projectName, 'v6-deployment')
+  assert.equal(projectName, 'sticky')
   const project = lock.projects[projectName]
   assert.equal(project.projectName, projectName)
   const previous = process.env.FOUNDRY_PROFILE
