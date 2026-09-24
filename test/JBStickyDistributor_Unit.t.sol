@@ -972,6 +972,19 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         });
     }
 
+    /// @notice A zero claim duration never expires, so a tenure pot forfeited by exits could never recycle.
+    function test_constructorRejectsZeroClaimDuration() public {
+        vm.expectRevert(JBStickyDistributor.JBStickyDistributor_ZeroClaimDuration.selector);
+        new JBStickyDistributor({
+            controller: jbController(),
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: ROUND_DURATION,
+            initialVestingRounds: VESTING_ROUNDS,
+            initialClaimDuration: 0
+        });
+    }
+
     function test_bindingsAndInterfaces() public view {
         assertEq(address(distributor.STICKY_HOOK()), address(hook));
         assertEq(address(distributor.DIRECTORY()), address(jbDirectory()));

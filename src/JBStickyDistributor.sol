@@ -69,6 +69,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @notice Thrown when a tenure group is funded for a token the Sticky hook does not track tranches for.
     error JBStickyDistributor_UnregisteredStickyToken(address hook);
 
+    /// @notice Thrown when the claim duration is zero, which would let a tenure pot whose eligible holders all exited
+    /// sit unclaimable forever instead of recycling.
+    error JBStickyDistributor_ZeroClaimDuration();
+
     //*********************************************************************//
     // ------------------------- public constants ------------------------ //
     //*********************************************************************//
@@ -117,7 +121,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param stickyHook The hook that records the tranches and epoch buckets tenure rewards are weighed by.
     /// @param initialRoundDuration The duration of each round, in seconds.
     /// @param initialVestingRounds The number of rounds until claimed rewards are fully vested.
-    /// @param initialClaimDuration The number of seconds a completed round stays claimable. Zero means forever.
+    /// @param initialClaimDuration The number of seconds a completed round stays claimable. Must be non-zero so a
+    /// forfeited tenure pot can recycle.
     constructor(
         IJBController controller,
         IJBDirectory directory,
@@ -135,6 +140,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
             initialClaimDuration
         )
     {
+        // Tenure claims read live tranches, so a pot whose eligible holders all exited can only ever recycle by
+        // expiring; a zero duration never expires and would strand it.
+        if (initialClaimDuration == 0) revert JBStickyDistributor_ZeroClaimDuration();
+
         // Window bounds are converted to epochs with this contract's constant, so the hook's buckets must agree.
         uint256 hookEpochDuration = stickyHook.EPOCH_DURATION();
         if (hookEpochDuration != EPOCH_DURATION) {
