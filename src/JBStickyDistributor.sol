@@ -35,6 +35,8 @@ import {IJBStickyToken} from "./interfaces/IJBStickyToken.sol";
 /// append-only with current timestamps and `minWeeks >= 1` keeps the round's own epoch out of every window, so
 /// nothing staked after a round's denominator is read can enter that round's window: claims only ever shrink as
 /// holders exit. Holders claim completed rounds lazily; unclaimed rewards vest from the claim, not the funding.
+/// A Sticky token funded as a reward gives this distributor reward weight in that token's rounds; that allocation
+/// recycles into the current round when collected, since the distributor cannot pay itself.
 /// @dev Implements `IJBSplitHook` so it can receive rewards directly from Juicebox payout and reserved-token splits.
 /// Revnet loan-backed collection is disabled: no loans contract or REVOwner is configured.
 contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
@@ -175,7 +177,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     }
 
     /// @notice Claims a group's completed reward rounds, then collects everything that has unlocked.
-    /// @dev Holders can collect to any beneficiary. Helpers can collect only to the encoded holder.
+    /// @dev Holders can collect to any beneficiary. Helpers can collect only to the encoded holder. Collecting this
+    /// distributor's own allocation to itself recycles it into the current round instead of transferring.
     /// @param hook The sticky token whose holders are collecting.
     /// @param groupId The reward group to collect from (0 = the default group).
     /// @param tokenIds The encoded holder addresses to collect for.
@@ -192,9 +195,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         override
     {
         _requireValidGroupId(groupId);
-        _collectVestedRewards({
-            hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary
-        });
+        _collectOrRecycle({hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary});
     }
 
     /// @notice Funds the default group of a sticky token's holders for the current round.
@@ -373,6 +374,29 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         return interfaceId == type(IJBStickyDistributor).interfaceId
             || interfaceId == type(IJBTokenDistributor).interfaceId || interfaceId == type(IJBSplitHook).interfaceId
             || interfaceId == type(IERC165).interfaceId;
+    }
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
+
+    /// @notice Claims the default group's completed reward rounds, then collects everything that has unlocked.
+    /// @dev Holders can collect to any beneficiary. Helpers can collect only to the encoded holder. Collecting this
+    /// distributor's own allocation to itself recycles it into the current round instead of transferring.
+    /// @param hook The sticky token whose holders are collecting.
+    /// @param tokenIds The encoded holder addresses to collect for.
+    /// @param tokens The reward tokens to collect.
+    /// @param beneficiary The recipient of the collected tokens.
+    function collectVestedRewards(
+        address hook,
+        uint256[] calldata tokenIds,
+        IERC20[] calldata tokens,
+        address beneficiary
+    )
+        public
+        override(IJBDistributor, JBDistributor)
+    {
+        _collectOrRecycle({hook: hook, groupId: 0, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary});
     }
 
     //*********************************************************************//
@@ -599,6 +623,39 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         }
     }
 
+    /// @notice Collects unlocked rewards to a beneficiary, or recycles them into the current round when the
+    /// beneficiary is this distributor.
+    /// @dev A Sticky token funded as a reward leaves this distributor holding shares that earn reward weight in that
+    /// token's rounds. Helpers can only collect that allocation to the distributor itself, which would move nothing
+    /// while the ledger forgot the amount. It is treated as forfeited instead: only this distributor's own token ID
+    /// passes the forfeiture check, and its unlocked rewards recycle into the current round of the same hook, group
+    /// and token. Every other token ID collected to this distributor is rejected.
+    /// @param hook The sticky token whose holders are collecting.
+    /// @param groupId The reward group to collect from (0 = the default group).
+    /// @param tokenIds The encoded holder addresses to collect for.
+    /// @param tokens The reward tokens to collect.
+    /// @param beneficiary The recipient of the collected tokens.
+    function _collectOrRecycle(
+        address hook,
+        uint256 groupId,
+        uint256[] calldata tokenIds,
+        IERC20[] calldata tokens,
+        address beneficiary
+    )
+        internal
+    {
+        if (beneficiary == address(this)) {
+            // Inventory stays in custody and the current holders get a fresh claimable round.
+            _releaseForfeitedRewards({
+                hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary
+            });
+        } else {
+            _collectVestedRewards({
+                hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary
+            });
+        }
+    }
+
     /// @notice Accepts funds from the caller and records them as the current round's pot for a group.
     /// @param hook The sticky token whose holders receive the rewards.
     /// @param groupId The reward group being funded (0 = the default group).
@@ -708,14 +765,15 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         if (!isValidGroupId(groupId)) revert JBStickyDistributor_InvalidGroupId(groupId);
     }
 
-    /// @notice Sticky holders are addresses, which cannot be burned, so forfeiture never applies.
-    /// @param hook Unused.
-    /// @param tokenId Unused.
-    /// @return tokenWasBurned Always false.
-    function _tokenBurned(address hook, uint256 tokenId) internal pure override returns (bool tokenWasBurned) {
+    /// @notice Whether a token ID's rewards are forfeited to the pot. Sticky holders are addresses, which cannot be
+    /// burned, so only this distributor's own encoded address is: the shares it holds as reward inventory earn weight
+    /// it can never collect.
+    /// @param hook Unused; forfeiture is determined by the token ID encoding.
+    /// @param tokenId The encoded holder address.
+    /// @return tokenWasBurned Whether the token ID encodes this distributor.
+    function _tokenBurned(address hook, uint256 tokenId) internal view override returns (bool tokenWasBurned) {
         hook;
-        tokenId;
-        tokenWasBurned = false;
+        tokenWasBurned = tokenId == uint256(uint160(address(this)));
     }
 
     /// @notice A holder's delegated voting power at the current round's snapshot block.

@@ -42,6 +42,7 @@ These guarantees apply to projects launched by `JBStickyDeployer`, using the con
 6. Both compounding entrypoints collect every requested group to the holder, pull only the total balance increase delivered by those collections, and stake into the same holder's project. Existing unrelated wallet funds cannot substitute for rewards collected before the call.
 7. A holder-to-adapter transfer delta mismatch or a payment below the adapter's execution-time share quote reverts the complete collection and stake. The adapter clears its terminal allowance after success.
 8. Failure cannot leave a partially completed auto-stick transaction. Permissionless prior collection can leave rewards safely in the holder's wallet and make a later compound ineligible.
+9. Rewards allocated to the distributor's own address are never transferred out or erased. Collecting them to the distributor recycles the unlocked amount into the current round of the same hook, group and token; any other token ID collected to the distributor reverts. Custody and the accounted balance are unchanged by a recycle.
 
 ## Verification map
 

@@ -8,6 +8,7 @@ import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBSplit} from "@bananapus/core-v6/src/structs/JBSplit.sol";
 import {JBSplitHookContext} from "@bananapus/core-v6/src/structs/JBSplitHookContext.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
+import {JBDistributor} from "@bananapus/distributor-v6/src/JBDistributor.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IJBTokenDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBTokenDistributor.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -281,6 +282,53 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         return distributor.collectableFor(address(stickyToken), groupId, uint256(uint160(holder)), reward);
     }
 
+    /// @notice Launch a transferable Sticky project for the staked token, so its shares can be handed out as rewards.
+    function _launchOpenProject() internal returns (uint256 openProjectId, IJBToken openToken) {
+        uint256 fee = jbProjects().creationFee();
+        vm.deal(address(this), fee);
+        openProjectId = deployer.deployStickyFor{value: fee}({
+            stakedToken: IERC20Metadata(address(staked)),
+            name: "Open Sticky",
+            symbol: "OSTICKY",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: false
+        });
+        openToken = jbTokens().tokenOf(openProjectId);
+    }
+
+    /// @notice Alice funds `amount` of the open project's shares as a default-group reward for the first project.
+    function _fundShares(IJBToken openToken, uint256 amount) internal {
+        vm.startPrank(alice);
+        IERC20(address(openToken)).approve({spender: address(distributor), value: amount});
+        distributor.fund({hook: address(stickyToken), token: IERC20(address(openToken)), amount: amount});
+        vm.stopPrank();
+        assertEq(openToken.balanceOf(address(distributor)), amount);
+    }
+
+    /// @notice Fund `amount` of the reward token into a group's pot for another sticky token's holders.
+    function _fundHook(address rewardedHook, uint256 amount, uint256 groupId) internal {
+        reward.mint({to: funder, amount: amount});
+        vm.startPrank(funder);
+        reward.approve({spender: address(distributor), value: amount});
+        distributor.fund({hook: rewardedHook, token: IERC20(address(reward)), amount: amount, groupId: groupId});
+        vm.stopPrank();
+    }
+
+    /// @notice The current round's pot and denominator for another sticky token's group.
+    function _currentRewardRoundOfHook(
+        address rewardedHook,
+        uint256 groupId
+    )
+        internal
+        view
+        returns (uint208 amount, uint208 totalStake)
+    {
+        (amount,,,, totalStake) =
+            distributor.rewardRoundOf(rewardedHook, groupId, IERC20(address(reward)), distributor.currentRound());
+    }
+
     /// @notice Brute-force sum of every holder's live tranches created in `[lo, hi]`.
     function _bruteForceWindow(address[] memory holders, uint256 lo, uint256 hi) internal view returns (uint256 sum) {
         for (uint256 h; h < holders.length; h++) {
@@ -470,6 +518,116 @@ contract JBStickyDistributorUnitTest is TestBaseWorkflow {
         _unstake(alice, 100e18);
         vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
         assertEq(_collectFor(alice), 100e18);
+    }
+
+    /// @notice A Sticky token funded as a reward leaves the distributor holding aged shares. Collecting its own
+    /// allocation, which a helper can only send to the distributor, recycles it into the current round instead of
+    /// erasing it from the ledger, and other holders' claims are untouched.
+    function test_distributorHeldSharesRecycleInsteadOfSelfCollecting() public {
+        (uint256 openProjectId, IJBToken openToken) = _launchOpenProject();
+        _stakeIn({holder: alice, amount: 100e18, targetProjectId: openProjectId});
+
+        // Alice hands 40% of the open project's shares to the first project's holders as a reward. That funding
+        // pins this round's shared snapshot, so the open project's own round is funded in the next one.
+        _fundShares({openToken: openToken, amount: 40e18});
+        assertEq(hook.stakedBalanceOf(openProjectId, address(distributor)), 40e18);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // The open project's holders are rewarded: alice weighs 60% and the distributor 40%.
+        _fundHook({rewardedHook: address(openToken), amount: 100e18, groupId: 0});
+        uint256 distributorId = uint256(uint160(address(distributor)));
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        distributor.beginVesting({
+            hook: address(openToken), tokenIds: _tokenIds(address(distributor)), tokens: _rewardTokens()
+        });
+        assertEq(distributor.claimedFor(address(openToken), 0, distributorId, reward), 40e18);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+
+        distributor.collectVestedRewards({
+            hook: address(openToken),
+            tokenIds: _tokenIds(address(distributor)),
+            tokens: _rewardTokens(),
+            beneficiary: address(distributor)
+        });
+
+        // The allocation is now the current round's pot; custody and the accounted balance are unchanged.
+        (uint208 recycledPot,,,,) =
+            distributor.rewardRoundOf(address(openToken), 0, IERC20(address(reward)), distributor.currentRound());
+        assertEq(recycledPot, 40e18);
+        assertEq(distributor.balanceOf(address(openToken), IERC20(address(reward))), 100e18);
+        assertEq(reward.balanceOf(address(distributor)), 100e18);
+        assertEq(distributor.claimedFor(address(openToken), 0, distributorId, reward), 0);
+        assertEq(distributor.totalVestingAmountOf(address(openToken), IERC20(address(reward))), 0);
+
+        // Alice's share of the funded round is intact, and she shares the recycled round once it completes.
+        distributor.beginVesting({hook: address(openToken), tokenIds: _tokenIds(alice), tokens: _rewardTokens()});
+        assertEq(distributor.claimedFor(address(openToken), 0, uint256(uint160(alice)), reward), 60e18);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        distributor.collectVestedRewards({
+            hook: address(openToken), tokenIds: _tokenIds(alice), tokens: _rewardTokens(), beneficiary: alice
+        });
+        assertEq(reward.balanceOf(alice), 60e18);
+        distributor.beginVesting({hook: address(openToken), tokenIds: _tokenIds(alice), tokens: _rewardTokens()});
+        assertEq(distributor.claimedFor(address(openToken), 0, uint256(uint160(alice)), reward), 24e18);
+    }
+
+    /// @notice The same recycling applies to a tenure group's pot, through the group-carrying collection.
+    function test_distributorHeldSharesRecycleInTenureGroups() public {
+        (uint256 openProjectId, IJBToken openToken) = _launchOpenProject();
+        _warpWeeks(10);
+        _stakeIn({holder: alice, amount: 100e18, targetProjectId: openProjectId});
+        _fundShares({openToken: openToken, amount: 40e18});
+
+        // Both tranches are two weeks old when the round is funded, so the denominator counts them both.
+        _warpWeeks(12);
+        _fundHook({rewardedHook: address(openToken), amount: 100e18, groupId: 1000});
+        (uint208 pot, uint208 totalStake) = _currentRewardRoundOfHook({rewardedHook: address(openToken), groupId: 1000});
+        assertEq(pot, 100e18);
+        assertEq(totalStake, 100e18);
+
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        distributor.beginVesting({
+            hook: address(openToken), groupId: 1000, tokenIds: _tokenIds(address(distributor)), tokens: _rewardTokens()
+        });
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+        distributor.collectVestedRewards({
+            hook: address(openToken),
+            groupId: 1000,
+            tokenIds: _tokenIds(address(distributor)),
+            tokens: _rewardTokens(),
+            beneficiary: address(distributor)
+        });
+
+        (pot,) = _currentRewardRoundOfHook({rewardedHook: address(openToken), groupId: 1000});
+        assertEq(pot, 40e18);
+        assertEq(distributor.balanceOf(address(openToken), IERC20(address(reward))), 100e18);
+        assertEq(reward.balanceOf(address(distributor)), 100e18);
+    }
+
+    /// @notice Holders cannot route their own rewards to the distributor, which would leave them in custody with no
+    /// ledger entry.
+    function test_holderCannotCollectToTheDistributor() public {
+        _stake(alice, 100e18);
+        vm.roll(vm.getBlockNumber() + 1);
+        _fund(100e18);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION);
+        _beginVestingFor(alice);
+        vm.warp(vm.getBlockTimestamp() + ROUND_DURATION * VESTING_ROUNDS);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBDistributor.JBDistributor_NoAccess.selector, address(stickyToken), uint256(uint160(alice)), alice
+            )
+        );
+        vm.prank(alice);
+        distributor.collectVestedRewards({
+            hook: address(stickyToken),
+            tokenIds: _tokenIds(alice),
+            tokens: _rewardTokens(),
+            beneficiary: address(distributor)
+        });
     }
 
     //*********************************************************************//
