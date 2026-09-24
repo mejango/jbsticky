@@ -51,6 +51,7 @@ function fixture() {
     getBridgeApi: () => api,
     bridgeContext: async () => context,
     rehydrateBridgeRoute: value => value,
+    ctx: { chainId: 10, currentId: 1n },
     bridgeRoutes: [route], bridgeDisplayedRows: [],
     parseUnits: value => BigInt(value), formatUnits: value => String(value),
     encAddress: value => value.slice(2).padStart(64, '0'), stickyLabel: () => 'Sticky Token',

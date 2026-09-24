@@ -2324,6 +2324,8 @@ async function findBridgeRoutes() {
 }
 
 async function prepareBridgeFunding() {
+  const projectId = ctx.currentId;
+  const chainId = ctx.chainId;
   const context = await bridgeContext();
   if (!context?.owner) throw new Error("Connect the wallet that holds the origin project tokens.");
   const route = bridgeRoutes[Number($("bridge-route").value)];
@@ -2343,6 +2345,7 @@ async function prepareBridgeFunding() {
   const amount = parseUnits($("bridge-amount").value, route.sourceMeta.decimals);
   const metadata = "0x" + [...crypto.getRandomValues(new Uint8Array(32))].map(value => value.toString(16).padStart(2, "0")).join("");
   const plan = await getBridgeApi().prepare({ route, amount, owner: context.owner, receiver: context.receiver, metadata });
+  if (ctx.currentId !== projectId || ctx.chainId !== chainId) throw new Error("The project changed. Review the bridge again.");
   const record = { metadata, owner: context.owner, amount: amount.toString(), route, prepareData: plan.txs.at(-1).data, createdAt: Date.now(), status: "review", phase: "created" };
   await mutateBridgeRecords(context.key, records => [...records, record]);
   let mayRun = false;
