@@ -53,6 +53,34 @@ interface IJBStickyDeployer is IJBPayerTracker {
     /// @return rate The project's permanent tax rate, out of the protocol maximum.
     function cashOutTaxRateOf(uint256 projectId) external view returns (uint256 rate);
 
+    /// @notice The share token address a launch produces for a launcher, project ID and configuration.
+    /// @dev The project ID enters the token's creation code, so a prediction holds only for the ID the launch
+    /// actually receives.
+    /// @param launcher The account that calls `deployStickyFor`.
+    /// @param projectId The ID of the sticky project the launch receives.
+    /// @param stakedToken The token the project accepts for staking.
+    /// @param name The name of the share token.
+    /// @param symbol The symbol of the share token.
+    /// @param projectUri The sticky project's metadata URI.
+    /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @param granters Addresses allowed to airdrop stakes to any holder.
+    /// @param soulbound Whether transfers between holders revert.
+    /// @return token The share token's address, whether or not it has been deployed.
+    function predictStickyTokenOf(
+        address launcher,
+        uint256 projectId,
+        IERC20Metadata stakedToken,
+        string calldata name,
+        string calldata symbol,
+        string calldata projectUri,
+        uint256 cashOutTaxRate,
+        address[] calldata granters,
+        bool soulbound
+    )
+        external
+        view
+        returns (address token);
+
     /// @notice The immutable accounting feed supplying the denominator of the share issuance ratio.
     /// @param projectId The ID of the sticky project.
     /// @return feed The project's feed, or the zero address for an unknown project.

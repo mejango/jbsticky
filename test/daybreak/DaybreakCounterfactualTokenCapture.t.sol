@@ -19,8 +19,9 @@ contract DaybreakMintableToken is ERC20 {
     }
 }
 
-/// @notice Demonstrates that prefunding a receiver for an undeployed, nonce-predicted Sticky token lets the next
-/// permissionless launcher take that token address and its rewards.
+/// @notice Share tokens are CREATE2-bound to their launcher and configuration, so a receiver prefunded for a
+/// launcher's predicted token cannot be captured by whoever launches first, and the launcher's own launch lands on
+/// the prediction made for the project ID it receives.
 contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     address internal _attacker = makeAddr("counterfactual token attacker");
     address internal _victim = makeAddr("counterfactual token victim");
@@ -29,6 +30,8 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     JBStickyDistributor internal _distributor;
     JBStickyRewardReceiverFactory internal _receiverFactory;
     DaybreakMintableToken internal _rewardToken;
+    DaybreakMintableToken internal _underlying;
+    uint256 internal _fee;
 
     function setUp() public override {
         super.setUp();
@@ -44,80 +47,102 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         });
         _receiverFactory = new JBStickyRewardReceiverFactory(_distributor);
         _rewardToken = new DaybreakMintableToken("Victim reward", "RWD");
+        _underlying = new DaybreakMintableToken("Shared asset", "AST");
+        _fee = jbProjects().creationFee();
     }
 
-    function test_nextLauncherCapturesRewardsSentForUndeployedStickyToken() public {
-        // The hook consumed deployer nonce 1 in the constructor, so the next launch's Sticky token will use nonce 2.
-        address victimExpectedStickyToken = vm.computeCreateAddress(address(_deployer), 2);
+    /// @notice An attacker who front-runs the victim's launch with the victim's exact configuration gets a token
+    /// bound to the attacker, never the address the victim predicted, and cannot settle the victim's prefunding.
+    function test_earlierLauncherCannotTakeAPredictedTokenAddress() public {
+        uint256 nextProjectId = jbProjects().count() + 1;
+        address victimExpectedStickyToken = _predictFor({launcher: _victim, projectId: nextProjectId});
         assertEq(victimExpectedStickyToken.code.length, 0);
 
-        // The advertised counterfactual flow lets rewards arrive at the future token's receiver before either exists.
+        // The counterfactual flow lets rewards arrive at the future token's receiver before either exists.
         address prefundedReceiver =
             _receiverFactory.predictReceiverOf({stickyToken: victimExpectedStickyToken, groupId: 0});
         uint256 reward = 100e18;
         _rewardToken.mint({beneficiary: prefundedReceiver, amount: reward});
 
-        // A permissionless attacker launches first and therefore receives the exact token address the victim used.
-        DaybreakMintableToken attackerUnderlying = new DaybreakMintableToken("Attacker asset", "ATK");
-        uint256 fee = jbProjects().creationFee();
-        vm.deal(_attacker, fee);
-        vm.prank(_attacker);
-        uint256 attackerProjectId = _deployer.deployStickyFor{value: fee}({
-            stakedToken: IERC20Metadata(address(attackerUnderlying)),
-            name: "Captured future token",
-            symbol: "CAP",
-            projectUri: "",
-            cashOutTaxRate: 0,
-            granters: new address[](0),
-            soulbound: true
-        });
+        // The attacker launches first with the victim's exact configuration and takes the project ID.
+        uint256 attackerProjectId = _launchAs(_attacker);
+        assertEq(attackerProjectId, nextProjectId);
         IJBToken attackerStickyToken = jbTokens().tokenOf(attackerProjectId);
-        assertEq(address(attackerStickyToken), victimExpectedStickyToken);
+        assertNotEq(address(attackerStickyToken), victimExpectedStickyToken);
+        assertEq(address(attackerStickyToken), _predictFor({launcher: _attacker, projectId: attackerProjectId}));
+        assertEq(victimExpectedStickyToken.code.length, 0);
 
-        // The attacker cheaply becomes the entire active supply before settling the victim's reward arrival.
-        attackerUnderlying.mint({beneficiary: _attacker, amount: 1e18});
-        vm.startPrank(_attacker);
-        attackerUnderlying.approve({spender: address(jbMultiTerminal()), value: 1e18});
+        // Nothing arrived at the attacker's receiver, and the victim's receiver cannot settle to a token that does
+        // not exist, so the prefunding stays where it was sent.
+        assertEq(
+            _rewardToken.balanceOf(
+                _receiverFactory.predictReceiverOf({stickyToken: address(attackerStickyToken), groupId: 0})
+            ),
+            0
+        );
+        vm.expectRevert();
+        _receiverFactory.settleFor({
+            stickyToken: victimExpectedStickyToken, groupId: 0, token: IERC20(address(_rewardToken))
+        });
+        assertEq(_rewardToken.balanceOf(prefundedReceiver), reward);
+    }
+
+    /// @notice A launch lands exactly on the launcher's prediction for the project ID it receives, so a receiver
+    /// prefunded against that prediction pays the launcher's holders.
+    function test_launchLandsOnThePredictedTokenAddress() public {
+        uint256 nextProjectId = jbProjects().count() + 1;
+        address expectedStickyToken = _predictFor({launcher: _victim, projectId: nextProjectId});
+        address prefundedReceiver = _receiverFactory.predictReceiverOf({stickyToken: expectedStickyToken, groupId: 0});
+        uint256 reward = 100e18;
+        _rewardToken.mint({beneficiary: prefundedReceiver, amount: reward});
+
+        uint256 projectId = _launchAs(_victim);
+        assertEq(projectId, nextProjectId);
+        assertEq(address(jbTokens().tokenOf(projectId)), expectedStickyToken);
+
+        // The victim stakes, becoming the entire supply, and the prefunding settles into their holders' round.
+        _underlying.mint({beneficiary: _victim, amount: 1e18});
+        vm.startPrank(_victim);
+        _underlying.approve({spender: address(jbMultiTerminal()), value: 1e18});
         jbMultiTerminal().pay({
-            projectId: attackerProjectId,
-            token: address(attackerUnderlying),
+            projectId: projectId,
+            token: address(_underlying),
             amount: 1e18,
-            beneficiary: _attacker,
+            beneficiary: _victim,
             minReturnedTokens: 1,
             memo: "",
             metadata: bytes("")
         });
         vm.stopPrank();
         vm.roll(vm.getBlockNumber() + 1);
-
         assertEq(
             _receiverFactory.settleFor({
-                stickyToken: victimExpectedStickyToken, groupId: 0, token: IERC20(address(_rewardToken))
+                stickyToken: expectedStickyToken, groupId: 0, token: IERC20(address(_rewardToken))
             }),
             reward
         );
 
-        // Once the allocation vests, the attacker collects the entire reward pot.
         vm.warp(_distributor.roundStartTimestamp(1) + 1);
         vm.roll(vm.getBlockNumber() + 1);
         uint256[] memory ids = new uint256[](1);
-        ids[0] = uint256(uint160(_attacker));
+        ids[0] = uint256(uint160(_victim));
         IERC20[] memory tokens = new IERC20[](1);
         tokens[0] = IERC20(address(_rewardToken));
-        _distributor.beginVesting({hook: victimExpectedStickyToken, tokenIds: ids, tokens: tokens});
+        _distributor.beginVesting({hook: expectedStickyToken, tokenIds: ids, tokens: tokens});
         vm.warp(_distributor.roundStartTimestamp(3));
         vm.roll(vm.getBlockNumber() + 1);
         _distributor.collectVestedRewards({
-            hook: victimExpectedStickyToken, tokenIds: ids, tokens: tokens, beneficiary: _attacker
+            hook: expectedStickyToken, tokenIds: ids, tokens: tokens, beneficiary: _victim
         });
-        assertEq(_rewardToken.balanceOf(_attacker), reward);
+        assertEq(_rewardToken.balanceOf(_victim), reward);
+    }
 
-        // The victim's eventual launch receives a different share-token address and has no claim on the prefunding.
-        DaybreakMintableToken victimUnderlying = new DaybreakMintableToken("Victim asset", "VIC");
-        vm.deal(_victim, fee);
-        vm.prank(_victim);
-        uint256 victimProjectId = _deployer.deployStickyFor{value: fee}({
-            stakedToken: IERC20Metadata(address(victimUnderlying)),
+    /// @notice Launch the shared configuration as `launcher`, paying the creation fee.
+    function _launchAs(address launcher) internal returns (uint256 projectId) {
+        vm.deal(launcher, _fee);
+        vm.prank(launcher);
+        projectId = _deployer.deployStickyFor{value: _fee}({
+            stakedToken: IERC20Metadata(address(_underlying)),
             name: "Victim Sticky",
             symbol: "sVIC",
             projectUri: "",
@@ -125,6 +150,20 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
             granters: new address[](0),
             soulbound: true
         });
-        assertNotEq(address(jbTokens().tokenOf(victimProjectId)), victimExpectedStickyToken);
+    }
+
+    /// @notice The shared configuration's token address for a launcher and project ID.
+    function _predictFor(address launcher, uint256 projectId) internal view returns (address token) {
+        token = _deployer.predictStickyTokenOf({
+            launcher: launcher,
+            projectId: projectId,
+            stakedToken: IERC20Metadata(address(_underlying)),
+            name: "Victim Sticky",
+            symbol: "sVIC",
+            projectUri: "",
+            cashOutTaxRate: 0,
+            granters: new address[](0),
+            soulbound: true
+        });
     }
 }

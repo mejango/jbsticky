@@ -18,6 +18,7 @@ import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
 import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
 import {JBStickyHook} from "./JBStickyHook.sol";
 import {JBStickyPriceFeed} from "./JBStickyPriceFeed.sol";
@@ -29,6 +30,8 @@ import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
 /// @notice Deploys permanently configured staking projects with backing-priced shares, a chosen cash-out tax and
 /// optional soulbound transfers. Owns each project's NFT without exposing any operation to change its rules,
 /// terminals, metadata, token or ownership, or withdraw project funds.
+/// @dev Each share token is deployed with CREATE2 under a salt bound to the launcher and the launch configuration, so
+/// no other launcher can occupy an address a launcher, or a receiver prefunded for it, predicted.
 contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
@@ -133,7 +136,9 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     //*********************************************************************//
 
     /// @notice Deploys a sticky project for a token.
-    /// @dev The `msg.value` must equal the project creation fee required by `JBProjects`.
+    /// @dev The `msg.value` must equal the project creation fee required by `JBProjects`. The share token lands at
+    /// `predictStickyTokenOf(msg.sender, projectId, ...)` for the same arguments, where `projectId` is the ID the
+    /// launch receives.
     /// @param stakedToken The token the project accepts for staking. Cannot be the share token of another project
     /// launched by this deployer.
     /// @param name The name of the share token issued to represent staked positions.
@@ -281,8 +286,20 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
         // slither-disable-next-line reentrancy-eth
         originalPayer = previousPayer;
 
-        // Deploy the share token representing staked positions, bound to this project.
-        IJBToken token = new JBStickyToken({
+        // Deploy the share token representing staked positions, bound to this project, at an address only this
+        // launcher can produce for this configuration.
+        IJBToken token = new JBStickyToken{
+            salt: _stickyTokenSaltOf({
+                launcher: msg.sender,
+                stakedToken: stakedToken,
+                name: name,
+                symbol: symbol,
+                projectUri: projectUri,
+                cashOutTaxRate: cashOutTaxRate,
+                granters: granters,
+                soulbound: soulbound
+            })
+        }({
             name: name, symbol: symbol, tokens: TOKENS, projectId: projectId, hook: HOOK, soulbound: soulbound
         });
 
@@ -356,5 +373,91 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
 
         // Accept the project NFT so the deployer can retain ownership and enforce permanent configuration.
         return IERC721Receiver.onERC721Received.selector;
+    }
+
+    /// @notice The share token address a launch produces for a launcher, project ID and configuration.
+    /// @dev The project ID enters the token's creation code, and every launch on the chain advances it, so a
+    /// prediction holds only for the ID the launch actually receives. Matching token addresses across chains
+    /// require the same deployer address, launcher, project ID and configuration on each.
+    /// @param launcher The account that calls `deployStickyFor`.
+    /// @param projectId The ID of the sticky project the launch receives.
+    /// @param stakedToken The token the project accepts for staking.
+    /// @param name The name of the share token.
+    /// @param symbol The symbol of the share token.
+    /// @param projectUri The sticky project's metadata URI.
+    /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @param granters Addresses allowed to airdrop stakes to any holder.
+    /// @param soulbound Whether transfers between holders revert.
+    /// @return token The share token's address, whether or not it has been deployed.
+    function predictStickyTokenOf(
+        address launcher,
+        uint256 projectId,
+        IERC20Metadata stakedToken,
+        string calldata name,
+        string calldata symbol,
+        string calldata projectUri,
+        uint256 cashOutTaxRate,
+        address[] calldata granters,
+        bool soulbound
+    )
+        external
+        view
+        override
+        returns (address token)
+    {
+        // Reproduce the launch's deployment so receivers can be funded before the token exists.
+        token = Create2.computeAddress({
+            salt: _stickyTokenSaltOf({
+                launcher: launcher,
+                stakedToken: stakedToken,
+                name: name,
+                symbol: symbol,
+                projectUri: projectUri,
+                cashOutTaxRate: cashOutTaxRate,
+                granters: granters,
+                soulbound: soulbound
+            }),
+            // Include the constructor arguments because they permanently bind the token to its project and policy.
+            bytecodeHash: keccak256(
+                bytes.concat(
+                    type(JBStickyToken).creationCode, abi.encode(name, symbol, TOKENS, projectId, HOOK, soulbound)
+                )
+            )
+        });
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal views ---------------------------- //
+    //*********************************************************************//
+
+    /// @notice The CREATE2 salt of a launcher's share token for a launch configuration.
+    /// @param launcher The account that calls `deployStickyFor`.
+    /// @param stakedToken The token the project accepts for staking.
+    /// @param name The name of the share token.
+    /// @param symbol The symbol of the share token.
+    /// @param projectUri The sticky project's metadata URI.
+    /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @param granters Addresses allowed to airdrop stakes to any holder.
+    /// @param soulbound Whether transfers between holders revert.
+    /// @return salt The salt, distinct for every launcher and configuration.
+    function _stickyTokenSaltOf(
+        address launcher,
+        IERC20Metadata stakedToken,
+        string calldata name,
+        string calldata symbol,
+        string calldata projectUri,
+        uint256 cashOutTaxRate,
+        address[] calldata granters,
+        bool soulbound
+    )
+        internal
+        pure
+        returns (bytes32 salt)
+    {
+        // Binding the launcher keeps a predicted address out of every other launcher's reach; binding the
+        // configuration commits the prediction to the launch it was made for.
+        // forge-lint: disable-next-item(asm-keccak256)
+        return
+            keccak256(abi.encode(launcher, stakedToken, name, symbol, projectUri, cashOutTaxRate, granters, soulbound));
     }
 }

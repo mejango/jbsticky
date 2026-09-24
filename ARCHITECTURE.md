@@ -31,7 +31,7 @@ See [INVARIANTS.md](./INVARIANTS.md) for the complete verification checklist and
 
 | Module | Responsibility | Notes |
 | --- | --- | --- |
-| `JBStickyDeployer` | Launches sticky projects with the locked eternal ruleset; deploys and attaches the share token and price feed; permanent owner of every project it launches | Immutable; creates `JBStickyHook` in its constructor; its only external transaction is `deployStickyFor` |
+| `JBStickyDeployer` | Launches sticky projects with the locked eternal ruleset; deploys the share token with CREATE2 under a launcher- and configuration-bound salt, attaches it and the price feed; permanent owner of every project it launches | Immutable; creates `JBStickyHook` in its constructor; its only external transaction is `deployStickyFor`; `predictStickyTokenOf` reproduces a launch's token address |
 | `JBStickyHook` | `IJBRulesetDataHook` + `IJBPayHook` + `IJBCashOutHook` singleton keyed by project ID; issuance pricing, orphaned-backing exclusion, exact balances, LIFO tranches, streaks, granter and trusted-sender gates | Immutable; receives no funds (hook specifications carry `amount: 0`); no owner |
 | `JBStickyPriceFeed` | One per project; returns share-owned backing in the terminal's cached accounting precision as the issuance denominator, or one unit while supply is zero | Registered under a distinct synthetic base currency; the after-pay check rejects issuance mismatches, including an incorrect fallback price |
 | `JBStickyToken` | ERC-20 shares, soulbound or transferable, with checkpointed locked self-delegation; reports burns and transfers to the hook | One per project, bound via `canBeAddedTo`; mint/burn only by `JBTokens` |
