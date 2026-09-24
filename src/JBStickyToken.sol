@@ -125,14 +125,6 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
         _burn({account: account, value: amount});
     }
 
-    /// @notice This token is initialized by its constructor and can't be initialized again.
-    /// @dev The proposed name, symbol and token manager are unused; every call reverts.
-    /// @inheritdoc IJBToken
-    function initialize(string memory, string memory, address) external pure override {
-        // Preserve the constructor's immutable bindings instead of allowing an initializer to replace them.
-        revert JBStickyToken_AlreadyInitialized();
-    }
-
     /// @notice Mints more of this token.
     /// @dev Can only be called by the `JBTokens` contract.
     /// @param account The address to mint the new tokens to.
@@ -140,14 +132,6 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
     function mint(address account, uint256 amount) external override onlyTokens {
         // Use the ERC-20 mint path so `_update` establishes self-delegation and checkpoints the issued shares.
         _mint({account: account, value: amount});
-    }
-
-    /// @notice This token's name and symbol are immutable.
-    /// @dev The proposed name and symbol are unused; every call reverts.
-    /// @inheritdoc IJBToken
-    function setMetadata(string memory, string memory) external pure override {
-        // Keep the token's public identity fixed for every holder throughout the project's lifetime.
-        revert JBStickyToken_MetadataIsImmutable();
     }
 
     //*********************************************************************//
@@ -179,6 +163,22 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
         return totalSupply();
     }
 
+    /// @notice This token is initialized by its constructor and can't be initialized again.
+    /// @dev The proposed name, symbol and token manager are unused; every call reverts.
+    /// @inheritdoc IJBToken
+    function initialize(string memory, string memory, address) external pure override {
+        // Preserve the constructor's immutable bindings instead of allowing an initializer to replace them.
+        revert JBStickyToken_AlreadyInitialized();
+    }
+
+    /// @notice This token's name and symbol are immutable.
+    /// @dev The proposed name and symbol are unused; every call reverts.
+    /// @inheritdoc IJBToken
+    function setMetadata(string memory, string memory) external pure override {
+        // Keep the token's public identity fixed for every holder throughout the project's lifetime.
+        revert JBStickyToken_MetadataIsImmutable();
+    }
+
     //*********************************************************************//
     // -------------------------- public views --------------------------- //
     //*********************************************************************//
@@ -198,17 +198,6 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
         return super.decimals();
     }
 
-    /// @notice The total supply of this token.
-    /// @return supply The total supply of this token, as a fixed point number with 18 decimals.
-    function totalSupply() public view override(ERC20, IJBToken) returns (uint256 supply) {
-        // Expose the ERC-20 supply through IJBToken so issuance and redemption use the outstanding share count.
-        return super.totalSupply();
-    }
-
-    //*********************************************************************//
-    // ----------------------- public transactions ----------------------- //
-    //*********************************************************************//
-
     /// @notice Delegation is locked — reward weight always stays with the holder.
     /// @dev Every call reverts.
     /// @param delegatee The proposed delegate, reported in the revert.
@@ -223,6 +212,13 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
     function delegateBySig(address delegatee, uint256, uint256, uint8, bytes32, bytes32) public pure override {
         // Close the signature-based delegation path so it cannot bypass the same fixed reward-weight policy.
         revert JBStickyToken_DelegationLocked(delegatee);
+    }
+
+    /// @notice The total supply of this token.
+    /// @return supply The total supply of this token, as a fixed point number with 18 decimals.
+    function totalSupply() public view override(ERC20, IJBToken) returns (uint256 supply) {
+        // Expose the ERC-20 supply through IJBToken so issuance and redemption use the outstanding share count.
+        return super.totalSupply();
     }
 
     //*********************************************************************//

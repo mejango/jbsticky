@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
+import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
@@ -47,14 +47,14 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
     /// @notice The deployed Sticky accounting hook.
     IJBStickyHook internal _hook;
 
+    /// @notice The Sticky project used by the callback tests.
+    uint256 internal _projectId;
+
     /// @notice The factory whose receivers settle into the distributor.
     JBStickyRewardReceiverFactory internal _receiverFactory;
 
     /// @notice A plain ERC-20 handed out as a reward; its callback is never armed.
     JBStickyCallbackToken internal _reward;
-
-    /// @notice The Sticky project used by the callback tests.
-    uint256 internal _projectId;
 
     /// @notice The project's Sticky share token.
     IJBToken internal _stickyToken;
@@ -242,6 +242,49 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
+    /// @notice Prove the nested call reaches the pricing guard and all observed state is restored by the revert.
+    /// @param target The callback target.
+    /// @param data The callback calldata.
+    /// @param actualSupply The supply after the nested operation but before the outer hook runs.
+    /// @param actualBacking The backing after the nested operation but before the outer hook runs.
+    function _assertCallbackReverts(
+        address target,
+        bytes memory data,
+        uint256 actualSupply,
+        uint256 actualBacking
+    )
+        internal
+    {
+        _underlying.configureCallback({
+            terminal: address(jbMultiTerminal()), hook: address(_hook), target: target, data: data
+        });
+        bytes32 beforeState = _stateHash();
+        vm.expectCall(target, data);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyHook.JBStickyHook_PricingStateChanged.selector,
+                _projectId,
+                15e18,
+                actualSupply,
+                15e18,
+                actualBacking
+            )
+        );
+        vm.prank(_holder);
+        jbMultiTerminal().pay({
+            projectId: _projectId,
+            token: address(_underlying),
+            amount: 5e18,
+            beneficiary: _holder,
+            minReturnedTokens: 5e18,
+            memo: "",
+            metadata: bytes("")
+        });
+        assertEq(_stateHash(), beforeState, "callback and outer payment must roll back atomically");
+        assertTrue(_underlying.callbackEnabled(), "arming state also rolls back");
+        assertEq(_underlying.callbackCount(), 0);
+    }
+
     /// @notice Prove the nested funding reaches the distributor's payment guard and everything rolls back.
     /// @param target The callback target.
     /// @param data The callback calldata.
@@ -286,51 +329,8 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         });
     }
 
-    /// @notice Prove the nested call reaches the pricing guard and all observed state is restored by the revert.
-    /// @param target The callback target.
-    /// @param data The callback calldata.
-    /// @param actualSupply The supply after the nested operation but before the outer hook runs.
-    /// @param actualBacking The backing after the nested operation but before the outer hook runs.
-    function _assertCallbackReverts(
-        address target,
-        bytes memory data,
-        uint256 actualSupply,
-        uint256 actualBacking
-    )
-        internal
-    {
-        _underlying.configureCallback({
-            terminal: address(jbMultiTerminal()), hook: address(_hook), target: target, data: data
-        });
-        bytes32 beforeState = _stateHash();
-        vm.expectCall(target, data);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                JBStickyHook.JBStickyHook_PricingStateChanged.selector,
-                _projectId,
-                15e18,
-                actualSupply,
-                15e18,
-                actualBacking
-            )
-        );
-        vm.prank(_holder);
-        jbMultiTerminal().pay({
-            projectId: _projectId,
-            token: address(_underlying),
-            amount: 5e18,
-            beneficiary: _holder,
-            minReturnedTokens: 5e18,
-            memo: "",
-            metadata: bytes("")
-        });
-        assertEq(_stateHash(), beforeState, "callback and outer payment must roll back atomically");
-        assertTrue(_underlying.callbackEnabled(), "arming state also rolls back");
-        assertEq(_underlying.callbackCount(), 0);
-    }
-
     //*********************************************************************//
-    // ------------------------- internal views -------------------------- //
+    // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
     /// @notice Encode a payment whose caller is the underlying token contract itself.

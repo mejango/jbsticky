@@ -5,20 +5,48 @@ import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow
 
 import {JBStickyDeployment} from "../../script/helpers/JBStickyDeployment.sol";
 import {MockArt} from "../../script/mocks/MockArt.sol";
-import {JBStickyCoreDeployment} from "../../script/structs/JBStickyCoreDeployment.sol";
-import {JBStickyDeploymentAddresses} from "../../script/structs/JBStickyDeploymentAddresses.sol";
-import {JBStickyImmutableReference} from "../../script/structs/JBStickyImmutableReference.sol";
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyPriceFeed} from "../../src/JBStickyPriceFeed.sol";
 import {JBStickyToken} from "../../src/JBStickyToken.sol";
+
+import {JBStickyCoreDeployment} from "../../script/structs/JBStickyCoreDeployment.sol";
+import {JBStickyDeploymentAddresses} from "../../script/structs/JBStickyDeploymentAddresses.sol";
+import {JBStickyImmutableReference} from "../../script/structs/JBStickyImmutableReference.sol";
+
 import {JBStickyDeploymentHarness} from "./JBStickyDeploymentHarness.sol";
 
 /// @notice Tests the production deployment helper against real core contracts, without live network writes.
 contract JBStickyDeploymentTest is TestBaseWorkflow {
-    JBStickyDeploymentHarness internal _deployment;
+    //*********************************************************************//
+    // -------------------- internal stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The local V6 core contracts the deployment binds to.
     JBStickyCoreDeployment internal _core;
+
+    /// @notice The production deployment helper under test.
+    JBStickyDeploymentHarness internal _deployment;
+
+    //*********************************************************************//
+    // -------------------------- public views --------------------------- //
+    //*********************************************************************//
+
+    function test_allNetworkFoldersMatchCurrentCoreLayout() public view {
+        assertEq(_deployment.network(1), "ethereum");
+        assertEq(_deployment.network(10), "optimism");
+        assertEq(_deployment.network(8453), "base");
+        assertEq(_deployment.network(42_161), "arbitrum");
+        assertEq(_deployment.network(11_155_111), "sepolia");
+        assertEq(_deployment.network(11_155_420), "optimism_sepolia");
+        assertEq(_deployment.network(84_532), "base_sepolia");
+        assertEq(_deployment.network(421_614), "arbitrum_sepolia");
+    }
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
 
     function setUp() public override {
         super.setUp();
@@ -47,50 +75,6 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         assertEq(second.distributor.codehash, firstHash);
         assertEq(JBStickyDistributor(payable(second.distributor)).STARTING_TIMESTAMP(), firstTimestamp);
         _deployment.verify(_core, second);
-    }
-
-    function test_distributorBindsTheDeployedHookWithProductionPolicy() public {
-        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
-        JBStickyDistributor distributor = JBStickyDistributor(payable(deployed.distributor));
-        assertEq(address(distributor.STICKY_HOOK()), deployed.hook);
-        assertEq(distributor.EPOCH_DURATION(), JBStickyHook(deployed.hook).EPOCH_DURATION());
-        assertEq(distributor.EPOCH_DURATION(), 1 weeks);
-        assertEq(address(distributor.CONTROLLER()), address(_core.controller));
-        assertEq(address(distributor.DIRECTORY()), address(_core.directory));
-        assertEq(address(distributor.REV_LOANS()), address(0));
-        assertEq(address(distributor.REV_OWNER()), address(0));
-        assertEq(distributor.ROUND_DURATION(), 7 days);
-        assertEq(distributor.VESTING_ROUNDS(), 4);
-        assertEq(distributor.CLAIM_DURATION(), 2 * 365 days);
-        assertLe(deployed.distributor.code.length, 24_576);
-
-        // A distributor bound to a different hook has identical opcodes and fails the binding check.
-        JBStickyDeployer other = new JBStickyDeployer({controller: _core.controller, terminal: _core.terminal});
-        JBStickyDistributor different = new JBStickyDistributor({
-            controller: _core.controller,
-            directory: _core.directory,
-            stickyHook: other.HOOK(),
-            initialRoundDuration: 7 days,
-            initialVestingRounds: 4,
-            initialClaimDuration: uint48(2 * 365 days)
-        });
-        vm.etch(deployed.distributor, address(different).code);
-        _deployment.verifyRuntime("JBStickyDistributor", deployed.distributor);
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
-        _deployment.verify(_core, deployed);
-    }
-
-    function test_partialDeploymentResumesWithoutReplacingFactoryOrHook() public {
-        _deployment.deployDeployerOnly(_core);
-        JBStickyDeploymentAddresses memory predicted = _deployment.predict(_core);
-        bytes32 deployerHash = predicted.deployer.codehash;
-        bytes32 hookHash = predicted.hook.codehash;
-        assertGt(predicted.deployer.code.length, 0);
-        assertEq(predicted.distributor.code.length, 0);
-        JBStickyDeploymentAddresses memory resumed = _deployment.deployFor(_core);
-        assertEq(resumed.deployer.codehash, deployerHash);
-        assertEq(resumed.hook.codehash, hookHash);
-        _deployment.verify(_core, resumed);
     }
 
     function test_deployedFactoryLaunchesTokenWithCanonicalHookAndRegistryBindings() public {
@@ -129,18 +113,103 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         _deployment.verify(_core, deployed);
     }
 
-    function test_sameArtifactsAndCoreBindingsPredictSameAddressesOnEverySupportedChain() public {
-        bytes32 expected = keccak256(abi.encode(_deployment.predict(_core)));
-        uint256[8] memory chainIds = [uint256(1), 10, 8453, 42_161, 11_155_111, 11_155_420, 84_532, 421_614];
-        for (uint256 i; i < chainIds.length; i++) {
-            vm.chainId(chainIds[i]);
-            assertEq(keccak256(abi.encode(_deployment.predict(_core))), expected);
-        }
+    function test_distributorBindsTheDeployedHookWithProductionPolicy() public {
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        JBStickyDistributor distributor = JBStickyDistributor(payable(deployed.distributor));
+        assertEq(address(distributor.STICKY_HOOK()), deployed.hook);
+        assertEq(distributor.EPOCH_DURATION(), JBStickyHook(deployed.hook).EPOCH_DURATION());
+        assertEq(distributor.EPOCH_DURATION(), 1 weeks);
+        assertEq(address(distributor.CONTROLLER()), address(_core.controller));
+        assertEq(address(distributor.DIRECTORY()), address(_core.directory));
+        assertEq(address(distributor.REV_LOANS()), address(0));
+        assertEq(address(distributor.REV_OWNER()), address(0));
+        assertEq(distributor.ROUND_DURATION(), 7 days);
+        assertEq(distributor.VESTING_ROUNDS(), 4);
+        assertEq(distributor.CLAIM_DURATION(), 2 * 365 days);
+        assertLe(deployed.distributor.code.length, 24_576);
+
+        // A distributor bound to a different hook has identical opcodes and fails the binding check.
+        JBStickyDeployer other = new JBStickyDeployer({controller: _core.controller, terminal: _core.terminal});
+        JBStickyDistributor different = new JBStickyDistributor({
+            controller: _core.controller,
+            directory: _core.directory,
+            stickyHook: other.HOOK(),
+            initialRoundDuration: 7 days,
+            initialVestingRounds: 4,
+            initialClaimDuration: uint48(2 * 365 days)
+        });
+        vm.etch(deployed.distributor, address(different).code);
+        _deployment.verifyRuntime("JBStickyDistributor", deployed.distributor);
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.verify(_core, deployed);
     }
 
-    function test_rejectsWrongCanonicalFactoryRuntime() public {
-        vm.etch(_deployment.DETERMINISTIC_FACTORY(), hex"00");
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
+    function test_loadsFlatCoreArtifactsWithoutForwarder() public {
+        vm.chainId(11_155_111);
+        string memory root = _writeCoreArtifacts(11_155_111);
+        JBStickyCoreDeployment memory loaded = _deployment.loadCore(root);
+        assertEq(address(loaded.controller), address(_core.controller));
+        assertEq(address(loaded.terminal), address(_core.terminal));
+    }
+
+    function test_manifestDistinguishesRpcBlockFromEvmHeight() public {
+        vm.chainId(42_161);
+        vm.roll(42);
+        vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "100");
+        bytes32 rpcBlockHash = keccak256("canonical RPC block");
+        vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(rpcBlockHash));
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        _deployment.writeManifest(_core, deployed);
+        string memory json = vm.readFile("deployments/arbitrum/test.json");
+        assertEq(vm.parseJsonUint(json, ".evmBlockNumber"), 42);
+        assertEq(vm.parseJsonUint(json, ".rpcBlockNumber"), 100);
+        assertEq(vm.parseJsonBytes32(json, ".rpcBlockHash"), rpcBlockHash);
+        vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "0");
+        vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(bytes32(0)));
+    }
+
+    function test_partialDeploymentResumesWithoutReplacingFactoryOrHook() public {
+        _deployment.deployDeployerOnly(_core);
+        JBStickyDeploymentAddresses memory predicted = _deployment.predict(_core);
+        bytes32 deployerHash = predicted.deployer.codehash;
+        bytes32 hookHash = predicted.hook.codehash;
+        assertGt(predicted.deployer.code.length, 0);
+        assertEq(predicted.distributor.code.length, 0);
+        JBStickyDeploymentAddresses memory resumed = _deployment.deployFor(_core);
+        assertEq(resumed.deployer.codehash, deployerHash);
+        assertEq(resumed.hook.codehash, hookHash);
+        _deployment.verify(_core, resumed);
+    }
+
+    function test_rejectsConsistentlyWrongImmutableDependency() public {
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        // A legitimate second factory has identical opcodes and different constructor-created HOOK references.
+        JBStickyDeployer different = new JBStickyDeployer({controller: _core.controller, terminal: _core.terminal});
+        vm.etch(deployed.deployer, address(different).code);
+        _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor(_core);
+    }
+
+    function test_rejectsControllerWithoutProjectLaunchAuthorization() public {
+        vm.mockCall(
+            address(_core.directory),
+            abi.encodeWithSignature("isAllowedToSetFirstController(address)", address(_core.controller)),
+            abi.encode(false)
+        );
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor(_core);
+    }
+
+    function test_rejectsDifferentCorePriceRegistriesBeforeAnyDeployment() public {
+        vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("PRICES()"), abi.encode(address(0xdead)));
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.deployFor(_core);
+    }
+
+    function test_rejectsDifferentCoreRulesetRegistries() public {
+        vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("RULESETS()"), abi.encode(address(0xdead)));
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
         _deployment.deployFor(_core);
     }
 
@@ -151,6 +220,28 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         vm.etch(deployed.deployer, code);
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
         _deployment.deployFor(_core);
+    }
+
+    function test_rejectsMissingCoreCodeBeforeAnyDeployment() public {
+        vm.etch(address(_core.terminal), hex"");
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_MissingCode.selector);
+        _deployment.deployFor(_core);
+    }
+
+    function test_rejectsNoncanonicalUpperBitsInImmutableAddress() public {
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        string memory json = vm.readFile("out/JBStickyDeployer.sol/JBStickyDeployer.json");
+        string memory root = ".deployedBytecode.immutableReferences";
+        string[] memory keys = vm.parseJsonKeys(json, root);
+        JBStickyImmutableReference[] memory refs =
+            abi.decode(vm.parseJson(json, string.concat(root, ".", keys[0])), (JBStickyImmutableReference[]));
+        bytes memory code = deployed.deployer.code;
+        for (uint256 i; i < refs.length; i++) {
+            code[refs[i].start] = 0x01;
+        }
+        vm.etch(deployed.deployer, code);
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
+        _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
     }
 
     function test_rejectsOneInconsistentImmutableOccurrence() public {
@@ -174,88 +265,28 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
     }
 
-    function test_rejectsNoncanonicalUpperBitsInImmutableAddress() public {
-        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
-        string memory json = vm.readFile("out/JBStickyDeployer.sol/JBStickyDeployer.json");
-        string memory root = ".deployedBytecode.immutableReferences";
-        string[] memory keys = vm.parseJsonKeys(json, root);
-        JBStickyImmutableReference[] memory refs =
-            abi.decode(vm.parseJson(json, string.concat(root, ".", keys[0])), (JBStickyImmutableReference[]));
-        bytes memory code = deployed.deployer.code;
-        for (uint256 i; i < refs.length; i++) {
-            code[refs[i].start] = 0x01;
-        }
-        vm.etch(deployed.deployer, code);
+    function test_rejectsUnsupportedChain() public {
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_UnsupportedChain.selector);
+        _deployment.network(31_337);
+    }
+
+    function test_rejectsWrongCanonicalFactoryRuntime() public {
+        vm.etch(_deployment.DETERMINISTIC_FACTORY(), hex"00");
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
-        _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
-    }
-
-    function test_rejectsConsistentlyWrongImmutableDependency() public {
-        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
-        // A legitimate second factory has identical opcodes and different constructor-created HOOK references.
-        JBStickyDeployer different = new JBStickyDeployer({controller: _core.controller, terminal: _core.terminal});
-        vm.etch(deployed.deployer, address(different).code);
-        _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
         _deployment.deployFor(_core);
     }
 
-    function test_rejectsMissingCoreCodeBeforeAnyDeployment() public {
-        vm.etch(address(_core.terminal), hex"");
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_MissingCode.selector);
-        _deployment.deployFor(_core);
+    function test_rejectsWrongCoreArtifactChain() public {
+        vm.chainId(11_155_111);
+        string memory root = _writeCoreArtifacts(1);
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_ChainMismatch.selector);
+        _deployment.loadCore(root);
     }
 
     function test_rejectsWrongCoreBindingBeforeAnyDeployment() public {
         vm.mockCall(address(_core.terminal), abi.encodeWithSignature("DIRECTORY()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
         _deployment.deployFor(_core);
-    }
-
-    function test_rejectsDifferentCorePriceRegistriesBeforeAnyDeployment() public {
-        vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("PRICES()"), abi.encode(address(0xdead)));
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
-        _deployment.deployFor(_core);
-    }
-
-    function test_rejectsControllerWithoutProjectLaunchAuthorization() public {
-        vm.mockCall(
-            address(_core.directory),
-            abi.encodeWithSignature("isAllowedToSetFirstController(address)", address(_core.controller)),
-            abi.encode(false)
-        );
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
-        _deployment.deployFor(_core);
-    }
-
-    function test_rejectsDifferentCoreRulesetRegistries() public {
-        vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("RULESETS()"), abi.encode(address(0xdead)));
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
-        _deployment.deployFor(_core);
-    }
-
-    function test_allNetworkFoldersMatchCurrentCoreLayout() public view {
-        assertEq(_deployment.network(1), "ethereum");
-        assertEq(_deployment.network(10), "optimism");
-        assertEq(_deployment.network(8453), "base");
-        assertEq(_deployment.network(42_161), "arbitrum");
-        assertEq(_deployment.network(11_155_111), "sepolia");
-        assertEq(_deployment.network(11_155_420), "optimism_sepolia");
-        assertEq(_deployment.network(84_532), "base_sepolia");
-        assertEq(_deployment.network(421_614), "arbitrum_sepolia");
-    }
-
-    function test_rejectsUnsupportedChain() public {
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_UnsupportedChain.selector);
-        _deployment.network(31_337);
-    }
-
-    function test_loadsFlatCoreArtifactsWithoutForwarder() public {
-        vm.chainId(11_155_111);
-        string memory root = _writeCoreArtifacts(11_155_111);
-        JBStickyCoreDeployment memory loaded = _deployment.loadCore(root);
-        assertEq(address(loaded.controller), address(_core.controller));
-        assertEq(address(loaded.terminal), address(_core.terminal));
     }
 
     function test_rejectsWrongRpcChainBeforeReadingArtifacts() public {
@@ -270,11 +301,13 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         vm.setEnv("STICKY_EXPECTED_CHAIN_ID", "0");
     }
 
-    function test_rejectsWrongCoreArtifactChain() public {
-        vm.chainId(11_155_111);
-        string memory root = _writeCoreArtifacts(1);
-        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_ChainMismatch.selector);
-        _deployment.loadCore(root);
+    function test_sameArtifactsAndCoreBindingsPredictSameAddressesOnEverySupportedChain() public {
+        bytes32 expected = keccak256(abi.encode(_deployment.predict(_core)));
+        uint256[8] memory chainIds = [uint256(1), 10, 8453, 42_161, 11_155_111, 11_155_420, 84_532, 421_614];
+        for (uint256 i; i < chainIds.length; i++) {
+            vm.chainId(chainIds[i]);
+            assertEq(keccak256(abi.encode(_deployment.predict(_core))), expected);
+        }
     }
 
     function test_verifiedManifestRecordsAllRuntimeHashes() public {
@@ -289,34 +322,30 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         assertEq(vm.parseJsonString(json, ".kind"), "test");
     }
 
-    function test_manifestDistinguishesRpcBlockFromEvmHeight() public {
-        vm.chainId(42_161);
-        vm.roll(42);
-        vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "100");
-        bytes32 rpcBlockHash = keccak256("canonical RPC block");
-        vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(rpcBlockHash));
-        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
-        _deployment.writeManifest(_core, deployed);
-        string memory json = vm.readFile("deployments/arbitrum/test.json");
-        assertEq(vm.parseJsonUint(json, ".evmBlockNumber"), 42);
-        assertEq(vm.parseJsonUint(json, ".rpcBlockNumber"), 100);
-        assertEq(vm.parseJsonBytes32(json, ".rpcBlockHash"), rpcBlockHash);
-        vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "0");
-        vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(bytes32(0)));
+    //*********************************************************************//
+    // ---------------------- internal transactions ---------------------- //
+    //*********************************************************************//
+
+    /// @notice Writes one core artifact file in the flat sepolia layout under a test root.
+    /// @param root The directory holding the test artifacts.
+    /// @param name The core contract name used as the artifact file name.
+    /// @param target The deployed address recorded in the artifact.
+    /// @param chainId The chain ID recorded in the artifact.
+    function _writeArtifact(string memory root, string memory name, address target, uint256 chainId) internal {
+        string memory key = string.concat("artifact-", name);
+        vm.serializeAddress(key, "address", target);
+        string memory json = vm.serializeString(key, "chainId", vm.toString(bytes32(chainId)));
+        vm.writeJson(json, string.concat(root, "/sepolia/", name, ".json"));
     }
 
+    /// @notice Writes the local core contracts as artifacts for a chain under a fresh test root.
+    /// @param chainId The chain ID recorded in every artifact.
+    /// @return root The directory holding the written artifacts.
     function _writeCoreArtifacts(uint256 chainId) internal returns (string memory root) {
         root = string.concat("deployments/_test/", vm.toString(chainId));
         vm.createDir(string.concat(root, "/sepolia"), true);
         _writeArtifact(root, "JBController", address(_core.controller), chainId);
         _writeArtifact(root, "JBDirectory", address(_core.directory), chainId);
         _writeArtifact(root, "JBMultiTerminal", address(_core.terminal), chainId);
-    }
-
-    function _writeArtifact(string memory root, string memory name, address target, uint256 chainId) internal {
-        string memory key = string.concat("artifact-", name);
-        vm.serializeAddress(key, "address", target);
-        string memory json = vm.serializeString(key, "chainId", vm.toString(bytes32(chainId)));
-        vm.writeJson(json, string.concat(root, "/sepolia/", name, ".json"));
     }
 }

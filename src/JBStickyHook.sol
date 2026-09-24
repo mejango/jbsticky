@@ -990,6 +990,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param projectId The ID of the sticky project.
     /// @param count The number of payments in flight.
     function _setPayingCountOf(uint256 projectId, uint256 count) internal {
+        // Locate the project's keyed transient counter.
         bytes32 slot = _payingSlotOf(projectId);
 
         // Transient storage resets at the end of the transaction, so a reverted payment leaves nothing behind.
@@ -1003,10 +1004,25 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Removes one payment from a project's count of unrecorded mints once its tranche is recorded.
     /// @param projectId The ID of the sticky project.
     function _settlePayingFor(uint256 projectId) internal {
+        // Read how many payments to the project still have unrecorded mints in this transaction.
         uint256 paying = _payingCountOf(projectId);
 
         // Nothing is cleared when no mint was counted in this transaction, so a callback on its own cannot underflow.
         if (paying != 0) _setPayingCountOf({projectId: projectId, count: paying - 1});
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal helpers -------------------------- //
+    //*********************************************************************//
+
+    /// @notice The transient slot counting a project's payments whose minted shares are not yet recorded.
+    /// @param projectId The ID of the sticky project.
+    /// @return slot The project's keyed transient slot.
+    function _payingSlotOf(uint256 projectId) internal pure returns (bytes32 slot) {
+        // Fixed-width encoding under a contract-specific seed keeps every project's slot distinct. The hash runs once
+        // per mint and once per callback, so an assembly hash would save little for the readability it costs.
+        // forge-lint: disable-next-line(asm-keccak256)
+        return keccak256(abi.encode(_PAYING_SLOT_SEED, projectId));
     }
 
     //*********************************************************************//
@@ -1045,6 +1061,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param projectId The ID of the sticky project.
     /// @return count The number of payments in flight.
     function _payingCountOf(uint256 projectId) internal view returns (uint256 count) {
+        // Locate the project's keyed transient counter.
         bytes32 slot = _payingSlotOf(projectId);
 
         // The slot is keyed by project, so payments to other projects never appear in this count.
@@ -1053,16 +1070,6 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         assembly ("memory-safe") {
             count := tload(slot)
         }
-    }
-
-    /// @notice The transient slot counting a project's payments whose minted shares are not yet recorded.
-    /// @param projectId The ID of the sticky project.
-    /// @return slot The project's keyed transient slot.
-    function _payingSlotOf(uint256 projectId) internal pure returns (bytes32 slot) {
-        // Fixed-width encoding under a contract-specific seed keeps every project's slot distinct. The hash runs once
-        // per mint and once per callback, so an assembly hash would save little for the readability it costs.
-        // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256(abi.encode(_PAYING_SLOT_SEED, projectId));
     }
 
     /// @notice Copies a bounded range of active tranches without exposing logically discarded entries.

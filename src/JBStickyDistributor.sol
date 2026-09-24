@@ -146,11 +146,16 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
 
         // Window bounds are converted to epochs with this contract's constant, so the hook's buckets must agree.
         uint256 hookEpochDuration = stickyHook.EPOCH_DURATION();
+
+        // Reject a hook whose epochs would make window bounds select the wrong buckets.
         if (hookEpochDuration != EPOCH_DURATION) {
             revert JBStickyDistributor_EpochDurationMismatch({expected: EPOCH_DURATION, actual: hookEpochDuration});
         }
 
+        // Fix the directory used to authenticate split callbacks.
         DIRECTORY = directory;
+
+        // Fix the hook whose tranches and epoch buckets weigh tenure rewards.
         STICKY_HOOK = stickyHook;
     }
 
@@ -181,7 +186,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         external
         override
     {
+        // Reject groups that can never hold a pot before touching any claim cursor.
         _requireValidGroupId(groupId);
+
+        // Materialize each holder's completed rounds into vesting entries.
         _beginVesting({hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens});
     }
 
@@ -203,7 +211,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         external
         override
     {
+        // Reject groups that can never hold a pot before touching any claim cursor.
         _requireValidGroupId(groupId);
+
+        // Collect to the beneficiary, or recycle when the beneficiary is this distributor.
         _collectOrRecycle({hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary});
     }
 
@@ -214,6 +225,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param token The reward token.
     /// @param amount The amount to fund, ignored for native ETH.
     function fund(address hook, IERC20 token, uint256 amount) external payable override(IJBDistributor, JBDistributor) {
+        // The stock signature always funds the vote-weighted default group.
         _fundGroup({hook: hook, groupId: 0, token: token, amount: amount});
     }
 
@@ -225,11 +237,13 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param amount The amount to fund, ignored for native ETH.
     /// @param groupId The reward group to fund (0 = the default group).
     function fund(address hook, IERC20 token, uint256 amount, uint256 groupId) external payable override {
+        // Reject groups that can never be claimed before accepting any funds.
         _requireValidGroupId(groupId);
 
         // Tenure weights are read from the hook's tranches, which only exist for tokens it tracks.
         if (groupId != 0 && !_isRegisteredStickyToken(hook)) revert JBStickyDistributor_UnregisteredStickyToken(hook);
 
+        // Accept the funds and record them as the current round's pot for the group.
         _fundGroup({hook: hook, groupId: groupId, token: token, amount: amount});
     }
 
@@ -254,14 +268,18 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         // Read the requested group from the split's project ID, falling back to the default group when it cannot be
         // honored so the split's funds still distribute.
         uint256 groupId = context.split.projectId;
+
+        // A window the distributor cannot serve, or a beneficiary the hook does not track, funds the default group.
         if (!isValidGroupId(groupId) || (groupId != 0 && !_isRegisteredStickyToken(hook))) groupId = 0;
 
         // Native splits must deliver exactly the stated amount.
         if (context.token == JBConstants.NATIVE_TOKEN) {
+            // Reject a native split whose value differs from the amount core recorded for it.
             if (msg.value != context.amount) {
                 revert JBStickyDistributor_NativeAmountMismatch({msgValue: msg.value, contextAmount: context.amount});
             }
 
+            // Book the delivered ETH as the current round's pot.
             _recordFunding({hook: hook, groupId: groupId, token: IERC20(context.token), amount: msg.value});
         } else {
             // Native ETH must not be booked under an ERC-20 reward token.
@@ -271,6 +289,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
                 });
             }
 
+            // An empty split has nothing to pull or record.
             if (context.amount == 0) return;
 
             // Terminals and the controller approve the split's amount before calling, so pull it and credit only
@@ -278,6 +297,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
             uint256 delta =
                 _acceptErc20FundsFrom({token: IERC20(context.token), from: msg.sender, amount: context.amount});
 
+            // Book only the delivered ERC-20 amount as the current round's pot.
             _recordFunding({hook: hook, groupId: groupId, token: IERC20(context.token), amount: delta});
         }
     }
@@ -299,7 +319,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         override
         returns (uint256 amount)
     {
+        // Reject groups that can never hold a pot before reading any round.
         _requireValidGroupId(groupId);
+
+        // Move each expired round's unclaimed inventory into the current round.
         amount = _recycleExpiredRewards({hook: hook, groupId: groupId, token: token, rounds: rounds});
     }
 
@@ -324,6 +347,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         override
         returns (uint256 tokenAmount)
     {
+        // Report the vesting entries' remaining balance, whether or not it has unlocked.
         tokenAmount = _unclaimedVestingAmountOf({hook: hook, groupId: groupId, tokenId: tokenId, token: token});
     }
 
@@ -344,6 +368,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         override
         returns (uint256 tokenAmount)
     {
+        // Report only the portion of the vesting entries that has unlocked so far.
         tokenAmount = _collectableFor({hook: hook, groupId: groupId, tokenId: tokenId, token: token});
     }
 
@@ -357,10 +382,13 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param groupId The group ID to check.
     /// @return isValid Whether the group can be funded and claimed from.
     function isValidGroupId(uint256 groupId) public pure override returns (bool isValid) {
+        // The default group is always fundable.
         if (groupId == 0) return true;
 
         // Decode the window's bounds, in weeks before the round's snapshot epoch.
         uint256 minWeeks = groupId / CRITERIA_BASE;
+
+        // The low digits carry the window's upper bound; zero means unbounded.
         uint256 maxWeeks = groupId % CRITERIA_BASE;
 
         // Both bounds stay within the supported range, and a bounded window must end at or after it starts.
@@ -373,6 +401,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param round The round to get the snapshot epoch of.
     /// @return epoch The round's snapshot epoch.
     function snapshotEpochOf(uint256 round) public view override returns (uint256 epoch) {
+        // Convert the round's start into the hook's epoch numbering.
         epoch = roundStartTimestamp(round) / EPOCH_DURATION;
     }
 
@@ -380,6 +409,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param interfaceId The interface ID to check.
     /// @return supported Whether the interface is supported.
     function supportsInterface(bytes4 interfaceId) public pure override returns (bool supported) {
+        // Advertise the Sticky, token-distributor and split-hook entry points alongside ERC165 itself.
         return interfaceId == type(IJBStickyDistributor).interfaceId
             || interfaceId == type(IJBTokenDistributor).interfaceId || interfaceId == type(IJBSplitHook).interfaceId
             || interfaceId == type(IERC165).interfaceId;
@@ -405,6 +435,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         public
         override(IJBDistributor, JBDistributor)
     {
+        // The stock signature always collects from the vote-weighted default group.
         _collectOrRecycle({hook: hook, groupId: 0, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary});
     }
 
@@ -429,6 +460,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     {
         // Round 0 has no completed reward rounds behind it, so nothing can be claimed yet.
         uint256 round = currentRound();
+
+        // Nothing is claimable until at least one round has completed.
         // slither-disable-next-line incorrect-equality
         if (round == 0) return;
 
@@ -446,6 +479,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         // Solidity initializes the index to zero, covering every reward token supplied.
         // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < tokens.length;) {
+            // Resolve the reward token whose rounds this pass settles.
             IERC20 token = tokens[i];
 
             // Accumulate every holder's claim before the single vesting-total write below.
@@ -494,6 +528,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
 
         // Sum the holder's pro-rata share of every unresolved completed round.
         uint256 newNextClaimRound;
+
+        // Walk every unresolved completed round and total the holder's allocation.
         (tokenAmount, newNextClaimRound) = _claimRewardsFor({
             hook: ctx.hook,
             groupId: ctx.groupId,
@@ -571,6 +607,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
 
         // Never materialize more than the pot still holds, so claims can never exceed funding.
         uint256 remainingPot = uint256(rewardRound.amount) - uint256(rewardRound.claimedAmount);
+
+        // Cap the allocation at what is left.
         if (claimAmount > remainingPot) claimAmount = remainingPot;
 
         // Skip floor-rounded zero claims to avoid needless storage writes.
@@ -579,6 +617,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         // Track the portion that started vesting so expiry recycles only the remainder.
         rewardRound.claimedAmount = _toUint208(uint256(rewardRound.claimedAmount) + claimAmount);
 
+        // Report the allocation so the caller can add it to the holder's vesting entry.
         tokenAmount = claimAmount;
     }
 
@@ -602,6 +641,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         internal
         returns (uint256 tokenAmount, uint256 newNextClaimRound)
     {
+        // Every round through the last completed one is resolved by this walk.
         newNextClaimRound = lastRound + 1;
 
         // Tenure groups resolve the hook's project once for the whole walk; the default group never needs it.
@@ -612,6 +652,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
 
         // Walk every unclaimed round; the caller bounds the range to completed rounds.
         for (uint256 round = firstRound; round <= lastRound;) {
+            // Read the round's pot once for both the expiry check and the claim.
             JBRewardRoundData storage rewardRound = rewardRoundOf[hook][groupId][token][round];
 
             // Rounds that never received funding have nothing to claim or recycle.
@@ -658,12 +699,14 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     )
         internal
     {
+        // Only the distributor's own allocation is collected to itself; the stock path serves everyone else.
         if (beneficiary == address(this)) {
             // Inventory stays in custody and the current holders get a fresh claimable round.
             _releaseForfeitedRewards({
                 hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary
             });
         } else {
+            // Transfer every unlocked reward to the beneficiary.
             _collectVestedRewards({
                 hook: hook, groupId: groupId, tokenIds: tokenIds, tokens: tokens, beneficiary: beneficiary
             });
@@ -689,6 +732,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
             amount = _acceptErc20FundsFrom({token: token, from: msg.sender, amount: amount});
         }
 
+        // Book the accepted amount as the current round's pot.
         _recordFunding({hook: hook, groupId: groupId, token: token, amount: amount});
     }
 
@@ -702,6 +746,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         // slither-disable-next-line incorrect-equality
         if (amount == 0) return;
 
+        // Record the round's denominator on first funding and add the amount to its pot.
         _recordRewardFunding({hook: hook, groupId: groupId, token: token, amount: amount});
 
         // The ledger is settled before this log. Reentering through the reward token cannot reorder it: every
@@ -713,7 +758,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     }
 
     //*********************************************************************//
-    // ----------------------- internal views ---------------------------- //
+    // ----------------------- internal helpers -------------------------- //
     //*********************************************************************//
 
     /// @notice Whether an account is the holder encoded in a token ID.
@@ -722,6 +767,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param account The account to check.
     /// @return canClaim Whether the account is the encoded holder.
     function _canClaim(address hook, uint256 tokenId, address account) internal pure override returns (bool canClaim) {
+        // Sticky holders are addresses, so control follows the encoded address exactly.
         canClaim = _claimBeneficiaryOf({hook: hook, tokenId: tokenId}) == account;
     }
 
@@ -731,13 +777,43 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param tokenId The encoded holder address.
     /// @return beneficiary The holder encoded in the token ID.
     function _claimBeneficiaryOf(address hook, uint256 tokenId) internal pure override returns (address beneficiary) {
+        // The stock signature carries the hook; the encoding alone determines the beneficiary.
         hook;
+
+        // Reject IDs whose high bits would alias another holder's address after the cast below.
         if (tokenId >> 160 != 0) revert JBStickyDistributor_InvalidTokenId({tokenId: tokenId});
 
         // The high bits were checked above, so this cast recovers the encoded address.
         // forge-lint: disable-next-line(unsafe-typecast)
         beneficiary = address(uint160(tokenId));
     }
+
+    /// @notice Reverts unless a group ID is the default group or a valid tenure window.
+    /// @param groupId The group ID to validate.
+    function _requireValidGroupId(uint256 groupId) internal pure {
+        // Share one rule with the public view so callers can pre-check the same condition.
+        if (!isValidGroupId(groupId)) revert JBStickyDistributor_InvalidGroupId(groupId);
+    }
+
+    /// @notice Reverts unless every token ID decodes to a holder address.
+    /// @param hook The sticky token the token IDs belong to.
+    /// @param tokenIds The encoded holder addresses to validate.
+    function _validateTokenIds(address hook, uint256[] calldata tokenIds) internal pure override {
+        // Solidity initializes the index to zero, covering every token ID supplied.
+        // forge-lint: disable-next-line(uninitialized-local)
+        for (uint256 i; i < tokenIds.length;) {
+            // Decoding reverts on any ID that does not fit an address.
+            _claimBeneficiaryOf({hook: hook, tokenId: tokenIds[i]});
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal views ---------------------------- //
+    //*********************************************************************//
 
     /// @notice Whether the Sticky hook tracks tranches for a token.
     /// @dev Reads the token's project through a low-level call so a beneficiary that is not a Sticky token, or not a
@@ -749,6 +825,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         // A typed call would revert on an answer it cannot decode, which a split must survive.
         // forge-lint: disable-next-line(low-level-calls)
         (bool success, bytes memory data) = hook.staticcall(abi.encodeCall(IJBStickyToken.PROJECT_ID, ()));
+
+        // Anything other than one word is not a Sticky token's project ID.
         if (!success || data.length != 32) return false;
 
         // Only the token the hook records movements from is a valid tenure source for its project.
@@ -774,12 +852,6 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         }
     }
 
-    /// @notice Reverts unless a group ID is the default group or a valid tenure window.
-    /// @param groupId The group ID to validate.
-    function _requireValidGroupId(uint256 groupId) internal pure {
-        if (!isValidGroupId(groupId)) revert JBStickyDistributor_InvalidGroupId(groupId);
-    }
-
     /// @notice Whether a token ID's rewards are forfeited to the pot. Sticky holders are addresses, which cannot be
     /// burned, so only this distributor's own encoded address is: the shares it holds as reward inventory earn weight
     /// it can never collect.
@@ -787,7 +859,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param tokenId The encoded holder address.
     /// @return tokenWasBurned Whether the token ID encodes this distributor.
     function _tokenBurned(address hook, uint256 tokenId) internal view override returns (bool tokenWasBurned) {
+        // The stock signature carries the hook; forfeiture depends only on the encoded address.
         hook;
+
+        // Only the distributor's own encoded address forfeits.
         tokenWasBurned = tokenId == uint256(uint160(address(this)));
     }
 
@@ -796,6 +871,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param tokenId The encoded holder address.
     /// @return tokenStakeAmount The delegated voting power at the round's snapshot block.
     function _tokenStake(address hook, uint256 tokenId) internal view override returns (uint256 tokenStakeAmount) {
+        // Read the holder's checkpointed votes at the current round's snapshot.
         tokenStakeAmount =
             _tokenStakeAt({hook: hook, tokenId: tokenId, blockNumber: roundSnapshotBlock[currentRound()]});
     }
@@ -847,21 +923,6 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         totalStakedAmount = _windowTotalStakeOf({hook: hook, groupId: groupId, round: currentRound()});
     }
 
-    /// @notice Reverts unless every token ID decodes to a holder address.
-    /// @param hook The sticky token the token IDs belong to.
-    /// @param tokenIds The encoded holder addresses to validate.
-    function _validateTokenIds(address hook, uint256[] calldata tokenIds) internal pure override {
-        // Solidity initializes the index to zero, covering every token ID supplied.
-        // forge-lint: disable-next-line(uninitialized-local)
-        for (uint256 i; i < tokenIds.length;) {
-            _claimBeneficiaryOf({hook: hook, tokenId: tokenIds[i]});
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
     /// @notice The epoch window a tenure group selects for a round.
     /// @dev Measured back from the round's snapshot epoch. `minWeeks >= 1` keeps that epoch itself out of the window.
     /// @param groupId The tenure group, encoded as `minWeeks * CRITERIA_BASE + maxWeeks`.
@@ -870,17 +931,25 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @return hi The last eligible epoch.
     /// @return isEmpty Whether no epoch can qualify because the chain is younger than `minWeeks`.
     function _windowOf(uint256 groupId, uint256 round) internal view returns (uint256 lo, uint256 hi, bool isEmpty) {
+        // Measure the window back from the epoch the round started in.
         uint256 snapshotEpoch = snapshotEpochOf(round);
+
+        // The high digits carry the window's lower bound in weeks.
         uint256 minWeeks = groupId / CRITERIA_BASE;
+
         // Decodes the group ID's low digits; nothing here is random.
         // slither-disable-next-line weak-prng
         uint256 maxWeeks = groupId % CRITERIA_BASE;
 
         // The window's top would sit before the first epoch, so nothing can be old enough.
         isEmpty = snapshotEpoch < minWeeks;
+
+        // An empty window has no bounds worth computing.
         if (isEmpty) return (lo, hi, isEmpty);
 
+        // The newest eligible epoch sits `minWeeks` before the snapshot.
         hi = snapshotEpoch - minWeeks;
+
         // A zero `maxWeeks` encodes an unbounded window, not a computed amount.
         // slither-disable-next-line incorrect-equality
         lo = (maxWeeks == 0 || snapshotEpoch < maxWeeks) ? 0 : snapshotEpoch - maxWeeks;
@@ -904,13 +973,18 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         view
         returns (uint256 amount)
     {
+        // Resolve the epochs the group's window covers for this round.
         (uint256 lo, uint256 hi, bool isEmpty) = _windowOf({groupId: groupId, round: round});
+
+        // A window before the first epoch holds no stake.
         if (isEmpty) return 0;
 
         // Everything created through the window's top, less everything created before its bottom. At most two
         // reads per claimed round; the holder pays for the rounds they left unclaimed.
         // forge-lint: disable-next-line(calls-loop)
         amount = STICKY_HOOK.stakedBalanceThroughEpochOf({projectId: projectId, holder: holder, epoch: hi});
+
+        // A bounded window excludes everything created before its bottom.
         if (lo != 0) {
             // forge-lint: disable-next-line(calls-loop)
             amount -= STICKY_HOOK.stakedBalanceThroughEpochOf({projectId: projectId, holder: holder, epoch: lo - 1});
@@ -928,6 +1002,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param round The reward round.
     /// @return amount The window's total stake.
     function _windowTotalStakeOf(address hook, uint256 groupId, uint256 round) internal view returns (uint256 amount) {
+        // Resolve the project whose buckets the hook keeps for this token.
         uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
 
         // Only an underlying token with transfer callbacks can reach this read mid-payment; refuse it rather than
@@ -936,7 +1011,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
             revert JBStickyDistributor_PaymentInProgress({hook: hook, projectId: projectId});
         }
 
+        // Resolve the epochs the group's window covers for this round.
         (uint256 lo, uint256 hi, bool isEmpty) = _windowOf({groupId: groupId, round: round});
+
+        // A window before the first epoch holds no stake.
         if (isEmpty) return 0;
 
         // Bounded windows sum exactly their buckets. The modulo decodes the group ID's `maxWeeks` digits.
@@ -950,6 +1028,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         uint256 newerStake = STICKY_HOOK.netStakedWithin({
             projectId: projectId, fromEpoch: hi + 1, toEpoch: block.timestamp / EPOCH_DURATION
         });
+
+        // Everything the newer buckets do not hold sits in the window or below it.
         amount = IJBToken(hook).totalSupply() - newerStake;
     }
 }

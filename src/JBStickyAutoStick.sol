@@ -27,7 +27,7 @@ import {JBAutoStickConfig} from "./structs/JBAutoStickConfig.sol";
 /// @dev Best effort: rewards collected to the holder before execution must be staked separately. Callers choose the
 /// reward groups to collect from; the holder's minimum applies to the combined amount.
 contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
-    // Safely approve and transfer the project's underlying token.
+    // A library that safely approves and transfers the project's underlying token.
     using SafeERC20 for IERC20Metadata;
 
     //*********************************************************************//
@@ -623,6 +623,22 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     // ----------------------- internal helpers -------------------------- //
     //*********************************************************************//
 
+    /// @notice Reverts when no reward groups are requested or the groups are not strictly ascending.
+    /// @param groupIds The reward groups requested.
+    function _requireGroupIds(uint256[] calldata groupIds) internal pure {
+        // Every entry point needs at least one group to read or collect from.
+        if (groupIds.length == 0) revert JBStickyAutoStick_EmptyGroupIds(groupIds.length);
+
+        // A repeated group would count its collectable amount once per entry toward the holder's minimum.
+        for (uint256 i = 1; i < groupIds.length; i++) {
+            // Fail on the first entry out of order; the rest are never read.
+            // forge-lint: disable-next-item(require-revert-in-loop)
+            if (groupIds[i] <= groupIds[i - 1]) {
+                revert JBStickyAutoStick_GroupIdsNotAscending({previous: groupIds[i - 1], next: groupIds[i]});
+            }
+        }
+    }
+
     /// @notice Wraps a token ID in a one-element array for distributor calls.
     /// @param tokenId The token ID to wrap.
     /// @return tokenIds The singleton array.
@@ -710,22 +726,6 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         (, stickyTokenCount,,) = TERMINAL.previewPayFor({
             projectId: projectId, token: address(underlying), amount: amount, beneficiary: holder, metadata: bytes("")
         });
-    }
-
-    /// @notice Reverts when no reward groups are requested or the groups are not strictly ascending.
-    /// @param groupIds The reward groups requested.
-    function _requireGroupIds(uint256[] calldata groupIds) internal pure {
-        // Every entry point needs at least one group to read or collect from.
-        if (groupIds.length == 0) revert JBStickyAutoStick_EmptyGroupIds(groupIds.length);
-
-        // A repeated group would count its collectable amount once per entry toward the holder's minimum.
-        for (uint256 i = 1; i < groupIds.length; i++) {
-            // Fail on the first entry out of order; the rest are never read.
-            // forge-lint: disable-next-item(require-revert-in-loop)
-            if (groupIds[i] <= groupIds[i - 1]) {
-                revert JBStickyAutoStick_GroupIdsNotAscending({previous: groupIds[i - 1], next: groupIds[i]});
-            }
-        }
     }
 
     /// @notice Reverts when any requested reward group is one the distributor cannot fund or collect from.

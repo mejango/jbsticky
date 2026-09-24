@@ -354,6 +354,8 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     /// fee, so the accepted NFT is the one the launch requested. Transfers of existing NFTs and mints outside a launch
     /// revert.
     /// @inheritdoc IERC721Receiver
+    /// @param from The previous owner of the NFT, which is the zero address for a mint.
+    /// @param tokenId The ID of the NFT received, reported when the NFT is rejected.
     /// @return selector The ERC721 receiver acceptance selector.
     function onERC721Received(
         address,
@@ -427,7 +429,7 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     }
 
     //*********************************************************************//
-    // ----------------------- internal views ---------------------------- //
+    // ----------------------- internal helpers -------------------------- //
     //*********************************************************************//
 
     /// @notice The CREATE2 salt of a launcher's share token for a launch configuration.

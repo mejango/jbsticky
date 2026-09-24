@@ -6,18 +6,37 @@ import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+
 import {JBStickyTestFeeReceiver} from "./helpers/JBStickyTestFeeReceiver.sol";
 import {JBStickyTestLauncher} from "./helpers/JBStickyTestLauncher.sol";
 
 /// @notice Creation fees retain their original payer through Sticky's immutable project owner.
 contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
+    //*********************************************************************//
+    // ----------------------- internal constants ------------------------ //
+    //*********************************************************************//
+
+    /// @notice The project creation fee configured on core.
     uint256 internal constant _FEE = 0.0001 ether;
 
+    //*********************************************************************//
+    // -------------------- internal stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The Sticky factory.
     JBStickyDeployer internal _deployer;
-    JBStickyTestFeeReceiver internal _receiver;
+
+    /// @notice The account funding each launch.
     address internal _launcher = makeAddr("launcher");
 
-    /// @notice Configure core's actual fee path with an observer at the fee-receiver boundary.
+    /// @notice The observer at the fee-receiver boundary.
+    JBStickyTestFeeReceiver internal _receiver;
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
+
+    /// @notice Configures core's actual fee path with an observer at the fee-receiver boundary.
     function setUp() public override {
         super.setUp();
         _receiver = new JBStickyTestFeeReceiver();
@@ -60,6 +79,18 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
         _assertPayerScopesCleared();
     }
 
+    /// @notice The deployer rejects project NFTs minted to it outside its own launch.
+    function test_rejectsProjectMintedOutsideLaunch() public {
+        vm.deal(address(this), _FEE);
+        uint256 expectedId = jbProjects().count() + 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyDeployer.JBStickyDeployer_UnexpectedNft.selector, address(jbProjects()), address(0), expectedId
+            )
+        );
+        jbProjects().createFor{value: _FEE}(address(_deployer));
+    }
+
     /// @notice Another Sticky project's shares cannot be the staked token, since the terminal would hold unclaimable
     /// reward weight in that project's distributor rounds.
     function test_rejectsStickyTokenAsStakedToken() public {
@@ -98,19 +129,11 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
         jbProjects().safeTransferFrom({from: holder, to: address(_deployer), tokenId: projectId});
     }
 
-    /// @notice The deployer rejects project NFTs minted to it outside its own launch.
-    function test_rejectsProjectMintedOutsideLaunch() public {
-        vm.deal(address(this), _FEE);
-        uint256 expectedId = jbProjects().count() + 1;
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                JBStickyDeployer.JBStickyDeployer_UnexpectedNft.selector, address(jbProjects()), address(0), expectedId
-            )
-        );
-        jbProjects().createFor{value: _FEE}(address(_deployer));
-    }
+    //*********************************************************************//
+    // ---------------------- internal transactions ---------------------- //
+    //*********************************************************************//
 
-    /// @notice Launch a project from the funding account.
+    /// @notice Launches a project from the funding account.
     /// @return projectId The new project ID.
     function _launch() internal returns (uint256 projectId) {
         vm.prank(_launcher);
@@ -125,7 +148,11 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
         });
     }
 
-    /// @notice No forwarding contract retains a fee payer after the launch returns.
+    //*********************************************************************//
+    // ----------------------- internal views ---------------------------- //
+    //*********************************************************************//
+
+    /// @notice Checks that no forwarding contract retains a fee payer after the launch returns.
     function _assertPayerScopesCleared() internal view {
         assertEq(_deployer.originalPayer(), address(0));
         assertEq(jbController().originalPayer(), address(0));

@@ -132,15 +132,8 @@ contract JBStickyRewardReceiverFactory is IJBStickyRewardReceiverFactory {
     }
 
     //*********************************************************************//
-    // ----------------------- internal views ---------------------------- //
+    // ----------------------- internal helpers -------------------------- //
     //*********************************************************************//
-
-    /// @notice Reverts unless the distributor can fund the reward group.
-    /// @param groupId The reward group to validate.
-    function _requireValidGroupId(uint256 groupId) internal view {
-        // Defer to the distributor so the factory never encodes a group rule of its own.
-        if (!DISTRIBUTOR.isValidGroupId(groupId)) revert JBStickyRewardReceiverFactory_InvalidGroupId(groupId);
-    }
 
     /// @notice The CREATE2 salt for a sticky token and reward group's receiver.
     /// @param stickyToken The sticky token the receiver collects rewards for.
@@ -149,5 +142,16 @@ contract JBStickyRewardReceiverFactory is IJBStickyRewardReceiverFactory {
     function _saltOf(address stickyToken, uint256 groupId) internal pure returns (bytes32 salt) {
         // Fixed-width encoding keeps every pair distinct without depending on deployment order or the caller.
         salt = keccak256(abi.encode(stickyToken, groupId));
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal views ---------------------------- //
+    //*********************************************************************//
+
+    /// @notice Reverts unless the distributor can fund the reward group.
+    /// @param groupId The reward group to validate.
+    function _requireValidGroupId(uint256 groupId) internal view {
+        // Defer to the distributor so the factory never encodes a group rule of its own.
+        if (!DISTRIBUTOR.isValidGroupId(groupId)) revert JBStickyRewardReceiverFactory_InvalidGroupId(groupId);
     }
 }

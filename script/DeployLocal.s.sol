@@ -10,6 +10,7 @@ import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
+
 import {JBStickyDeployment} from "./helpers/JBStickyDeployment.sol";
 import {MockArt} from "./mocks/MockArt.sol";
 import {MockBan} from "./mocks/MockBan.sol";

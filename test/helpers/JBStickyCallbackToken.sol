@@ -9,7 +9,7 @@ contract JBStickyCallbackToken is ERC20 {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice The configured test callback failed before reaching the Sticky pricing guard.
+    /// @notice Thrown when the configured test callback fails before reaching the Sticky pricing guard.
     error JBStickyCallbackToken_CallFailed(bytes reason);
 
     //*********************************************************************//
@@ -42,21 +42,21 @@ contract JBStickyCallbackToken is ERC20 {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Initialize an 18-decimal underlying token.
+    /// @notice Initializes an 18-decimal underlying token.
     constructor() ERC20("Callback Underlying", "CALL") {}
 
     //*********************************************************************//
     // ---------------------- external transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Give the terminal permission to spend tokens owned by this token contract itself.
+    /// @notice Gives a spender permission to spend tokens owned by this token contract itself.
     /// @param spender The spender to approve.
     /// @param amount The allowance in token atoms.
     function approveFromSelf(address spender, uint256 amount) external {
         _approve({owner: address(this), spender: spender, value: amount});
     }
 
-    /// @notice Arm one callback during the terminal's approval immediately before the pay hook.
+    /// @notice Arms one callback during the terminal's approval immediately before the pay hook.
     /// @param terminal The terminal whose approval should trigger the callback.
     /// @param hook The spender whose approval should trigger the callback.
     /// @param target The contract to call.
@@ -69,14 +69,14 @@ contract JBStickyCallbackToken is ERC20 {
         callbackEnabled = true;
     }
 
-    /// @notice Execute a call from the token contract to establish its own initial stake.
+    /// @notice Executes a call from the token contract to establish its own initial stake.
     /// @param target The contract to call.
     /// @param data The calldata to send to the target.
     function execute(address target, bytes calldata data) external {
         _execute({target: target, data: data});
     }
 
-    /// @notice Mint test underlying tokens.
+    /// @notice Mints test underlying tokens.
     /// @param beneficiary The account receiving the tokens.
     /// @param amount The amount in token atoms.
     function mint(address beneficiary, uint256 amount) external {
@@ -87,7 +87,7 @@ contract JBStickyCallbackToken is ERC20 {
     // ----------------------- public transactions ----------------------- //
     //*********************************************************************//
 
-    /// @notice Execute the armed callback once before returning from a matching zero approval.
+    /// @notice Executes the armed callback once before returning from a matching zero approval.
     /// @param spender The account whose allowance is set.
     /// @param value The new allowance in token atoms.
     /// @return approved Whether the allowance was set successfully.
@@ -105,7 +105,7 @@ contract JBStickyCallbackToken is ERC20 {
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Execute the configured call and surface unexpected callback failures.
+    /// @notice Executes the configured call and surfaces unexpected callback failures.
     /// @param target The contract to call.
     /// @param data The calldata to send to the target.
     function _execute(address target, bytes memory data) internal {

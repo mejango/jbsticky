@@ -10,9 +10,21 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 
+/// @notice An 18-decimal ERC-20 that serves as both the staked and the reward token of the snapshot tests.
 contract JBStickySnapshotTestToken is ERC20 {
+    //*********************************************************************//
+    // -------------------------- constructor ---------------------------- //
+    //*********************************************************************//
+
     constructor() ERC20("Reward audit", "RA") {}
 
+    //*********************************************************************//
+    // ---------------------- external transactions ---------------------- //
+    //*********************************************************************//
+
+    /// @notice Mints tokens to a holder.
+    /// @param holder The account receiving the tokens.
+    /// @param amount The number of tokens to mint.
     function mint(address holder, uint256 amount) external {
         _mint({account: holder, value: amount});
     }
@@ -20,13 +32,34 @@ contract JBStickySnapshotTestToken is ERC20 {
 
 /// @notice Characterizes the pinned distributor's snapshot timing against real V6 contracts.
 contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
-    address internal _holder = makeAddr("established holder");
+    //*********************************************************************//
+    // -------------------- internal stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The account that stakes for one block to capture the reward snapshots.
     address internal _attacker = makeAddr("snapshot attacker");
-    JBStickySnapshotTestToken internal _underlying;
+
+    /// @notice The deployer that launches the Sticky project.
     JBStickyDeployer internal _deployer;
+
+    /// @notice The distributor under test.
     JBStickyDistributor internal _distributor;
-    IJBToken internal _stickyToken;
+
+    /// @notice The account that stakes before every test.
+    address internal _holder = makeAddr("established holder");
+
+    /// @notice The Sticky project's ID.
     uint256 internal _projectId;
+
+    /// @notice The Sticky share token issued by the project.
+    IJBToken internal _stickyToken;
+
+    /// @notice The token staked into the project and paid out as its reward.
+    JBStickySnapshotTestToken internal _underlying;
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
 
     function setUp() public override {
         super.setUp();
@@ -58,6 +91,16 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
         _underlying.approve({spender: address(_distributor), value: 200e18});
         _stake({holder: _holder, amount: 100e18});
         vm.roll(vm.getBlockNumber() + 1);
+    }
+
+    function test_fundingPinsOnlyCurrentRoundWhilePokeAlsoPinsNextRound() public {
+        _fund(100e18);
+        assertEq(_distributor.roundSnapshotBlock(0), vm.getBlockNumber() - 1);
+        assertEq(_distributor.roundSnapshotBlock(1), 0);
+
+        vm.roll(vm.getBlockNumber() + 1);
+        _distributor.poke();
+        assertEq(_distributor.roundSnapshotBlock(1), vm.getBlockNumber() - 1);
     }
 
     function test_oneBlockStakeCapturesTwoWeeklyRoundsWithAllPrincipalRecovered() public {
@@ -110,16 +153,19 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
         assertEq(_underlying.balanceOf(address(_distributor)), 20e18);
     }
 
-    function test_fundingPinsOnlyCurrentRoundWhilePokeAlsoPinsNextRound() public {
-        _fund(100e18);
-        assertEq(_distributor.roundSnapshotBlock(0), vm.getBlockNumber() - 1);
-        assertEq(_distributor.roundSnapshotBlock(1), 0);
+    //*********************************************************************//
+    // ---------------------- internal transactions ---------------------- //
+    //*********************************************************************//
 
-        vm.roll(vm.getBlockNumber() + 1);
-        _distributor.poke();
-        assertEq(_distributor.roundSnapshotBlock(1), vm.getBlockNumber() - 1);
+    /// @notice Funds the Sticky token's default group with the underlying token from this contract's balance.
+    /// @param amount The amount of the underlying token to fund.
+    function _fund(uint256 amount) internal {
+        _distributor.fund({hook: address(_stickyToken), token: IERC20(address(_underlying)), amount: amount});
     }
 
+    /// @notice Stakes the underlying token into the Sticky project on behalf of a holder.
+    /// @param holder The account whose tokens are staked and who receives the shares.
+    /// @param amount The amount of the underlying token to stake.
     function _stake(address holder, uint256 amount) internal {
         vm.startPrank(holder);
         _underlying.approve({spender: address(jbMultiTerminal()), value: amount});
@@ -133,9 +179,5 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
             metadata: bytes("")
         });
         vm.stopPrank();
-    }
-
-    function _fund(uint256 amount) internal {
-        _distributor.fund({hook: address(_stickyToken), token: IERC20(address(_underlying)), amount: amount});
     }
 }

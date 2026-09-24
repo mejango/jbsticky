@@ -13,8 +13,11 @@ import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyToken} from "../../src/JBStickyToken.sol";
+
 import {JBAutoStickStatus} from "../../src/enums/JBAutoStickStatus.sol";
+
 import {JBStickyTranche} from "../../src/structs/JBStickyTranche.sol";
+
 import {JBStickyRealProjectContext, JBStickyRealProjectFork} from "./helpers/JBStickyRealProjectFork.sol";
 
 /// @notice Exercises the same holder lifecycle against real V6 projects on Ethereum and Base.
@@ -24,8 +27,26 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     // -------------------- internal stored properties ------------------- //
     //*********************************************************************//
 
+    /// @notice The primary holder paying into the underlying project and Sticky.
+    address internal _alice;
+
+    /// @notice The suite's opt-in compounding adapter.
+    JBStickyAutoStick internal _autoStick;
+
+    /// @notice The independent holder used for shared-backing checks.
+    address internal _bob;
+
     /// @notice The selected mainnet fork and its contracts.
     JBStickyRealProjectContext internal _context;
+
+    /// @notice The suite's weekly, four-round vesting distributor.
+    JBStickyDistributor internal _distributor;
+
+    /// @notice The permanently authorized grant sender.
+    address internal _granter;
+
+    /// @notice The suite's position-accounting hook.
+    JBStickyHook internal _hook;
 
     /// @notice The Sticky project launched for each test.
     uint256 internal _projectId;
@@ -33,23 +54,62 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     /// @notice The Sticky shares issued by the test project.
     JBStickyToken internal _token;
 
-    /// @notice The suite's position-accounting hook.
-    JBStickyHook internal _hook;
+    //*********************************************************************//
+    // -------------------------- public views --------------------------- //
+    //*********************************************************************//
 
-    /// @notice The suite's weekly, four-round vesting distributor.
-    JBStickyDistributor internal _distributor;
-
-    /// @notice The suite's opt-in compounding adapter.
-    JBStickyAutoStick internal _autoStick;
-
-    /// @notice The primary holder paying into the underlying project and Sticky.
-    address internal _alice;
-
-    /// @notice The independent holder used for shared-backing checks.
-    address internal _bob;
-
-    /// @notice The permanently authorized grant sender.
-    address internal _granter;
+    /// @notice Launch fixes ownership, accepted asset, data hooks, payout permissions, and reward timing.
+    function test_launchUsesPermanentV6ConfigurationAndProductionRewardSettings() public view {
+        JBStickyDeployer deployer = JBStickyDeployer(_context.suite.deployer);
+        (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) =
+            _context.core.controller.currentRulesetOf(_projectId);
+        assertEq(_context.core.controller.PROJECTS().ownerOf(_projectId), address(deployer));
+        assertEq(address(_context.core.directory.controllerOf(_projectId)), address(_context.core.controller));
+        assertEq(address(deployer.stakedTokenOf(_projectId)), address(_context.underlying));
+        assertEq(address(_token.HOOK()), address(_hook));
+        assertEq(address(_token.TOKENS()), address(_context.core.controller.TOKENS()));
+        assertEq(_token.PROJECT_ID(), _projectId);
+        assertTrue(_token.SOULBOUND());
+        assertEq(ruleset.duration, 0);
+        assertEq(ruleset.weightCutPercent, 0);
+        assertEq(address(ruleset.approvalHook), address(0));
+        assertEq(metadata.reservedPercent, 0);
+        assertEq(metadata.cashOutTaxRate, 0);
+        assertEq(metadata.dataHook, address(_hook));
+        assertTrue(metadata.useDataHookForPay);
+        assertTrue(metadata.useDataHookForCashOut);
+        assertTrue(metadata.pauseCreditTransfers);
+        assertFalse(metadata.allowOwnerMinting);
+        assertFalse(metadata.allowSetTerminals);
+        assertFalse(metadata.allowSetController);
+        assertFalse(metadata.allowTerminalMigration);
+        assertFalse(metadata.allowAddAccountingContext);
+        JBAccountingContext[] memory contexts = _context.core.terminal.accountingContextsOf(_projectId);
+        assertEq(contexts.length, 1);
+        assertEq(contexts[0].token, address(_context.underlying));
+        assertEq(contexts[0].decimals, 18);
+        assertEq(
+            _context.core.controller.FUND_ACCESS_LIMITS().payoutLimitsOf({
+                projectId: _projectId,
+                rulesetId: ruleset.id,
+                terminal: address(_context.core.terminal),
+                token: address(_context.underlying)
+            }).length,
+            0
+        );
+        assertEq(
+            _context.core.controller.FUND_ACCESS_LIMITS().surplusAllowancesOf({
+                projectId: _projectId,
+                rulesetId: ruleset.id,
+                terminal: address(_context.core.terminal),
+                token: address(_context.underlying)
+            }).length,
+            0
+        );
+        assertEq(_distributor.ROUND_DURATION(), 7 days);
+        assertEq(_distributor.VESTING_ROUNDS(), 4);
+        assertEq(_distributor.CLAIM_DURATION(), 2 * 365 days);
+    }
 
     //*********************************************************************//
     // ----------------------- public transactions ----------------------- //
@@ -271,59 +331,6 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     function test_holderFullyExitsWhileAnotherTransferableHolderKeepsDust() public {
         (_projectId, _token) = _launchSticky({context: _context, soulbound: false, cashOutTaxRate: 0});
         _exerciseDustExit();
-    }
-
-    /// @notice Launch fixes ownership, accepted asset, data hooks, payout permissions, and reward timing.
-    function test_launchUsesPermanentV6ConfigurationAndProductionRewardSettings() public view {
-        JBStickyDeployer deployer = JBStickyDeployer(_context.suite.deployer);
-        (JBRuleset memory ruleset, JBRulesetMetadata memory metadata) =
-            _context.core.controller.currentRulesetOf(_projectId);
-        assertEq(_context.core.controller.PROJECTS().ownerOf(_projectId), address(deployer));
-        assertEq(address(_context.core.directory.controllerOf(_projectId)), address(_context.core.controller));
-        assertEq(address(deployer.stakedTokenOf(_projectId)), address(_context.underlying));
-        assertEq(address(_token.HOOK()), address(_hook));
-        assertEq(address(_token.TOKENS()), address(_context.core.controller.TOKENS()));
-        assertEq(_token.PROJECT_ID(), _projectId);
-        assertTrue(_token.SOULBOUND());
-        assertEq(ruleset.duration, 0);
-        assertEq(ruleset.weightCutPercent, 0);
-        assertEq(address(ruleset.approvalHook), address(0));
-        assertEq(metadata.reservedPercent, 0);
-        assertEq(metadata.cashOutTaxRate, 0);
-        assertEq(metadata.dataHook, address(_hook));
-        assertTrue(metadata.useDataHookForPay);
-        assertTrue(metadata.useDataHookForCashOut);
-        assertTrue(metadata.pauseCreditTransfers);
-        assertFalse(metadata.allowOwnerMinting);
-        assertFalse(metadata.allowSetTerminals);
-        assertFalse(metadata.allowSetController);
-        assertFalse(metadata.allowTerminalMigration);
-        assertFalse(metadata.allowAddAccountingContext);
-        JBAccountingContext[] memory contexts = _context.core.terminal.accountingContextsOf(_projectId);
-        assertEq(contexts.length, 1);
-        assertEq(contexts[0].token, address(_context.underlying));
-        assertEq(contexts[0].decimals, 18);
-        assertEq(
-            _context.core.controller.FUND_ACCESS_LIMITS().payoutLimitsOf({
-                projectId: _projectId,
-                rulesetId: ruleset.id,
-                terminal: address(_context.core.terminal),
-                token: address(_context.underlying)
-            }).length,
-            0
-        );
-        assertEq(
-            _context.core.controller.FUND_ACCESS_LIMITS().surplusAllowancesOf({
-                projectId: _projectId,
-                rulesetId: ruleset.id,
-                terminal: address(_context.core.terminal),
-                token: address(_context.underlying)
-            }).length,
-            0
-        );
-        assertEq(_distributor.ROUND_DURATION(), 7 days);
-        assertEq(_distributor.VESTING_ROUNDS(), 4);
-        assertEq(_distributor.CLAIM_DURATION(), 2 * 365 days);
     }
 
     /// @notice Historical rewards follow unequal snapshot balances after transfers, burns, and a late deposit.
@@ -574,7 +581,25 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     }
 
     //*********************************************************************//
-    // ------------------------- internal views -------------------------- //
+    // ----------------------- internal helpers -------------------------- //
+    //*********************************************************************//
+
+    /// @notice The default reward group, as a one-element list.
+    /// @return groupIds The default group.
+    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
+    }
+
+    /// @notice Builds the distributor's single-holder account identifier.
+    /// @param holder The reward recipient.
+    /// @return tokenIds The holder address encoded as its voting token ID.
+    function _ids(address holder) internal pure returns (uint256[] memory tokenIds) {
+        tokenIds = new uint256[](1);
+        tokenIds[0] = uint256(uint160(holder));
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
     /// @notice Confirms every recorded tranche and stake equals the holder's actual ERC-20 balance.
@@ -596,20 +621,6 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             .terminal
             .STORE()
             .balanceOf(address(_context.core.terminal), _projectId, address(_context.underlying));
-    }
-
-    /// @notice The default reward group, as a one-element list.
-    /// @return groupIds The default group.
-    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
-        groupIds = new uint256[](1);
-    }
-
-    /// @notice Builds the distributor's single-holder account identifier.
-    /// @param holder The reward recipient.
-    /// @return tokenIds The holder address encoded as its voting token ID.
-    function _ids(address holder) internal pure returns (uint256[] memory tokenIds) {
-        tokenIds = new uint256[](1);
-        tokenIds[0] = uint256(uint160(holder));
     }
 
     /// @notice Returns the existing project's token using the distributor's interface.

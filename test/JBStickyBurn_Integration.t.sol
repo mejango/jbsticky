@@ -1,20 +1,39 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
+import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+
 import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
+
 import {JBStickyTranche} from "../src/structs/JBStickyTranche.sol";
+
 import {MockArt} from "./JBSticky_Integration.t.sol";
 
 /// @notice Real Juicebox controller and terminal burns keep sticky accounting synchronized in both token modes.
 contract JBStickyBurnIntegrationTest is TestBaseWorkflow {
-    address internal _holder = makeAddr("holder");
+    //*********************************************************************//
+    // -------------------- internal stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The token staked into each sticky project.
     MockArt internal _art;
+
+    /// @notice The Sticky factory.
     JBStickyDeployer internal _deployer;
+
+    /// @notice The holder who stakes, burns, and cashes out.
+    address internal _holder = makeAddr("holder");
+
+    /// @notice The hook shared by every project the factory deploys.
     IJBStickyHook internal _hook;
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
 
     function setUp() public override {
         super.setUp();
@@ -34,6 +53,13 @@ contract JBStickyBurnIntegrationTest is TestBaseWorkflow {
         _exerciseBurns(false);
     }
 
+    //*********************************************************************//
+    // ---------------------- internal transactions ---------------------- //
+    //*********************************************************************//
+
+    /// @notice Deploys a sticky project in the given token mode and drives controller burns and terminal cash outs
+    /// through it, checking the hook's accounting after each step.
+    /// @param soulbound Whether the project's shares are soulbound.
     function _exerciseBurns(bool soulbound) internal {
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);
@@ -101,7 +127,11 @@ contract JBStickyBurnIntegrationTest is TestBaseWorkflow {
         assertEq(_hook.stakedBalanceOf(projectId, _holder), token.balanceOf(_holder));
     }
 
-    function _stake(uint256 projectId, uint256 amount) internal returns (uint256) {
+    /// @notice Stakes ART into a sticky project from the holder.
+    /// @param projectId The ID of the project to stake into.
+    /// @param amount The amount of ART to stake.
+    /// @return mintedCount The number of sticky shares minted to the holder.
+    function _stake(uint256 projectId, uint256 amount) internal returns (uint256 mintedCount) {
         vm.prank(_holder);
         return jbMultiTerminal().pay({
             projectId: projectId,

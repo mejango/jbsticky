@@ -11,9 +11,16 @@ import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
 
+/// @notice A freely mintable ERC-20 standing in for a reward or staked asset.
 contract DaybreakMintableToken is ERC20 {
+    /// @notice Initializes the token's name and symbol.
+    /// @param name The token name.
+    /// @param symbol The token symbol.
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
 
+    /// @notice Mints tokens to an account.
+    /// @param beneficiary The account receiving the tokens.
+    /// @param amount The amount to mint, in token atoms.
     function mint(address beneficiary, uint256 amount) external {
         _mint({account: beneficiary, value: amount});
     }
@@ -23,15 +30,37 @@ contract DaybreakMintableToken is ERC20 {
 /// launcher's predicted token cannot be captured by whoever launches first, and the launcher's own launch lands on
 /// the prediction made for the project ID it receives.
 contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
+    //*********************************************************************//
+    // -------------------- internal stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The account that launches first with the victim's configuration.
     address internal _attacker = makeAddr("counterfactual token attacker");
+
+    /// @notice The Sticky factory under test.
+    JBStickyDeployer internal _deployer;
+
+    /// @notice The distributor that receives settled rewards.
+    JBStickyDistributor internal _distributor;
+
+    /// @notice The project creation fee.
+    uint256 internal _fee;
+
+    /// @notice The factory that predicts and deploys counterfactual reward receivers.
+    JBStickyRewardReceiverFactory internal _receiverFactory;
+
+    /// @notice The token sent to the prefunded receiver.
+    DaybreakMintableToken internal _rewardToken;
+
+    /// @notice The asset staked by both launchers' configurations.
+    DaybreakMintableToken internal _underlying;
+
+    /// @notice The account whose predicted token address is prefunded.
     address internal _victim = makeAddr("counterfactual token victim");
 
-    JBStickyDeployer internal _deployer;
-    JBStickyDistributor internal _distributor;
-    JBStickyRewardReceiverFactory internal _receiverFactory;
-    DaybreakMintableToken internal _rewardToken;
-    DaybreakMintableToken internal _underlying;
-    uint256 internal _fee;
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
 
     function setUp() public override {
         super.setUp();
@@ -137,7 +166,13 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         assertEq(_rewardToken.balanceOf(_victim), reward);
     }
 
-    /// @notice Launch the shared configuration as `launcher`, paying the creation fee.
+    //*********************************************************************//
+    // ---------------------- internal transactions ---------------------- //
+    //*********************************************************************//
+
+    /// @notice Launches the shared configuration as `launcher`, paying the creation fee.
+    /// @param launcher The account that launches and owns the fee.
+    /// @return projectId The ID of the launched project.
     function _launchAs(address launcher) internal returns (uint256 projectId) {
         vm.deal(launcher, _fee);
         vm.prank(launcher);
@@ -152,7 +187,14 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         });
     }
 
-    /// @notice The shared configuration's token address for a launcher and project ID.
+    //*********************************************************************//
+    // ----------------------- internal views ---------------------------- //
+    //*********************************************************************//
+
+    /// @notice Predicts the shared configuration's token address for a launcher and project ID.
+    /// @param launcher The account expected to launch.
+    /// @param projectId The project ID expected at launch.
+    /// @return token The predicted Sticky token address.
     function _predictFor(address launcher, uint256 projectId) internal view returns (address token) {
         token = _deployer.predictStickyTokenOf({
             launcher: launcher,

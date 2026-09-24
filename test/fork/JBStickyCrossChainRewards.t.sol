@@ -20,10 +20,16 @@ import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
 import {JBStickyToken} from "../../src/JBStickyToken.sol";
+
 import {JBStickyRealProjectContext, JBStickyRealProjectFork} from "./helpers/JBStickyRealProjectFork.sol";
 
 /// @notice The canonical OP messenger entry point used after a portal deposits an L1 message on Base.
 interface IStickyOPMessenger {
+    /// @notice Whether the messenger has successfully relayed a message.
+    /// @param messageHash The hash of the complete versioned relay calldata.
+    /// @return success Whether the target accepted the message.
+    function successfulMessages(bytes32 messageHash) external view returns (bool success);
+
     /// @notice Relays one cross-domain message after its portal deposit.
     /// @param nonce The source messenger's versioned message nonce.
     /// @param sender The original sender on the source chain.
@@ -41,11 +47,6 @@ interface IStickyOPMessenger {
     )
         external
         payable;
-
-    /// @notice Whether the messenger has successfully relayed a message.
-    /// @param messageHash The hash of the complete versioned relay calldata.
-    /// @return success Whether the target accepted the message.
-    function successfulMessages(bytes32 messageHash) external view returns (bool success);
 }
 
 /// @notice Bridges Ethereum project 3's real tokens into its Base counterpart's Sticky rewards.
@@ -54,6 +55,10 @@ interface IStickyOPMessenger {
 /// project tokens, project accounting, claims, and the production Sticky suite execute their real code. This does
 /// not test the portal's consensus proof, sequencer, finality delay, or an off-chain relayer.
 contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
+    //*********************************************************************//
+    // ----------------------------- structs ----------------------------- //
+    //*********************************************************************//
+
     /// @notice A complete native-token message emitted by the deployed L1 messenger.
     /// @custom:member sender The Ethereum sucker that submitted the message.
     /// @custom:member target The Base sucker receiving the message.
@@ -70,28 +75,63 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         uint256 value;
     }
 
-    /// @notice The production registry shared by Ethereum and Base.
-    IJBSuckerRegistry internal constant _SUCKER_REGISTRY =
-        IJBSuckerRegistry(0x7903a854aE91eAf635430D120a1a434085cEf297);
-    /// @notice Base's cross-domain messenger on Ethereum.
-    address internal constant _L1_MESSENGER = 0x866E82a600A1414e583f7F13623F1aC5d58b0Afa;
-    /// @notice The canonical OP cross-domain messenger predeploy on Base.
-    address internal constant _L2_MESSENGER = 0x4200000000000000000000000000000000000007;
+    //*********************************************************************//
+    // ----------------------- internal constants ------------------------ //
+    //*********************************************************************//
+
     /// @notice The OP alias applied to an L1 contract that sends a portal deposit.
     uint160 internal constant _ALIAS_OFFSET = uint160(0x1111000000000000000000000000000000001111);
+
+    /// @notice Base's cross-domain messenger on Ethereum.
+    address internal constant _L1_MESSENGER = 0x866E82a600A1414e583f7F13623F1aC5d58b0Afa;
+
+    /// @notice The canonical OP cross-domain messenger predeploy on Base.
+    address internal constant _L2_MESSENGER = 0x4200000000000000000000000000000000000007;
+
     /// @notice The messenger event that records the original sender, recipient, and calldata.
     bytes32 internal constant _SENT_MESSAGE = keccak256("SentMessage(address,address,bytes,uint256,uint256)");
 
-    JBStickyRealProjectContext internal _ethereum;
+    /// @notice The production registry shared by Ethereum and Base.
+    IJBSuckerRegistry internal constant _SUCKER_REGISTRY =
+        IJBSuckerRegistry(0x7903a854aE91eAf635430D120a1a434085cEf297);
+
+    //*********************************************************************//
+    // -------------------- internal stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The pinned Base fork and its contracts.
     JBStickyRealProjectContext internal _base;
-    JBOptimismSucker internal _source;
+
+    /// @notice The Base sucker that receives the bridged root.
     JBOptimismSucker internal _destination;
-    JBStickyToken internal _sticky;
-    uint256 internal _stickyProjectId;
-    address internal _receiver;
+
+    /// @notice The pinned Ethereum fork and its contracts.
+    JBStickyRealProjectContext internal _ethereum;
+
+    /// @notice The account that pays Ethereum project 3 and bridges its tokens.
     address internal _funder = makeAddr("cross-chain reward funder");
+
+    /// @notice The Sticky holder on Base who receives the bridged rewards.
     address internal _holder = makeAddr("cross-chain reward holder");
+
+    /// @notice The unrelated account that claims, settles, vests, and compounds.
     address internal _keeper = makeAddr("cross-chain reward keeper");
+
+    /// @notice The counterfactual reward receiver for the Sticky token's default group.
+    address internal _receiver;
+
+    /// @notice The Ethereum sucker that submits the bridged root.
+    JBOptimismSucker internal _source;
+
+    /// @notice The Sticky share token launched on Base.
+    JBStickyToken internal _sticky;
+
+    /// @notice The Sticky project launched on Base.
+    uint256 internal _stickyProjectId;
+
+    //*********************************************************************//
+    // ----------------------- public transactions ----------------------- //
+    //*********************************************************************//
 
     /// @notice Resolves the production native bridge route and creates a backed Sticky position on its Base peer.
     function setUp() public {
@@ -127,6 +167,114 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
             stickyToken: address(_sticky), groupId: 0
         });
         assertEq(_receiver.code.length, 0, "Rewards can arrive before the receiver is deployed");
+    }
+
+    /// @notice Claiming before message delivery leaves the valid leaf available for a later retry.
+    function test_ethereumProject3ToBaseReceiver_claimBeforeMessageArrivalCanRetry() public {
+        (JBClaim memory claimData, BridgeMessage memory message) = _prepareAndSend();
+        vm.selectFork(_base.forkId);
+        _expectInvalidClaim(claimData);
+        _relay(message);
+        _destination.claim(claimData);
+        assertEq(_base.underlying.balanceOf(_receiver), claimData.leaf.projectTokenCount);
+    }
+
+    /// @notice A failed source-side minimum returns the wallet, supply, allowance, treasury, and outbox unchanged.
+    function test_ethereumProject3ToBaseReceiver_failedPreparePreservesTokensAndOutbox() public {
+        vm.selectFork(_ethereum.forkId);
+        uint256 reward = _buyUnderlying({context: _ethereum, holder: _funder, nativeAmount: 0.01 ether});
+        JBOutboxTree memory beforeOutbox = _source.outboxOf(JBConstants.NATIVE_TOKEN);
+        uint256 supplyBefore = _ethereum.underlying.totalSupply();
+        uint256 backingBefore = _ethereum.core.terminal.STORE().balanceOf({
+            terminal: address(_ethereum.nativeTerminal), projectId: 3, token: JBConstants.NATIVE_TOKEN
+        });
+        vm.startPrank(_funder);
+        _ethereum.underlying.approve({spender: address(_source), value: reward});
+        vm.expectPartialRevert(JBMultiTerminal.JBMultiTerminal_UnderMin.selector);
+        _source.prepare({
+            projectTokenCount: reward,
+            beneficiary: bytes32(uint256(uint160(_receiver))),
+            minTokensReclaimed: type(uint256).max,
+            token: JBConstants.NATIVE_TOKEN,
+            metadata: bytes32(0)
+        });
+        vm.stopPrank();
+        assertEq(_ethereum.underlying.balanceOf(_funder), reward);
+        assertEq(_ethereum.underlying.totalSupply(), supplyBefore);
+        assertEq(_ethereum.underlying.allowance(_funder, address(_source)), reward);
+        assertEq(
+            _ethereum.core.terminal.STORE().balanceOf({
+                terminal: address(_ethereum.nativeTerminal), projectId: 3, token: JBConstants.NATIVE_TOKEN
+            }),
+            backingBefore
+        );
+        assertEq(abi.encode(_source.outboxOf(JBConstants.NATIVE_TOKEN)), abi.encode(beforeOutbox));
+    }
+
+    /// @notice Messenger replay and duplicate claims cannot mint twice, and repeated empty settlement is harmless.
+    function test_ethereumProject3ToBaseReceiver_rejectsMessageReplayAndDoubleClaim() public {
+        (JBClaim memory claimData, BridgeMessage memory message) = _prepareAndSend();
+        _relay(message);
+        vm.expectRevert();
+        _deposit(message);
+        _destination.claim(claimData);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBSucker.JBSucker_LeafAlreadyExecuted.selector, JBConstants.NATIVE_TOKEN, claimData.leaf.index
+            )
+        );
+        _destination.claim(claimData);
+        assertEq(_settle(), claimData.leaf.projectTokenCount);
+        assertEq(_settle(), 0);
+    }
+
+    /// @notice A keeper cannot redirect a valid claim or change its metadata or proof.
+    function test_ethereumProject3ToBaseReceiver_rejectsTamperedBeneficiaryMetadataAndProof() public {
+        (JBClaim memory claimData, BridgeMessage memory message) = _prepareAndSend();
+        _relay(message);
+        bytes32 beneficiary = claimData.leaf.beneficiary;
+        claimData.leaf.beneficiary = bytes32(uint256(uint160(_keeper)));
+        _expectInvalidClaim(claimData);
+        claimData.leaf.beneficiary = beneficiary;
+        bytes32 metadata = claimData.leaf.metadata;
+        claimData.leaf.metadata = keccak256("forged metadata");
+        _expectInvalidClaim(claimData);
+        claimData.leaf.metadata = metadata;
+        bytes32 sibling = claimData.proof[0];
+        claimData.proof[0] = keccak256("forged proof");
+        _expectInvalidClaim(claimData);
+        claimData.proof[0] = sibling;
+        _destination.claim(claimData);
+        assertEq(_base.underlying.balanceOf(_receiver), claimData.leaf.projectTokenCount);
+        assertEq(_base.underlying.balanceOf(_keeper), 0);
+    }
+
+    /// @notice Neither a direct caller, an unauthorized deposit caller, nor a different remote sender can set a root.
+    function test_ethereumProject3ToBaseReceiver_rejectsUnauthorizedRelayAndRemoteSender() public {
+        (, BridgeMessage memory message) = _prepareAndSend();
+        vm.selectFork(_base.forkId);
+        bytes32 inboxBefore = _destination.inboxOf(JBConstants.NATIVE_TOKEN).root;
+        vm.expectRevert(abi.encodeWithSelector(JBSucker.JBSucker_NotPeer.selector, bytes32(uint256(uint160(_keeper)))));
+        vm.prank(_keeper);
+        _destination.fromRemote(_messageRoot(message));
+
+        vm.expectRevert();
+        vm.prank(_keeper);
+        IStickyOPMessenger(_L2_MESSENGER).relayMessage({
+            nonce: message.nonce,
+            sender: message.sender,
+            target: message.target,
+            value: message.value,
+            minimumGas: message.minimumGas,
+            message: message.message
+        });
+        address source = message.sender;
+        message.sender = _keeper;
+        _deposit(message);
+        assertFalse(IStickyOPMessenger(_L2_MESSENGER).successfulMessages(_messageHash(message)));
+        assertEq(_destination.inboxOf(JBConstants.NATIVE_TOKEN).root, inboxBefore);
+        message.sender = source;
+        _relay(message);
     }
 
     /// @notice A real cross-chain reward reaches a counterfactual receiver, vests, compounds, and remains redeemable.
@@ -190,18 +338,20 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         assertEq(_sticky.balanceOf(_holder), 0);
     }
 
-    /// @notice Neither a direct caller, an unauthorized deposit caller, nor a different remote sender can set a root.
-    function test_ethereumProject3ToBaseReceiver_rejectsUnauthorizedRelayAndRemoteSender() public {
-        (, BridgeMessage memory message) = _prepareAndSend();
-        vm.selectFork(_base.forkId);
-        bytes32 inboxBefore = _destination.inboxOf(JBConstants.NATIVE_TOKEN).root;
-        vm.expectRevert(abi.encodeWithSelector(JBSucker.JBSucker_NotPeer.selector, bytes32(uint256(uint160(_keeper)))));
-        vm.prank(_keeper);
-        _destination.fromRemote(_messageRoot(message));
+    //*********************************************************************//
+    // ---------------------- internal transactions ---------------------- //
+    //*********************************************************************//
 
-        vm.expectRevert();
-        vm.prank(_keeper);
-        IStickyOPMessenger(_L2_MESSENGER).relayMessage({
+    /// @notice Models the portal deposit by impersonating its canonical aliased sender and crediting the sent ETH.
+    /// @param message The message being deposited, including the original remote sender.
+    function _deposit(BridgeMessage memory message) internal {
+        address aliasedSender;
+        unchecked {
+            aliasedSender = address(uint160(_L1_MESSENGER) + _ALIAS_OFFSET);
+        }
+        vm.deal(aliasedSender, message.value);
+        vm.prank(aliasedSender);
+        IStickyOPMessenger(_L2_MESSENGER).relayMessage{value: message.value}({
             nonce: message.nonce,
             sender: message.sender,
             target: message.target,
@@ -209,93 +359,28 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
             minimumGas: message.minimumGas,
             message: message.message
         });
-        address source = message.sender;
-        message.sender = _keeper;
-        _deposit(message);
-        assertFalse(IStickyOPMessenger(_L2_MESSENGER).successfulMessages(_messageHash(message)));
-        assertEq(_destination.inboxOf(JBConstants.NATIVE_TOKEN).root, inboxBefore);
-        message.sender = source;
-        _relay(message);
     }
 
-    /// @notice A keeper cannot redirect a valid claim or change its metadata or proof.
-    function test_ethereumProject3ToBaseReceiver_rejectsTamperedBeneficiaryMetadataAndProof() public {
-        (JBClaim memory claimData, BridgeMessage memory message) = _prepareAndSend();
-        _relay(message);
-        bytes32 beneficiary = claimData.leaf.beneficiary;
-        claimData.leaf.beneficiary = bytes32(uint256(uint160(_keeper)));
-        _expectInvalidClaim(claimData);
-        claimData.leaf.beneficiary = beneficiary;
-        bytes32 metadata = claimData.leaf.metadata;
-        claimData.leaf.metadata = keccak256("forged metadata");
-        _expectInvalidClaim(claimData);
-        claimData.leaf.metadata = metadata;
-        bytes32 sibling = claimData.proof[0];
-        claimData.proof[0] = keccak256("forged proof");
-        _expectInvalidClaim(claimData);
-        claimData.proof[0] = sibling;
-        _destination.claim(claimData);
-        assertEq(_base.underlying.balanceOf(_receiver), claimData.leaf.projectTokenCount);
-        assertEq(_base.underlying.balanceOf(_keeper), 0);
-    }
-
-    /// @notice Messenger replay and duplicate claims cannot mint twice, and repeated empty settlement is harmless.
-    function test_ethereumProject3ToBaseReceiver_rejectsMessageReplayAndDoubleClaim() public {
-        (JBClaim memory claimData, BridgeMessage memory message) = _prepareAndSend();
-        _relay(message);
-        vm.expectRevert();
-        _deposit(message);
-        _destination.claim(claimData);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                JBSucker.JBSucker_LeafAlreadyExecuted.selector, JBConstants.NATIVE_TOKEN, claimData.leaf.index
-            )
-        );
-        _destination.claim(claimData);
-        assertEq(_settle(), claimData.leaf.projectTokenCount);
-        assertEq(_settle(), 0);
-    }
-
-    /// @notice Claiming before message delivery leaves the valid leaf available for a later retry.
-    function test_ethereumProject3ToBaseReceiver_claimBeforeMessageArrivalCanRetry() public {
-        (JBClaim memory claimData, BridgeMessage memory message) = _prepareAndSend();
-        vm.selectFork(_base.forkId);
-        _expectInvalidClaim(claimData);
-        _relay(message);
-        _destination.claim(claimData);
-        assertEq(_base.underlying.balanceOf(_receiver), claimData.leaf.projectTokenCount);
-    }
-
-    /// @notice A failed source-side minimum returns the wallet, supply, allowance, treasury, and outbox unchanged.
-    function test_ethereumProject3ToBaseReceiver_failedPreparePreservesTokensAndOutbox() public {
-        vm.selectFork(_ethereum.forkId);
-        uint256 reward = _buyUnderlying({context: _ethereum, holder: _funder, nativeAmount: 0.01 ether});
-        JBOutboxTree memory beforeOutbox = _source.outboxOf(JBConstants.NATIVE_TOKEN);
-        uint256 supplyBefore = _ethereum.underlying.totalSupply();
-        uint256 backingBefore = _ethereum.core.terminal.STORE().balanceOf({
-            terminal: address(_ethereum.nativeTerminal), projectId: 3, token: JBConstants.NATIVE_TOKEN
+    /// @notice Gives the adapter only the holder's explicit project trust, token approval, and compounding opt-in.
+    function _enableAutoStick() internal {
+        vm.startPrank(_holder);
+        _base.underlying.approve({spender: _base.suite.autoStick, value: type(uint256).max});
+        JBStickyHook(_base.suite.hook).setTrustedSenderFor({
+            projectId: _stickyProjectId, sender: _base.suite.autoStick, trusted: true
         });
-        vm.startPrank(_funder);
-        _ethereum.underlying.approve({spender: address(_source), value: reward});
-        vm.expectPartialRevert(JBMultiTerminal.JBMultiTerminal_UnderMin.selector);
-        _source.prepare({
-            projectTokenCount: reward,
-            beneficiary: bytes32(uint256(uint160(_receiver))),
-            minTokensReclaimed: type(uint256).max,
-            token: JBConstants.NATIVE_TOKEN,
-            metadata: bytes32(0)
+        JBStickyAutoStick(_base.suite.autoStick).setConfigFor({
+            projectId: _stickyProjectId, enabled: true, minimumAmount: 1, cooldown: 1 days
         });
         vm.stopPrank();
-        assertEq(_ethereum.underlying.balanceOf(_funder), reward);
-        assertEq(_ethereum.underlying.totalSupply(), supplyBefore);
-        assertEq(_ethereum.underlying.allowance(_funder, address(_source)), reward);
-        assertEq(
-            _ethereum.core.terminal.STORE().balanceOf({
-                terminal: address(_ethereum.nativeTerminal), projectId: 3, token: JBConstants.NATIVE_TOKEN
-            }),
-            backingBefore
-        );
-        assertEq(abi.encode(_source.outboxOf(JBConstants.NATIVE_TOKEN)), abi.encode(beforeOutbox));
+    }
+
+    /// @notice Checks that a rejected proof neither marks the leaf executed nor delivers reward tokens.
+    /// @param claimData The unprovable or tampered claim.
+    function _expectInvalidClaim(JBClaim memory claimData) internal {
+        vm.expectPartialRevert(JBSucker.JBSucker_InvalidProof.selector);
+        _destination.claim(claimData);
+        assertEq(_destination.executedLeafHashOf(JBConstants.NATIVE_TOKEN, claimData.leaf.index), bytes32(0));
+        assertEq(_base.underlying.balanceOf(_receiver), 0);
     }
 
     /// @notice Pays Ethereum project 3, burns its real tokens, and captures the actual messenger submission.
@@ -390,23 +475,40 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         assertEq(_destination.inboxOf(JBConstants.NATIVE_TOKEN).root, _messageRoot(message).remoteRoot.root);
     }
 
-    /// @notice Models the portal deposit by impersonating its canonical aliased sender and crediting the sent ETH.
-    /// @param message The message being deposited, including the original remote sender.
-    function _deposit(BridgeMessage memory message) internal {
-        address aliasedSender;
-        unchecked {
-            aliasedSender = address(uint160(_L1_MESSENGER) + _ALIAS_OFFSET);
-        }
-        vm.deal(aliasedSender, message.value);
-        vm.prank(aliasedSender);
-        IStickyOPMessenger(_L2_MESSENGER).relayMessage{value: message.value}({
-            nonce: message.nonce,
-            sender: message.sender,
-            target: message.target,
-            value: message.value,
-            minimumGas: message.minimumGas,
-            message: message.message
+    /// @notice Settles the receiver as an unrelated keeper and checks that its tokens and approval are cleared.
+    /// @return amount The reward amount funded into the production distributor.
+    function _settle() internal returns (uint256 amount) {
+        vm.prank(_keeper);
+        amount = JBStickyRewardReceiverFactory(_base.suite.rewardReceiverFactory).settleFor({
+            stickyToken: address(_sticky), groupId: 0, token: IERC20(address(_base.underlying))
         });
+        assertEq(_base.underlying.balanceOf(_receiver), 0);
+        assertEq(_base.underlying.allowance(_receiver, _base.suite.distributor), 0);
+    }
+
+    /// @notice Starts the completed reward round's vesting and advances through the production vesting schedule.
+    function _vest() internal {
+        JBStickyDistributor distributor = JBStickyDistributor(payable(_base.suite.distributor));
+        assertEq(distributor.ROUND_DURATION(), 7 days);
+        assertEq(distributor.VESTING_ROUNDS(), 4);
+        vm.warp(block.timestamp + distributor.ROUND_DURATION() + 1);
+        vm.roll(block.number + 1);
+        vm.prank(_keeper);
+        JBStickyAutoStick(_base.suite.autoStick).beginVestingFor({
+            projectId: _stickyProjectId, holder: _holder, groupIds: _defaultGroup()
+        });
+        vm.warp(block.timestamp + distributor.ROUND_DURATION() * (distributor.VESTING_ROUNDS() + 1));
+        vm.roll(block.number + 1);
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal helpers -------------------------- //
+    //*********************************************************************//
+
+    /// @notice The default reward group, as a one-element list.
+    /// @return groupIds The default group.
+    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
     }
 
     /// @notice Recreates the OP version-1 message hash from the captured relay arguments.
@@ -430,59 +532,5 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
             arguments[i] = message.message[i + 4];
         }
         return abi.decode(arguments, (JBMessageRoot));
-    }
-
-    /// @notice Checks that a rejected proof neither marks the leaf executed nor delivers reward tokens.
-    /// @param claimData The unprovable or tampered claim.
-    function _expectInvalidClaim(JBClaim memory claimData) internal {
-        vm.expectPartialRevert(JBSucker.JBSucker_InvalidProof.selector);
-        _destination.claim(claimData);
-        assertEq(_destination.executedLeafHashOf(JBConstants.NATIVE_TOKEN, claimData.leaf.index), bytes32(0));
-        assertEq(_base.underlying.balanceOf(_receiver), 0);
-    }
-
-    /// @notice The default reward group, as a one-element list.
-    /// @return groupIds The default group.
-    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
-        groupIds = new uint256[](1);
-    }
-
-    /// @notice Settles the receiver as an unrelated keeper and checks that its tokens and approval are cleared.
-    /// @return amount The reward amount funded into the production distributor.
-    function _settle() internal returns (uint256 amount) {
-        vm.prank(_keeper);
-        amount = JBStickyRewardReceiverFactory(_base.suite.rewardReceiverFactory).settleFor({
-            stickyToken: address(_sticky), groupId: 0, token: IERC20(address(_base.underlying))
-        });
-        assertEq(_base.underlying.balanceOf(_receiver), 0);
-        assertEq(_base.underlying.allowance(_receiver, _base.suite.distributor), 0);
-    }
-
-    /// @notice Gives the adapter only the holder's explicit project trust, token approval, and compounding opt-in.
-    function _enableAutoStick() internal {
-        vm.startPrank(_holder);
-        _base.underlying.approve({spender: _base.suite.autoStick, value: type(uint256).max});
-        JBStickyHook(_base.suite.hook).setTrustedSenderFor({
-            projectId: _stickyProjectId, sender: _base.suite.autoStick, trusted: true
-        });
-        JBStickyAutoStick(_base.suite.autoStick).setConfigFor({
-            projectId: _stickyProjectId, enabled: true, minimumAmount: 1, cooldown: 1 days
-        });
-        vm.stopPrank();
-    }
-
-    /// @notice Starts the completed reward round's vesting and advances through the production vesting schedule.
-    function _vest() internal {
-        JBStickyDistributor distributor = JBStickyDistributor(payable(_base.suite.distributor));
-        assertEq(distributor.ROUND_DURATION(), 7 days);
-        assertEq(distributor.VESTING_ROUNDS(), 4);
-        vm.warp(block.timestamp + distributor.ROUND_DURATION() + 1);
-        vm.roll(block.number + 1);
-        vm.prank(_keeper);
-        JBStickyAutoStick(_base.suite.autoStick).beginVestingFor({
-            projectId: _stickyProjectId, holder: _holder, groupIds: _defaultGroup()
-        });
-        vm.warp(block.timestamp + distributor.ROUND_DURATION() * (distributor.VESTING_ROUNDS() + 1));
-        vm.roll(block.number + 1);
     }
 }

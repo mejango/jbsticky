@@ -172,6 +172,25 @@ abstract contract JBStickyDeployment is Script {
     }
 
     //*********************************************************************//
+    // ----------------------- internal helpers -------------------------- //
+    //*********************************************************************//
+
+    /// @notice Maps supported chain IDs to the committed core artifact folder names.
+    /// @param chainId The chain ID to resolve.
+    /// @return network The core artifact folder name.
+    function _network(uint256 chainId) internal pure returns (string memory network) {
+        if (chainId == 1) return "ethereum";
+        if (chainId == 10) return "optimism";
+        if (chainId == 8453) return "base";
+        if (chainId == 42_161) return "arbitrum";
+        if (chainId == 11_155_111) return "sepolia";
+        if (chainId == 11_155_420) return "optimism_sepolia";
+        if (chainId == 84_532) return "base_sepolia";
+        if (chainId == 421_614) return "arbitrum_sepolia";
+        revert JBStickyDeployment_UnsupportedChain(chainId);
+    }
+
+    //*********************************************************************//
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
@@ -199,21 +218,6 @@ abstract contract JBStickyDeployment is Script {
         core.directory = IJBDirectory(_readAddress(string.concat(directory, "JBDirectory.json")));
         core.terminal = IJBMultiTerminal(_readAddress(string.concat(directory, "JBMultiTerminal.json")));
         _verifyCore(core);
-    }
-
-    /// @notice Maps supported chain IDs to the committed core artifact folder names.
-    /// @param chainId The chain ID to resolve.
-    /// @return network The core artifact folder name.
-    function _network(uint256 chainId) internal pure returns (string memory network) {
-        if (chainId == 1) return "ethereum";
-        if (chainId == 10) return "optimism";
-        if (chainId == 8453) return "base";
-        if (chainId == 42_161) return "arbitrum";
-        if (chainId == 11_155_111) return "sepolia";
-        if (chainId == 11_155_420) return "optimism_sepolia";
-        if (chainId == 84_532) return "base_sepolia";
-        if (chainId == 421_614) return "arbitrum_sepolia";
-        revert JBStickyDeployment_UnsupportedChain(chainId);
     }
 
     /// @notice Predicts every singleton, including the hook created by the deployer's constructor.
