@@ -211,6 +211,32 @@ test('an uncommitted checkout can rehearse but neither propose, verify nor emit 
   assert.equal(forgeRuns, 4);
 });
 
+test('a sphinx.lock Sphinx only reordered is clean; a changed one is not', () => {
+  const lock = JSON.parse(readFileSync('sphinx.lock', 'utf8'));
+  const reordered = JSON.stringify(Object.fromEntries(Object.entries(lock).reverse()));
+  const lockGit = (command, args) => {
+    if (command === 'git' && args[0] === 'status') return { status: 0, stdout: ' M sphinx.lock\n' };
+    if (command === 'git' && args[0] === 'show') return { status: 0, stdout: JSON.stringify(lock) };
+    return readOnlyTool(command, args);
+  };
+  const withLock = text => ({ ...fixture('testnets'), read: file => (file === 'sphinx.lock' ? text : fixture('testnets').read(file)) });
+  let verifyRuns = 0;
+  run('verify', 'testnets', { ...withLock(reordered), spawn(command, args, options) {
+    const tool = lockGit(command, args);
+    if (tool) return tool;
+    verifyRuns++;
+    assert.equal(options.env.STICKY_REVISION, 'abc123');
+    return { status: 0 };
+  } });
+  assert.equal(verifyRuns, 4);
+  const changed = JSON.stringify({ ...lock, orgId: 'someone-else' });
+  assert.throws(() => run('verify', 'testnets', { ...withLock(changed), spawn(command, args) {
+    const tool = lockGit(command, args);
+    if (tool) return tool;
+    assert.fail('a changed lock must not verify');
+  } }), /uncommitted/);
+});
+
 test('a chain predicting different addresses stops the group before the Sphinx proposal', () => {
   const setup = fixture('mainnets');
   setup.files['deployments/base/simulation.json'] = JSON.stringify({ ...JSON.parse(setup.files['deployments/base/simulation.json']), autoStick: '0xee' });
