@@ -3,14 +3,12 @@ pragma solidity 0.8.28;
 
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 
 contract JBStickySnapshotTestToken is ERC20 {
     constructor() ERC20("Reward audit", "RA") {}
@@ -26,7 +24,7 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
     address internal _attacker = makeAddr("snapshot attacker");
     JBStickySnapshotTestToken internal _underlying;
     JBStickyDeployer internal _deployer;
-    JBTokenDistributor internal _distributor;
+    JBStickyDistributor internal _distributor;
     IJBToken internal _stickyToken;
     uint256 internal _projectId;
 
@@ -34,14 +32,13 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
         super.setUp();
         _underlying = new JBStickySnapshotTestToken();
         _deployer = new JBStickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
-        _distributor = new JBTokenDistributor({
-            directory: jbDirectory(),
+        _distributor = new JBStickyDistributor({
             controller: jbController(),
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: jbDirectory(),
+            stickyHook: _deployer.HOOK(),
             initialRoundDuration: 1 weeks,
             initialVestingRounds: 4,
-            initialClaimDuration: 3 * 365 days
+            initialClaimDuration: 2 * 365 days
         });
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);

@@ -6,7 +6,6 @@ import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {JBFixedPointNumber} from "@bananapus/core-v6/src/libraries/JBFixedPointNumber.sol";
 import {JBPayHookSpecification} from "@bananapus/core-v6/src/structs/JBPayHookSpecification.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -17,6 +16,7 @@ import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
 import {IJBStickyAutoStick} from "../src/interfaces/IJBStickyAutoStick.sol";
 import {IJBStickyDeployer} from "../src/interfaces/IJBStickyDeployer.sol";
+import {IJBStickyDistributor} from "../src/interfaces/IJBStickyDistributor.sol";
 import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
 
 /// @notice A mintable test token with configurable decimals and an optional transfer fee.
@@ -50,10 +50,10 @@ contract MockToken is ERC20 {
     }
 }
 
-/// @notice Delivers a configured collectable amount to the beneficiary on collection.
+/// @notice Delivers a configured per-group collectable amount to the beneficiary on collection.
 contract StubDistributor {
     MockToken public token;
-    uint256 public collectable;
+    mapping(uint256 groupId => uint256) public collectableOf;
     uint256 public beginVestingCalls;
     uint256 public collectionCalls;
     uint256 public deliveryOverride;
@@ -61,13 +61,23 @@ contract StubDistributor {
     address public lastBeneficiary;
     address public lastBeginVestingHook;
     uint256 public lastBeginVestingTokenId;
+    uint256[] public collectedGroupIds;
 
     constructor(MockToken token_) {
         token = token_;
     }
 
+    /// @notice The default group's collectable amount.
+    function collectable() external view returns (uint256) {
+        return collectableOf[0];
+    }
+
     function setCollectable(uint256 amount) external {
-        collectable = amount;
+        collectableOf[0] = amount;
+    }
+
+    function setCollectableFor(uint256 groupId, uint256 amount) external {
+        collectableOf[groupId] = amount;
     }
 
     function setDeliveryOverride(uint256 amount) external {
@@ -75,21 +85,32 @@ contract StubDistributor {
         hasDeliveryOverride = true;
     }
 
-    function collectableFor(address, uint256, IERC20) external view returns (uint256) {
-        return collectable;
+    function collectableFor(address, uint256 groupId, uint256, IERC20) external view returns (uint256) {
+        return collectableOf[groupId];
     }
 
-    function beginVesting(address hook, uint256[] calldata tokenIds, IERC20[] calldata) external {
+    function beginVesting(address hook, uint256 groupId, uint256[] calldata tokenIds, IERC20[] calldata) external {
         beginVestingCalls++;
         lastBeginVestingHook = hook;
         lastBeginVestingTokenId = tokenIds[0];
+        collectedGroupIds.push(groupId);
     }
 
-    function collectVestedRewards(address, uint256[] calldata, IERC20[] calldata, address beneficiary) external {
+    function collectVestedRewards(
+        address,
+        uint256 groupId,
+        uint256[] calldata,
+        IERC20[] calldata,
+        address beneficiary
+    )
+        external
+    {
         collectionCalls++;
         lastBeneficiary = beneficiary;
-        token.mint(beneficiary, hasDeliveryOverride ? deliveryOverride : collectable);
-        collectable = 0;
+        collectedGroupIds.push(groupId);
+        token.mint(beneficiary, hasDeliveryOverride ? deliveryOverride : collectableOf[groupId]);
+        collectableOf[groupId] = 0;
+        hasDeliveryOverride = false;
     }
 }
 
@@ -199,7 +220,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.mockCall(deployer, abi.encodeCall(IJBStickyDeployer.TOKENS, ()), abi.encode(tokens));
         vm.mockCall(deployer, abi.encodeCall(IJBStickyDeployer.TERMINAL, ()), abi.encode(address(terminal)));
         adapter = new JBStickyAutoStick({
-            deployer: IJBStickyDeployer(deployer), distributor: IJBDistributor(address(distributor))
+            deployer: IJBStickyDeployer(deployer), distributor: IJBStickyDistributor(address(distributor))
         });
 
         vm.mockCall(deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (PROJECT_ID)), abi.encode(underlying));
@@ -220,6 +241,16 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.mockCall(
             hook, abi.encodeCall(IJBStickyHook.isGranterOf, (PROJECT_ID, address(adapter))), abi.encode(granter)
         );
+    }
+
+    function _group0() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
+    }
+
+    function _groups(uint256 first, uint256 second) internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](2);
+        groupIds[0] = first;
+        groupIds[1] = second;
     }
 
     // Enable with the default happy-path setup: config on, trust mocked on, unlimited allowance.
@@ -286,7 +317,7 @@ contract JBStickyAutoStickUnitTest is Test {
     function test_disablePreservesLastCompoundedAt() public {
         _enable(1e6, 1 days);
         distributor.setCollectable(5e6);
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
         (,, uint48 lastCompoundedAt,) = adapter.configOf(PROJECT_ID, holder);
         assertEq(lastCompoundedAt, block.timestamp);
 
@@ -306,7 +337,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, PROJECT_ID, holder)
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_compoundRevertsWithoutTrust() public {
@@ -316,7 +347,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector, PROJECT_ID, holder)
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_projectGranterStatusStandsInForTrust() public {
@@ -325,9 +356,9 @@ contract JBStickyAutoStickUnitTest is Test {
         _mockTrust(false);
         _mockGranter(true);
         distributor.setCollectable(5e6);
-        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
-        (uint256 underlyingAmount,) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 underlyingAmount,) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(underlyingAmount, 5e6);
     }
 
@@ -339,7 +370,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InsufficientAllowance.selector, 3e6, 5e6)
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_finiteAllowanceCompoundsUntilExhausted() public {
@@ -347,11 +378,11 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.prank(holder);
         underlying.approve(address(adapter), 5e6);
         distributor.setCollectable(5e6);
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
 
         vm.warp(block.timestamp + 1 days);
         distributor.setCollectable(5e6);
-        (JBAutoStickStatus status,, uint256 allowance,) = adapter.statusOf(PROJECT_ID, holder);
+        (JBAutoStickStatus status,, uint256 allowance,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(allowance, 0);
         assertEq(uint256(status), uint256(JBAutoStickStatus.InsufficientAllowance));
     }
@@ -360,7 +391,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.mockCall(deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (99)), abi.encode(address(0)));
         vm.mockCall(tokens, abi.encodeCall(IJBTokens.tokenOf, (99)), abi.encode(address(0)));
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidProject.selector, 99));
-        adapter.compoundFor(99, holder);
+        adapter.compoundFor(99, holder, _group0());
     }
 
     //*********************************************************************//
@@ -373,9 +404,9 @@ contract JBStickyAutoStickUnitTest is Test {
         distributor.setCollectable(5e6);
 
         vm.expectEmit();
-        emit IJBStickyAutoStick.AutoStuck(PROJECT_ID, holder, address(underlying), 5e6, 5e18, keeper);
+        emit IJBStickyAutoStick.AutoStuck(PROJECT_ID, holder, address(underlying), _group0(), 5e6, 5e18, keeper);
         vm.prank(keeper);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder, _group0());
 
         assertEq(underlyingAmount, 5e6);
         assertEq(stickyTokenCount, 5e18);
@@ -391,14 +422,14 @@ contract JBStickyAutoStickUnitTest is Test {
         _enable(10e6, 1 days);
         distributor.setCollectable(9e6);
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 9e6, 10e6));
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_compoundNormalizes18DecimalMint() public {
         _setUpWithDecimals(18);
         _enable(1e18, 1 days);
         distributor.setCollectable(7e18);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(underlyingAmount, 7e18);
         assertEq(stickyTokenCount, 7e18);
     }
@@ -409,7 +440,7 @@ contract JBStickyAutoStickUnitTest is Test {
         terminal.setShortfall(1);
         // The terminal's own min-returned-tokens floor trips first; the adapter's expected count is the floor.
         vm.expectRevert("UnderMinReturnedTokens");
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_compoundRevertsOnFeeOnTransferToken() public {
@@ -417,17 +448,17 @@ contract JBStickyAutoStickUnitTest is Test {
         distributor.setCollectable(5e6);
         underlying.setFeeBps(100);
         vm.expectRevert(); // UnexpectedTokenDelta — the adapter receives less than it pulled
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_beginVestingRequiresEnabledConfig() public {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, PROJECT_ID, holder)
         );
-        adapter.beginVestingFor(PROJECT_ID, holder);
+        adapter.beginVestingFor(PROJECT_ID, holder, _group0());
 
         _enable(1e6, 1 days);
-        adapter.beginVestingFor(PROJECT_ID, holder);
+        adapter.beginVestingFor(PROJECT_ID, holder, _group0());
         assertEq(distributor.beginVestingCalls(), 1);
         assertEq(distributor.lastBeginVestingHook(), stickyToken);
         assertEq(distributor.lastBeginVestingTokenId(), uint256(uint160(holder)));
@@ -440,14 +471,14 @@ contract JBStickyAutoStickUnitTest is Test {
         distributor.setCollectable(999_999);
         vm.mockCallRevert(
             address(distributor),
-            abi.encodeWithSignature("collectVestedRewards(address,uint256[],address[],address)"),
+            abi.encodeWithSignature("collectVestedRewards(address,uint256,uint256[],address[],address)"),
             "collection must not be reached"
         );
 
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 999_999)
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
 
         assertEq(distributor.collectable(), 999_999);
         assertEq(distributor.collectionCalls(), 0);
@@ -469,7 +500,7 @@ contract JBStickyAutoStickUnitTest is Test {
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 999_999)
         );
         vm.prank(holder);
-        adapter.stickRewardsFor(PROJECT_ID);
+        adapter.stickRewardsFor(PROJECT_ID, _group0());
         assertEq(distributor.collectable(), 999_999);
         assertEq(underlying.balanceOf(holder), 0);
         assertEq(underlying.balanceOf(address(terminal)), 0);
@@ -489,7 +520,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 999_999)
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(distributor.collectable(), 1e6);
         assertEq(underlying.balanceOf(holder), 0);
         assertEq(underlying.balanceOf(address(terminal)), 0);
@@ -500,7 +531,7 @@ contract JBStickyAutoStickUnitTest is Test {
         underlying.mint(holder, 10e6);
         distributor.setCollectable(5e6);
         distributor.setDeliveryOverride(3e6);
-        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(amount, 3e6);
         assertEq(count, 3e18);
         assertEq(terminal.lastMinimum(), 3e18);
@@ -513,7 +544,7 @@ contract JBStickyAutoStickUnitTest is Test {
         _setUpWithDecimals(24);
         _enable(1, 1 days);
         distributor.setCollectable(1e6);
-        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(amount, 1e6);
         assertEq(count, 1);
         assertEq(terminal.lastMinimum(), 1);
@@ -525,7 +556,7 @@ contract JBStickyAutoStickUnitTest is Test {
         distributor.setCollectable(10e6);
         terminal.setSharePrice(2);
         vm.prank(keeper);
-        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 amount, uint256 count) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(amount, 10e6);
         assertEq(count, 5e18);
         assertEq(terminal.lastMinimum(), 5e18);
@@ -541,12 +572,12 @@ contract JBStickyAutoStickUnitTest is Test {
         _enable(1, 1 days);
         distributor.setCollectable(1);
         terminal.setSharePrice(2);
-        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), 7);
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, PROJECT_ID, 1)
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
     }
 
     function test_compoundRejectsShortMintEvenIfTerminalIgnoresMinimum() public {
@@ -559,7 +590,7 @@ contract JBStickyAutoStickUnitTest is Test {
                 JBStickyAutoStick.JBStickyAutoStick_InsufficientStickyTokens.selector, 5e18 - 1, 5e18
             )
         );
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(distributor.collectable(), 5e6);
         assertEq(underlying.balanceOf(address(terminal)), 0);
         assertEq(underlying.allowance(address(adapter), address(terminal)), 0);
@@ -575,7 +606,7 @@ contract JBStickyAutoStickUnitTest is Test {
         underlying.approve(address(adapter), type(uint256).max);
         distributor.setCollectable(3e6);
         vm.prank(holder);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.stickRewardsFor(PROJECT_ID);
+        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.stickRewardsFor(PROJECT_ID, _group0());
         assertEq(underlyingAmount, 3e6);
         assertEq(stickyTokenCount, 3e18);
         assertEq(underlying.balanceOf(address(adapter)), 0);
@@ -583,7 +614,7 @@ contract JBStickyAutoStickUnitTest is Test {
         // Immediately again — no cooldown for holder-initiated claims.
         distributor.setCollectable(2e6);
         vm.prank(holder);
-        (underlyingAmount,) = adapter.stickRewardsFor(PROJECT_ID);
+        (underlyingAmount,) = adapter.stickRewardsFor(PROJECT_ID, _group0());
         assertEq(underlyingAmount, 2e6);
     }
 
@@ -599,7 +630,7 @@ contract JBStickyAutoStickUnitTest is Test {
         );
         vm.prank(keeper);
         vm.expectRevert(); // keeper has no allowance set; their claim path is their own, not the holder's
-        adapter.stickRewardsFor(PROJECT_ID);
+        adapter.stickRewardsFor(PROJECT_ID, _group0());
         assertEq(underlying.balanceOf(holder), 0);
     }
 
@@ -608,7 +639,7 @@ contract JBStickyAutoStickUnitTest is Test {
         underlying.approve(address(adapter), type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 0, 1));
         vm.prank(holder);
-        adapter.stickRewardsFor(PROJECT_ID);
+        adapter.stickRewardsFor(PROJECT_ID, _group0());
     }
 
     function test_stickRewardsWorksThroughGranterStatus() public {
@@ -618,7 +649,7 @@ contract JBStickyAutoStickUnitTest is Test {
         underlying.approve(address(adapter), type(uint256).max);
         distributor.setCollectable(3e6);
         vm.prank(holder);
-        (uint256 underlyingAmount,) = adapter.stickRewardsFor(PROJECT_ID);
+        (uint256 underlyingAmount,) = adapter.stickRewardsFor(PROJECT_ID, _group0());
         assertEq(underlyingAmount, 3e6);
     }
 
@@ -631,7 +662,75 @@ contract JBStickyAutoStickUnitTest is Test {
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector, PROJECT_ID, holder)
         );
         vm.prank(holder);
-        adapter.stickRewardsFor(PROJECT_ID);
+        adapter.stickRewardsFor(PROJECT_ID, _group0());
+    }
+
+    //*********************************************************************//
+    // ---------------------------- groups ------------------------------- //
+    //*********************************************************************//
+
+    function test_emptyGroupIdsRevertOnEveryEntryPoint() public {
+        _enable(1e6, 1 days);
+        distributor.setCollectable(5e6);
+        uint256[] memory none = new uint256[](0);
+        bytes memory expected = abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_EmptyGroupIds.selector, 0);
+
+        vm.expectRevert(expected);
+        adapter.compoundFor(PROJECT_ID, holder, none);
+        vm.expectRevert(expected);
+        adapter.beginVestingFor(PROJECT_ID, holder, none);
+        vm.expectRevert(expected);
+        adapter.statusOf(PROJECT_ID, holder, none);
+        vm.expectRevert(expected);
+        vm.prank(holder);
+        adapter.stickRewardsFor(PROJECT_ID, none);
+    }
+
+    function test_multiGroupCompoundSumsEveryGroupAndCollectsEach() public {
+        _enable(1e6, 1 days);
+        distributor.setCollectable(3e6);
+        distributor.setCollectableFor(2000, 2e6);
+
+        (JBAutoStickStatus status, uint256 collectable,,) = adapter.statusOf(PROJECT_ID, holder, _groups(0, 2000));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
+        assertEq(collectable, 5e6);
+
+        vm.expectEmit();
+        emit IJBStickyAutoStick.AutoStuck(PROJECT_ID, holder, address(underlying), _groups(0, 2000), 5e6, 5e18, keeper);
+        vm.prank(keeper);
+        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder, _groups(0, 2000));
+        assertEq(underlyingAmount, 5e6);
+        assertEq(stickyTokenCount, 5e18);
+        assertEq(distributor.collectionCalls(), 2);
+        assertEq(distributor.collectedGroupIds(0), 0);
+        assertEq(distributor.collectedGroupIds(1), 2000);
+        assertEq(underlying.balanceOf(address(terminal)), 5e6);
+        assertEq(underlying.balanceOf(holder), 0);
+    }
+
+    function test_minimumAppliesToTheCombinedTotal() public {
+        _enable(5e6, 1 days);
+        distributor.setCollectable(3e6);
+        distributor.setCollectableFor(2000, 2e6);
+
+        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
+        assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 3e6, 5e6));
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
+
+        (uint256 underlyingAmount,) = adapter.compoundFor(PROJECT_ID, holder, _groups(0, 2000));
+        assertEq(underlyingAmount, 5e6);
+    }
+
+    function test_beginVestingCoversEveryRequestedGroup() public {
+        _enable(1e6, 1 days);
+        vm.expectEmit();
+        emit IJBStickyAutoStick.BeganAutoStickVesting(PROJECT_ID, holder, address(underlying), _groups(0, 4000), keeper);
+        vm.prank(keeper);
+        adapter.beginVestingFor(PROJECT_ID, holder, _groups(0, 4000));
+        assertEq(distributor.beginVestingCalls(), 2);
+        assertEq(distributor.collectedGroupIds(0), 0);
+        assertEq(distributor.collectedGroupIds(1), 4000);
     }
 
     //*********************************************************************//
@@ -641,16 +740,16 @@ contract JBStickyAutoStickUnitTest is Test {
     function test_cooldownBlocksAndBoundarySucceeds() public {
         _enable(1e6, 1 days);
         distributor.setCollectable(5e6);
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
 
         distributor.setCollectable(5e6);
         uint256 availableAt = block.timestamp + 1 days;
         vm.warp(availableAt - 1);
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Cooldown.selector, availableAt));
-        adapter.compoundFor(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
 
         vm.warp(availableAt);
-        (uint256 underlyingAmount,) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 underlyingAmount,) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(underlyingAmount, 5e6);
     }
 
@@ -672,39 +771,39 @@ contract JBStickyAutoStickUnitTest is Test {
     function test_statusOfWalksTheLadder() public {
         vm.mockCall(deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (99)), abi.encode(address(0)));
         vm.mockCall(tokens, abi.encodeCall(IJBTokens.tokenOf, (99)), abi.encode(address(0)));
-        (JBAutoStickStatus status,,,) = adapter.statusOf(99, holder);
+        (JBAutoStickStatus status,,,) = adapter.statusOf(99, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.InvalidProject));
 
-        (status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        (status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Disabled));
 
         _enable(10e6, 1 days);
         distributor.setCollectable(5e6);
-        (status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        (status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
 
         distributor.setCollectable(20e6);
         _mockTrust(false);
-        (status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        (status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.NotTrusted));
 
         _mockTrust(true);
         vm.prank(holder);
         underlying.approve(address(adapter), 1e6);
-        (status,,,) = adapter.statusOf(PROJECT_ID, holder);
+        (status,,,) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.InsufficientAllowance));
 
         vm.prank(holder);
         underlying.approve(address(adapter), type(uint256).max);
         (JBAutoStickStatus ready, uint256 collectable, uint256 allowance, uint256 nextCompoundAt) =
-            adapter.statusOf(PROJECT_ID, holder);
+            adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(ready), uint256(JBAutoStickStatus.Ready));
         assertEq(collectable, 20e6);
         assertEq(allowance, type(uint256).max);
         assertEq(nextCompoundAt, 0);
 
-        adapter.compoundFor(PROJECT_ID, holder);
-        (status,,, nextCompoundAt) = adapter.statusOf(PROJECT_ID, holder);
+        adapter.compoundFor(PROJECT_ID, holder, _group0());
+        (status,,, nextCompoundAt) = adapter.statusOf(PROJECT_ID, holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Cooldown));
         assertEq(nextCompoundAt, block.timestamp + 1 days);
     }
@@ -719,7 +818,7 @@ contract JBStickyAutoStickUnitTest is Test {
         _enable(1e6, 1 days);
         underlying.mint(holder, preExisting);
         distributor.setCollectable(amount);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder);
+        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor(PROJECT_ID, holder, _group0());
         assertEq(underlyingAmount, amount);
         assertEq(stickyTokenCount, amount * 1e12);
         assertEq(underlying.balanceOf(holder), preExisting);

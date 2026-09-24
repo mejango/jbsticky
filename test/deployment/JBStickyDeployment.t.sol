@@ -2,7 +2,6 @@
 pragma solidity 0.8.28;
 
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 
 import {JBStickyDeployment} from "../../script/helpers/JBStickyDeployment.sol";
 import {MockArt} from "../../script/mocks/MockArt.sol";
@@ -10,6 +9,8 @@ import {JBStickyCoreDeployment} from "../../script/structs/JBStickyCoreDeploymen
 import {JBStickyDeploymentAddresses} from "../../script/structs/JBStickyDeploymentAddresses.sol";
 import {JBStickyImmutableReference} from "../../script/structs/JBStickyImmutableReference.sol";
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
+import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyPriceFeed} from "../../src/JBStickyPriceFeed.sol";
 import {JBStickyToken} from "../../src/JBStickyToken.sol";
 import {JBStickyDeploymentHarness} from "./JBStickyDeploymentHarness.sol";
@@ -37,15 +38,46 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         JBStickyDeploymentAddresses memory first = _deployment.deployFor(_core);
         assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(predicted)));
         bytes32 firstHash = first.distributor.codehash;
-        uint256 firstTimestamp = JBTokenDistributor(payable(first.distributor)).STARTING_TIMESTAMP();
+        uint256 firstTimestamp = JBStickyDistributor(payable(first.distributor)).STARTING_TIMESTAMP();
         vm.warp(block.timestamp + 10 days);
         vm.recordLogs();
         JBStickyDeploymentAddresses memory second = _deployment.deployFor(_core);
         assertEq(vm.getRecordedLogs().length, 0, "repeat creates no contracts or transactions with logs");
         assertEq(keccak256(abi.encode(first)), keccak256(abi.encode(second)));
         assertEq(second.distributor.codehash, firstHash);
-        assertEq(JBTokenDistributor(payable(second.distributor)).STARTING_TIMESTAMP(), firstTimestamp);
+        assertEq(JBStickyDistributor(payable(second.distributor)).STARTING_TIMESTAMP(), firstTimestamp);
         _deployment.verify(_core, second);
+    }
+
+    function test_distributorBindsTheDeployedHookWithProductionPolicy() public {
+        JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        JBStickyDistributor distributor = JBStickyDistributor(payable(deployed.distributor));
+        assertEq(address(distributor.STICKY_HOOK()), deployed.hook);
+        assertEq(distributor.EPOCH_DURATION(), JBStickyHook(deployed.hook).EPOCH_DURATION());
+        assertEq(distributor.EPOCH_DURATION(), 1 weeks);
+        assertEq(address(distributor.CONTROLLER()), address(_core.controller));
+        assertEq(address(distributor.DIRECTORY()), address(_core.directory));
+        assertEq(address(distributor.REV_LOANS()), address(0));
+        assertEq(address(distributor.REV_OWNER()), address(0));
+        assertEq(distributor.ROUND_DURATION(), 7 days);
+        assertEq(distributor.VESTING_ROUNDS(), 4);
+        assertEq(distributor.CLAIM_DURATION(), 2 * 365 days);
+        assertLe(deployed.distributor.code.length, 24_576);
+
+        // A distributor bound to a different hook has identical opcodes and fails the binding check.
+        JBStickyDeployer other = new JBStickyDeployer({controller: _core.controller, terminal: _core.terminal});
+        JBStickyDistributor different = new JBStickyDistributor({
+            controller: _core.controller,
+            directory: _core.directory,
+            stickyHook: other.HOOK(),
+            initialRoundDuration: 7 days,
+            initialVestingRounds: 4,
+            initialClaimDuration: uint48(2 * 365 days)
+        });
+        vm.etch(deployed.distributor, address(different).code);
+        _deployment.verifyRuntime("JBStickyDistributor", deployed.distributor);
+        vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        _deployment.verify(_core, deployed);
     }
 
     function test_partialDeploymentResumesWithoutReplacingFactoryOrHook() public {

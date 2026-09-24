@@ -3,15 +3,12 @@ pragma solidity 0.8.28;
 
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
 
 contract DaybreakMintableToken is ERC20 {
@@ -29,7 +26,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     address internal _victim = makeAddr("counterfactual token victim");
 
     JBStickyDeployer internal _deployer;
-    JBTokenDistributor internal _distributor;
+    JBStickyDistributor internal _distributor;
     JBStickyRewardReceiverFactory internal _receiverFactory;
     DaybreakMintableToken internal _rewardToken;
 
@@ -37,16 +34,15 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         super.setUp();
 
         _deployer = new JBStickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
-        _distributor = new JBTokenDistributor({
-            directory: jbDirectory(),
+        _distributor = new JBStickyDistributor({
             controller: jbController(),
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: jbDirectory(),
+            stickyHook: _deployer.HOOK(),
             initialRoundDuration: 1 days,
             initialVestingRounds: 1,
             initialClaimDuration: 30 days
         });
-        _receiverFactory = new JBStickyRewardReceiverFactory(IJBDistributor(address(_distributor)));
+        _receiverFactory = new JBStickyRewardReceiverFactory(_distributor);
         _rewardToken = new DaybreakMintableToken("Victim reward", "RWD");
     }
 
@@ -56,7 +52,8 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         assertEq(victimExpectedStickyToken.code.length, 0);
 
         // The advertised counterfactual flow lets rewards arrive at the future token's receiver before either exists.
-        address prefundedReceiver = _receiverFactory.predictReceiverOf(victimExpectedStickyToken);
+        address prefundedReceiver =
+            _receiverFactory.predictReceiverOf({stickyToken: victimExpectedStickyToken, groupId: 0});
         uint256 reward = 100e18;
         _rewardToken.mint({beneficiary: prefundedReceiver, amount: reward});
 
@@ -94,7 +91,9 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         vm.roll(vm.getBlockNumber() + 1);
 
         assertEq(
-            _receiverFactory.settleFor({stickyToken: victimExpectedStickyToken, token: IERC20(address(_rewardToken))}),
+            _receiverFactory.settleFor({
+                stickyToken: victimExpectedStickyToken, groupId: 0, token: IERC20(address(_rewardToken))
+            }),
             reward
         );
 

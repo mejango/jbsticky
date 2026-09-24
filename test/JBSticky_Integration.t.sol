@@ -3,16 +3,13 @@ pragma solidity 0.8.28;
 
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../src/JBStickyHook.sol";
 import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
 import {JBStickyToken} from "../src/JBStickyToken.sol";
@@ -73,6 +70,10 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
     // ------------------------------ helpers ---------------------------- //
     //*********************************************************************//
 
+    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
+    }
+
     function _granters(address granter_) internal pure returns (address[] memory granters) {
         granters = new address[](1);
         granters[0] = granter_;
@@ -110,11 +111,10 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
     function test_distributorRewardsStreakersAcrossPositions() public {
         // A sticky-tuned distributor: 1-day rounds, fully vested after 2 rounds, 30-day claim window.
-        JBTokenDistributor distributor = new JBTokenDistributor({
-            directory: jbDirectory(),
+        JBStickyDistributor distributor = new JBStickyDistributor({
             controller: jbController(),
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: jbDirectory(),
+            stickyHook: hook,
             initialRoundDuration: 1 days,
             initialVestingRounds: 2,
             initialClaimDuration: 30 days
@@ -175,17 +175,15 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
     }
 
     function test_crossChainRewardReceiversSettleArrivalsIntoRewards() public {
-        JBTokenDistributor distributor = new JBTokenDistributor({
-            directory: jbDirectory(),
+        JBStickyDistributor distributor = new JBStickyDistributor({
             controller: jbController(),
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: jbDirectory(),
+            stickyHook: hook,
             initialRoundDuration: 1 days,
             initialVestingRounds: 2,
             initialClaimDuration: 30 days
         });
-        JBStickyRewardReceiverFactory receiverFactory =
-            new JBStickyRewardReceiverFactory(IJBDistributor(address(distributor)));
+        JBStickyRewardReceiverFactory receiverFactory = new JBStickyRewardReceiverFactory(distributor);
 
         // Two streakers: 30 and 10 ART locked.
         _stake(user, user, 30e6);
@@ -206,18 +204,19 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
         // A cross-chain arrival lands at the PREDICTED receiver address before the receiver exists — exactly how a
         // sucker claim would deliver bridged project tokens to a counterfactual beneficiary.
-        address receiver = receiverFactory.predictReceiverOf(address(token));
+        address receiver = receiverFactory.predictReceiverOf({stickyToken: address(token), groupId: 0});
         assertEq(receiver.code.length, 0);
         art.mint({to: receiver, amount: 100e6});
 
         // Anyone settles: the receiver is deployed at the predicted address and the arrival becomes a reward round.
-        uint256 settled = receiverFactory.settleFor({stickyToken: address(token), token: IERC20(address(art))});
+        uint256 settled =
+            receiverFactory.settleFor({stickyToken: address(token), groupId: 0, token: IERC20(address(art))});
         assertEq(settled, 100e6);
-        assertEq(receiverFactory.receiverOf(address(token)), receiver);
+        assertEq(receiverFactory.receiverOf({stickyToken: address(token), groupId: 0}), receiver);
         assertEq(distributor.balanceOf(address(token), IERC20(address(art))), 100e6);
 
         // Settling again with nothing in the receiver is a harmless no-op.
-        assertEq(receiverFactory.settleFor({stickyToken: address(token), token: IERC20(address(art))}), 0);
+        assertEq(receiverFactory.settleFor({stickyToken: address(token), groupId: 0, token: IERC20(address(art))}), 0);
 
         // The streakers collect their shares of the arrival like any other reward round.
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);
@@ -455,17 +454,16 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
     // Deploy a sticky-tuned distributor and an auto-stick adapter, stake 30/10 for user/granter, and fund
     // 100 ART of rewards so the user's fully-vested share is 75 ART.
-    function _autoStickFixture() internal returns (JBTokenDistributor distributor, JBStickyAutoStick adapter) {
-        distributor = new JBTokenDistributor({
-            directory: jbDirectory(),
+    function _autoStickFixture() internal returns (JBStickyDistributor distributor, JBStickyAutoStick adapter) {
+        distributor = new JBStickyDistributor({
             controller: jbController(),
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: jbDirectory(),
+            stickyHook: hook,
             initialRoundDuration: 1 days,
             initialVestingRounds: 2,
             initialClaimDuration: 30 days
         });
-        adapter = new JBStickyAutoStick({deployer: deployer, distributor: IJBDistributor(address(distributor))});
+        adapter = new JBStickyAutoStick({deployer: deployer, distributor: distributor});
 
         _stake(user, user, 30e6);
         art.mint({to: granter, amount: 10e6});
@@ -510,17 +508,18 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.roll(vm.getBlockNumber() + 1);
         address keeper = makeAddr("keeper");
         vm.prank(keeper);
-        adapter.beginVestingFor({projectId: projectId, holder: user});
+        adapter.beginVestingFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
 
         // Once fully vested and a week past the original stake, the keeper compounds: the user's 75 ART share is
         // collected, pulled, and restuck into a tranche of its own rather than merging into the same-week one.
         vm.warp(start + 1 weeks);
         vm.roll(vm.getBlockNumber() + 1);
-        (JBAutoStickStatus status,,,) = adapter.statusOf(projectId, user);
+        (JBAutoStickStatus status,,,) = adapter.statusOf(projectId, user, _defaultGroup());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
         uint256 walletBefore = art.balanceOf(user);
         vm.prank(keeper);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.compoundFor({projectId: projectId, holder: user});
+        (uint256 underlyingAmount, uint256 stickyTokenCount) =
+            adapter.compoundFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
         assertEq(underlyingAmount, 75e6);
         assertEq(stickyTokenCount, 75e18);
 
@@ -536,7 +535,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
         // No custody left behind, and the cooldown now gates the next compound.
         assertEq(art.balanceOf(address(adapter)), 0);
-        (JBAutoStickStatus afterStatus,,, uint256 nextCompoundAt) = adapter.statusOf(projectId, user);
+        (JBAutoStickStatus afterStatus,,, uint256 nextCompoundAt) = adapter.statusOf(projectId, user, _defaultGroup());
         assertEq(uint256(afterStatus), uint256(JBAutoStickStatus.Cooldown));
         assertEq(nextCompoundAt, vm.getBlockTimestamp() + 1 days);
     }
@@ -547,7 +546,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);
         vm.roll(vm.getBlockNumber() + 1);
-        adapter.beginVestingFor({projectId: projectId, holder: user});
+        adapter.beginVestingFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
         vm.warp(vm.getBlockTimestamp() + 3 days);
         vm.roll(vm.getBlockNumber() + 1);
 
@@ -556,13 +555,13 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         _unstake(user, 30e18);
         assertEq(hook.stakedBalanceOf(projectId, user), 0);
         uint256 restart = vm.getBlockTimestamp();
-        adapter.compoundFor({projectId: projectId, holder: user});
+        adapter.compoundFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
         assertEq(hook.stakedBalanceOf(projectId, user), 75e18);
         assertEq(hook.streakStartOf(projectId, user), restart);
     }
 
     function test_autoStickGranterProjectSkipsPerHolderTrust() public {
-        (JBTokenDistributor distributor, JBStickyAutoStick adapter) = _autoStickFixture();
+        (JBStickyDistributor distributor, JBStickyAutoStick adapter) = _autoStickFixture();
 
         // A creator launches a project with the adapter pre-approved as a granter.
         uint256 fee = jbProjects().creationFee();
@@ -609,17 +608,18 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.stopPrank();
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);
         vm.roll(vm.getBlockNumber() + 1);
-        adapter.beginVestingFor({projectId: granterProjectId, holder: user});
+        adapter.beginVestingFor({projectId: granterProjectId, holder: user, groupIds: _defaultGroup()});
         vm.warp(vm.getBlockTimestamp() + 3 days);
         vm.roll(vm.getBlockNumber() + 1);
         assertFalse(hook.isTrustedSenderOf(granterProjectId, user, address(adapter)));
-        (uint256 underlyingAmount,) = adapter.compoundFor({projectId: granterProjectId, holder: user});
+        (uint256 underlyingAmount,) =
+            adapter.compoundFor({projectId: granterProjectId, holder: user, groupIds: _defaultGroup()});
         assertEq(underlyingAmount, 40e6);
         assertEq(hook.stakedBalanceOf(granterProjectId, user), 60e18);
     }
 
     function test_oneClickClaimAndStickNeedsNoConfig() public {
-        (JBTokenDistributor distributor, JBStickyAutoStick adapter) = _autoStickFixture();
+        (JBStickyDistributor distributor, JBStickyAutoStick adapter) = _autoStickFixture();
 
         // The holder trusts the adapter and grants an allowance — but never touches setConfigFor.
         vm.startPrank(user);
@@ -640,7 +640,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
         // One click: the claim sticks atomically, straight into a fresh tranche.
         vm.prank(user);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.stickRewardsFor(projectId);
+        (uint256 underlyingAmount, uint256 stickyTokenCount) = adapter.stickRewardsFor(projectId, _defaultGroup());
         assertEq(underlyingAmount, 75e6);
         assertEq(stickyTokenCount, 75e18);
         assertEq(hook.stakedBalanceOf(projectId, user), 105e18);
@@ -653,7 +653,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         _enableAutoStick(adapter, 1e6, 1 days);
         vm.warp(vm.getBlockTimestamp() + 1 days + 1);
         vm.roll(vm.getBlockNumber() + 1);
-        adapter.beginVestingFor({projectId: projectId, holder: user});
+        adapter.beginVestingFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
         vm.warp(vm.getBlockTimestamp() + 3 days);
         vm.roll(vm.getBlockNumber() + 1);
 
@@ -663,7 +663,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector, projectId, user)
         );
-        adapter.compoundFor({projectId: projectId, holder: user});
+        adapter.compoundFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
 
         // Restoring trust but revoking the allowance alone blocks it too.
         vm.startPrank(user);
@@ -673,7 +673,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InsufficientAllowance.selector, 0, 75e6)
         );
-        adapter.compoundFor({projectId: projectId, holder: user});
+        adapter.compoundFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
 
         // Restoring the allowance but disabling the config alone blocks it as well; re-enabling compounds.
         vm.startPrank(user);
@@ -681,11 +681,12 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         adapter.setConfigFor({projectId: projectId, enabled: false, minimumAmount: 1e6, cooldown: 1 days});
         vm.stopPrank();
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, projectId, user));
-        adapter.compoundFor({projectId: projectId, holder: user});
+        adapter.compoundFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
 
         vm.prank(user);
         adapter.setConfigFor({projectId: projectId, enabled: true, minimumAmount: 1e6, cooldown: 1 days});
-        (uint256 underlyingAmount,) = adapter.compoundFor({projectId: projectId, holder: user});
+        (uint256 underlyingAmount,) =
+            adapter.compoundFor({projectId: projectId, holder: user, groupIds: _defaultGroup()});
         assertEq(underlyingAmount, 75e6);
     }
 

@@ -6,11 +6,11 @@ import {JBFees} from "@bananapus/core-v6/src/libraries/JBFees.sol";
 import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {JBStickyAutoStick} from "../../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyToken} from "../../src/JBStickyToken.sol";
 import {JBAutoStickStatus} from "../../src/enums/JBAutoStickStatus.sol";
@@ -37,7 +37,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     JBStickyHook internal _hook;
 
     /// @notice The suite's weekly, four-round vesting distributor.
-    JBTokenDistributor internal _distributor;
+    JBStickyDistributor internal _distributor;
 
     /// @notice The suite's opt-in compounding adapter.
     JBStickyAutoStick internal _autoStick;
@@ -70,7 +70,8 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
                 beneficiary: _alice,
                 metadata: bytes("")
             });
-        (uint256 compounded, uint256 minted) = _autoStick.compoundFor({projectId: _projectId, holder: _alice});
+        (uint256 compounded, uint256 minted) =
+            _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(compounded, reward);
         assertEq(minted, preview);
         assertEq(minted, reward / 2);
@@ -89,11 +90,11 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         vm.prank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: address(_autoStick), trusted: false});
         vm.expectPartialRevert(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector);
-        _autoStick.compoundFor({projectId: _projectId, holder: _alice});
+        _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_distributor.collectableFor(address(_token), uint256(uint160(_alice)), _rewardToken()), reward);
         vm.prank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: address(_autoStick), trusted: true});
-        _autoStick.compoundFor({projectId: _projectId, holder: _alice});
+        _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_token.balanceOf(_alice), reward);
         assertEq(_hook.streakStartOf(_projectId, _alice), vm.getBlockTimestamp());
         assertEq(_hook.trancheCountOf(_projectId, _alice), 1);
@@ -109,16 +110,17 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         vm.prank(_alice);
         _context.underlying.approve({spender: address(_autoStick), value: 0});
         vm.expectPartialRevert(JBStickyAutoStick.JBStickyAutoStick_InsufficientAllowance.selector);
-        _autoStick.compoundFor({projectId: _projectId, holder: _alice});
+        _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_distributor.collectableFor(address(_token), uint256(uint160(_alice)), _rewardToken()), reward);
         assertEq(_context.underlying.balanceOf(_alice), walletBefore);
         assertEq(_token.balanceOf(_alice), sharesBefore);
 
         vm.prank(_alice);
         _context.underlying.approve({spender: address(_autoStick), value: reward});
-        (JBAutoStickStatus status,,,) = _autoStick.statusOf(_projectId, _alice);
+        (JBAutoStickStatus status,,,) = _autoStick.statusOf(_projectId, _alice, _defaultGroup());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
-        (uint256 compounded, uint256 minted) = _autoStick.compoundFor({projectId: _projectId, holder: _alice});
+        (uint256 compounded, uint256 minted) =
+            _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(compounded, reward);
         assertEq(minted, reward);
         assertEq(_context.underlying.balanceOf(_alice), walletBefore, "unrelated wallet balance is untouched");
@@ -141,7 +143,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         });
         assertEq(_context.underlying.balanceOf(_alice), walletBefore + reward);
         vm.expectPartialRevert(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector);
-        _autoStick.compoundFor({projectId: _projectId, holder: _alice});
+        _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_context.underlying.balanceOf(_alice), walletBefore + reward);
         _assertPosition(_alice);
     }
@@ -320,7 +322,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         );
         assertEq(_distributor.ROUND_DURATION(), 7 days);
         assertEq(_distributor.VESTING_ROUNDS(), 4);
-        assertEq(_distributor.CLAIM_DURATION(), 3 * 365 days);
+        assertEq(_distributor.CLAIM_DURATION(), 2 * 365 days);
     }
 
     /// @notice Historical rewards follow unequal snapshot balances after transfers, burns, and a late deposit.
@@ -549,7 +551,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         vm.stopPrank();
         vm.warp(vm.getBlockTimestamp() + _distributor.ROUND_DURATION() + 1);
         vm.roll(vm.getBlockNumber() + 1);
-        _autoStick.beginVestingFor({projectId: _projectId, holder: _alice});
+        _autoStick.beginVestingFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_distributor.collectableFor(address(_token), uint256(uint160(_alice)), _rewardToken()), 0);
         vm.warp(vm.getBlockTimestamp() + (_distributor.VESTING_ROUNDS() + 1) * _distributor.ROUND_DURATION());
         vm.roll(vm.getBlockNumber() + 1);
@@ -562,7 +564,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         _bob = makeAddr("bob");
         _granter = makeAddr("granter");
         _hook = JBStickyHook(_context.suite.hook);
-        _distributor = JBTokenDistributor(payable(_context.suite.distributor));
+        _distributor = JBStickyDistributor(payable(_context.suite.distributor));
         _autoStick = JBStickyAutoStick(_context.suite.autoStick);
         (_projectId, _token) = _launchSticky({context: _context, soulbound: true, cashOutTaxRate: 0});
         _buyUnderlying({context: _context, holder: _alice, nativeAmount: 0.1 ether});
@@ -593,6 +595,12 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             .terminal
             .STORE()
             .balanceOf(address(_context.core.terminal), _projectId, address(_context.underlying));
+    }
+
+    /// @notice The default reward group, as a one-element list.
+    /// @return groupIds The default group.
+    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
     }
 
     /// @notice Builds the distributor's single-holder account identifier.

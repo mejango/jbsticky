@@ -7,13 +7,10 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
 
 contract StickyRewardRegressionToken is ERC20 {
@@ -36,7 +33,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
     struct RewardFixture {
         StickyRewardRegressionToken underlying;
         IJBToken stickyToken;
-        JBTokenDistributor distributor;
+        JBStickyDistributor distributor;
         JBStickyAutoStick adapter;
         uint256 projectId;
     }
@@ -54,7 +51,8 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         RewardFixture memory fixture = _rewardFixture({tokenDecimals: 24, reward: 999_999, donation: 0});
         uint256 balanceBefore = fixture.underlying.balanceOf(address(jbMultiTerminal()));
         uint256 sharesBefore = fixture.stickyToken.balanceOf(_holder);
-        (JBAutoStickStatus status,,,) = fixture.adapter.statusOf({projectId: fixture.projectId, holder: _holder});
+        (JBAutoStickStatus status,,,) =
+            fixture.adapter.statusOf({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
         assertEq(uint256(status), uint256(JBAutoStickStatus.ZeroIssuance));
 
         vm.expectRevert(
@@ -63,7 +61,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
             )
         );
         vm.prank(_keeper);
-        fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder});
+        fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
 
         _assertRewardUnmoved({
             fixture: fixture, reward: 999_999, balanceBefore: balanceBefore, sharesBefore: sharesBefore
@@ -80,7 +78,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
             )
         );
         vm.prank(_holder);
-        fixture.adapter.stickRewardsFor(fixture.projectId);
+        fixture.adapter.stickRewardsFor({projectId: fixture.projectId, groupIds: _defaultGroup()});
 
         _assertRewardUnmoved({
             fixture: fixture, reward: 999_999, balanceBefore: balanceBefore, sharesBefore: sharesBefore
@@ -93,7 +91,8 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         uint256 preview = _preview({fixture: fixture, amount: 1e6});
         assertEq(preview, 1);
         vm.prank(_keeper);
-        (uint256 amount, uint256 count) = fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder});
+        (uint256 amount, uint256 count) =
+            fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
         assertEq(amount, 1e6);
         assertEq(count, preview);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore + count);
@@ -109,7 +108,8 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         assertGt(preview, 0);
         assertLt(preview, 10e18);
         vm.prank(_keeper);
-        (uint256 amount, uint256 count) = fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder});
+        (uint256 amount, uint256 count) =
+            fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
         assertEq(amount, 10e6);
         assertEq(count, preview);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore + count);
@@ -133,10 +133,14 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
                 hook: address(fixture.stickyToken), tokenIds: holderIds, tokens: rewardTokens, beneficiary: _holder
             });
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 0, 1));
-        fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder});
+        fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
         assertEq(fixture.underlying.balanceOf(_holder), 10e6 + 37);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore);
         assertEq(fixture.underlying.balanceOf(_keeper), 0);
+    }
+
+    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
     }
 
     function _assertRewardUnmoved(
@@ -226,17 +230,15 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
                 metadata: bytes("")
             });
         }
-        fixture.distributor = new JBTokenDistributor({
-            directory: jbDirectory(),
+        fixture.distributor = new JBStickyDistributor({
             controller: jbController(),
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: jbDirectory(),
+            stickyHook: _deployer.HOOK(),
             initialRoundDuration: 1 days,
             initialVestingRounds: 2,
             initialClaimDuration: 30 days
         });
-        fixture.adapter =
-            new JBStickyAutoStick({deployer: _deployer, distributor: IJBDistributor(address(fixture.distributor))});
+        fixture.adapter = new JBStickyAutoStick({deployer: _deployer, distributor: fixture.distributor});
         fixture.underlying.mint({beneficiary: address(this), amount: reward});
         fixture.underlying.approve({spender: address(fixture.distributor), value: reward});
         fixture.distributor
@@ -250,7 +252,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         vm.stopPrank();
         vm.warp(block.timestamp + 1 days + 1);
         vm.roll(block.number + 1);
-        fixture.adapter.beginVestingFor({projectId: fixture.projectId, holder: _holder});
+        fixture.adapter.beginVestingFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
         vm.warp(block.timestamp + 3 days);
         vm.roll(block.number + 1);
     }

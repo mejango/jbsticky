@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {JBMultiTerminal} from "@bananapus/core-v6/src/JBMultiTerminal.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {JBOptimismSucker} from "@bananapus/suckers-v6/src/JBOptimismSucker.sol";
 import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
 import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
@@ -17,6 +16,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 import {JBStickyAutoStick} from "../../src/JBStickyAutoStick.sol";
+import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
 import {JBStickyToken} from "../../src/JBStickyToken.sol";
@@ -123,7 +123,9 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         uint256 acquired = _buyUnderlying({context: _base, holder: _holder, nativeAmount: 0.01 ether});
         _stake({context: _base, projectId: _stickyProjectId, payer: _holder, beneficiary: _holder, amount: acquired});
         vm.roll(block.number + 1);
-        _receiver = JBStickyRewardReceiverFactory(_base.suite.rewardReceiverFactory).predictReceiverOf(address(_sticky));
+        _receiver = JBStickyRewardReceiverFactory(_base.suite.rewardReceiverFactory).predictReceiverOf({
+            stickyToken: address(_sticky), groupId: 0
+        });
         assertEq(_receiver.code.length, 0, "Rewards can arrive before the receiver is deployed");
     }
 
@@ -156,7 +158,7 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         assertEq(reward, claimData.leaf.projectTokenCount);
         _enableAutoStick();
         _vest();
-        JBTokenDistributor distributor = JBTokenDistributor(payable(_base.suite.distributor));
+        JBStickyDistributor distributor = JBStickyDistributor(payable(_base.suite.distributor));
         assertEq(
             distributor.collectableFor({
                 hook: address(_sticky), tokenId: uint256(uint160(_holder)), token: IERC20(address(_base.underlying))
@@ -165,8 +167,9 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         );
         uint256 sharesBefore = _sticky.balanceOf(_holder);
         vm.prank(_keeper);
-        (uint256 compounded, uint256 shares) =
-            JBStickyAutoStick(_base.suite.autoStick).compoundFor({projectId: _stickyProjectId, holder: _holder});
+        (uint256 compounded, uint256 shares) = JBStickyAutoStick(_base.suite.autoStick).compoundFor({
+            projectId: _stickyProjectId, holder: _holder, groupIds: _defaultGroup()
+        });
         assertEq(compounded, reward);
         assertGt(shares, 0);
         assertEq(_sticky.balanceOf(_holder), sharesBefore + shares);
@@ -438,12 +441,18 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         assertEq(_base.underlying.balanceOf(_receiver), 0);
     }
 
+    /// @notice The default reward group, as a one-element list.
+    /// @return groupIds The default group.
+    function _defaultGroup() internal pure returns (uint256[] memory groupIds) {
+        groupIds = new uint256[](1);
+    }
+
     /// @notice Settles the receiver as an unrelated keeper and checks that its tokens and approval are cleared.
     /// @return amount The reward amount funded into the production distributor.
     function _settle() internal returns (uint256 amount) {
         vm.prank(_keeper);
         amount = JBStickyRewardReceiverFactory(_base.suite.rewardReceiverFactory).settleFor({
-            stickyToken: address(_sticky), token: IERC20(address(_base.underlying))
+            stickyToken: address(_sticky), groupId: 0, token: IERC20(address(_base.underlying))
         });
         assertEq(_base.underlying.balanceOf(_receiver), 0);
         assertEq(_base.underlying.allowance(_receiver, _base.suite.distributor), 0);
@@ -464,13 +473,15 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
 
     /// @notice Starts the completed reward round's vesting and advances through the production vesting schedule.
     function _vest() internal {
-        JBTokenDistributor distributor = JBTokenDistributor(payable(_base.suite.distributor));
+        JBStickyDistributor distributor = JBStickyDistributor(payable(_base.suite.distributor));
         assertEq(distributor.ROUND_DURATION(), 7 days);
         assertEq(distributor.VESTING_ROUNDS(), 4);
         vm.warp(block.timestamp + distributor.ROUND_DURATION() + 1);
         vm.roll(block.number + 1);
         vm.prank(_keeper);
-        JBStickyAutoStick(_base.suite.autoStick).beginVestingFor({projectId: _stickyProjectId, holder: _holder});
+        JBStickyAutoStick(_base.suite.autoStick).beginVestingFor({
+            projectId: _stickyProjectId, holder: _holder, groupIds: _defaultGroup()
+        });
         vm.warp(block.timestamp + distributor.ROUND_DURATION() * (distributor.VESTING_ROUNDS() + 1));
         vm.roll(block.number + 1);
     }

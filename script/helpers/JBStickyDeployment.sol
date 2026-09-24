@@ -4,11 +4,11 @@ pragma solidity 0.8.28;
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBMultiTerminal} from "@bananapus/core-v6/src/interfaces/IJBMultiTerminal.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {Script} from "forge-std/Script.sol";
 
 import {JBStickyAutoStick} from "../../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
+import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../../src/JBStickyHook.sol";
 import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
 
@@ -86,7 +86,9 @@ abstract contract JBStickyDeployment is Script {
         // Verify each dependency before using its address in another singleton's constructor arguments.
         _deployIfNeeded({name: "JBStickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal)});
         _verifyDeployer({core: core, deployed: deployed});
-        _deployIfNeeded({name: "JBTokenDistributor", salt: STICKY_SALT, args: _distributorArgs(core)});
+        _deployIfNeeded({
+            name: "JBStickyDistributor", salt: STICKY_SALT, args: _distributorArgs({core: core, hook: deployed.hook})
+        });
         _verifyDistributor({core: core, deployed: deployed});
         _deployIfNeeded({
             name: "JBStickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
@@ -226,8 +228,9 @@ abstract contract JBStickyDeployment is Script {
             name: "JBStickyDeployer", salt: STICKY_SALT, args: abi.encode(core.controller, core.terminal)
         });
         deployed.hook = vm.computeCreateAddress({deployer: deployed.deployer, nonce: 1});
-        deployed.distributor =
-            _predictContract({name: "JBTokenDistributor", salt: STICKY_SALT, args: _distributorArgs(core)});
+        deployed.distributor = _predictContract({
+            name: "JBStickyDistributor", salt: STICKY_SALT, args: _distributorArgs({core: core, hook: deployed.hook})
+        });
         deployed.rewardReceiverFactory = _predictContract({
             name: "JBStickyRewardReceiverFactory", salt: STICKY_SALT, args: abi.encode(deployed.distributor)
         });
@@ -353,13 +356,19 @@ abstract contract JBStickyDeployment is Script {
     // ----------------------- private helpers --------------------------- //
     //*********************************************************************//
 
-    /// @notice Encodes the immutable distributor policy.
+    /// @notice Encodes the immutable distributor policy: weekly rounds, four vesting rounds, two-year claims.
     /// @param core The core dependencies.
+    /// @param hook The Sticky hook whose tranches weigh tenure rewards.
     /// @return args The constructor arguments.
-    function _distributorArgs(JBStickyCoreDeployment memory core) private pure returns (bytes memory args) {
-        return abi.encode(
-            core.directory, core.controller, address(0), address(0), uint256(7 days), uint256(4), uint48(3 * 365 days)
-        );
+    function _distributorArgs(
+        JBStickyCoreDeployment memory core,
+        address hook
+    )
+        private
+        pure
+        returns (bytes memory args)
+    {
+        return abi.encode(core.controller, core.directory, hook, uint256(7 days), uint256(4), uint48(2 * 365 days));
     }
 
     /// @notice The number of immutable bindings explicitly checked for each deployment artifact.
@@ -369,7 +378,7 @@ abstract contract JBStickyDeployment is Script {
         bytes32 nameHash = keccak256(bytes(name));
         if (nameHash == keccak256("JBStickyDeployer")) return 4;
         if (nameHash == keccak256("JBStickyHook")) return 2;
-        if (nameHash == keccak256("JBTokenDistributor")) return 8;
+        if (nameHash == keccak256("JBStickyDistributor")) return 9;
         if (nameHash == keccak256("JBStickyRewardReceiverFactory")) return 1;
         if (nameHash == keccak256("JBStickyAutoStick")) return 5;
         revert JBStickyDeployment_InvalidArtifact(name);
@@ -471,14 +480,16 @@ abstract contract JBStickyDeployment is Script {
         private
         view
     {
-        _verifyRuntime({name: "JBTokenDistributor", target: deployed.distributor});
-        JBTokenDistributor distributor = JBTokenDistributor(payable(deployed.distributor));
+        _verifyRuntime({name: "JBStickyDistributor", target: deployed.distributor});
+        JBStickyDistributor distributor = JBStickyDistributor(payable(deployed.distributor));
         if (
             address(distributor.DIRECTORY()) != address(core.directory)
                 || address(distributor.CONTROLLER()) != address(core.controller)
+                || address(distributor.STICKY_HOOK()) != deployed.hook
+                || distributor.EPOCH_DURATION() != JBStickyHook(deployed.hook).EPOCH_DURATION()
                 || address(distributor.REV_LOANS()) != address(0) || address(distributor.REV_OWNER()) != address(0)
                 || distributor.ROUND_DURATION() != 7 days || distributor.VESTING_ROUNDS() != 4
-                || distributor.CLAIM_DURATION() != 3 * 365 days || distributor.STARTING_TIMESTAMP() == 0
+                || distributor.CLAIM_DURATION() != 2 * 365 days || distributor.STARTING_TIMESTAMP() == 0
                 || distributor.STARTING_TIMESTAMP() > block.timestamp
         ) {
             revert JBStickyDeployment_BindingMismatch({

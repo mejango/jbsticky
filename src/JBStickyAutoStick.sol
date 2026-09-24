@@ -6,7 +6,6 @@ pragma solidity 0.8.28;
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -16,15 +15,17 @@ import {JBAutoStickStatus} from "./enums/JBAutoStickStatus.sol";
 
 import {IJBStickyAutoStick} from "./interfaces/IJBStickyAutoStick.sol";
 import {IJBStickyDeployer} from "./interfaces/IJBStickyDeployer.sol";
+import {IJBStickyDistributor} from "./interfaces/IJBStickyDistributor.sol";
 import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
 
 import {JBAutoStickConfig} from "./structs/JBAutoStickConfig.sol";
 
 /// @notice Auto-compounds vested underlying-token rewards back into the same holder's sticky position: collects a
-/// holder's vested rewards from the distributor, pulls exactly what was delivered, and pays it into the same sticky
-/// project with the holder as beneficiary. Opt-in per holder per project, permissionless to execute, and immutable —
-/// keepers never hold funds and cannot choose the project, token, amount, or beneficiary.
-/// @dev Best effort: rewards collected to the holder before execution must be staked separately.
+/// holder's vested rewards from the distributor's chosen reward groups, pulls exactly what was delivered, and pays it
+/// into the same sticky project with the holder as beneficiary. Opt-in per holder per project, permissionless to
+/// execute, and immutable — keepers never hold funds and cannot choose the project, token, amount, or beneficiary.
+/// @dev Best effort: rewards collected to the holder before execution must be staked separately. Callers choose the
+/// reward groups to collect from; the holder's minimum applies to the combined amount.
 contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     // Safely approve and transfer the project's underlying token.
     using SafeERC20 for IERC20Metadata;
@@ -47,6 +48,10 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose configuration is disabled.
     error JBStickyAutoStick_Disabled(uint256 projectId, address holder);
+
+    /// @notice Thrown when no reward groups are requested, since a compound with nothing to collect cannot stake.
+    /// @param count The number of reward groups requested.
+    error JBStickyAutoStick_EmptyGroupIds(uint256 count);
 
     /// @notice Thrown when the holder's allowance cannot cover the collectable reward, which is collected to their
     /// wallet before being staked.
@@ -108,7 +113,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     IJBStickyDeployer public immutable override DEPLOYER;
 
     /// @notice The distributor vested rewards are collected from.
-    IJBDistributor public immutable override DISTRIBUTOR;
+    IJBStickyDistributor public immutable override DISTRIBUTOR;
 
     /// @notice The data hook that gates third-party stakes and tracks positions.
     IJBStickyHook public immutable override HOOK;
@@ -135,7 +140,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @notice Creates an adapter bound to one Sticky deployer and rewards distributor.
     /// @param deployer The deployer whose sticky projects this adapter serves.
     /// @param distributor The distributor vested rewards are collected from.
-    constructor(IJBStickyDeployer deployer, IJBDistributor distributor) {
+    constructor(IJBStickyDeployer deployer, IJBStickyDistributor distributor) {
         // Restrict project resolution to the Sticky deployment this adapter serves.
         DEPLOYER = deployer;
 
@@ -160,7 +165,11 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @dev Permissionless, but only for holders with auto-stick enabled. Moves no reward tokens.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose rewards should begin vesting.
-    function beginVestingFor(uint256 projectId, address holder) external override {
+    /// @param groupIds The reward groups to begin vesting.
+    function beginVestingFor(uint256 projectId, address holder, uint256[] calldata groupIds) external override {
+        // Vesting nothing would only spend the keeper's gas.
+        _requireGroupIds(groupIds);
+
         // Derive the reward asset and share token from the configured deployment rather than caller input.
         (IERC20Metadata underlying, IJBToken stickyToken) = _resolveProject(projectId);
 
@@ -175,17 +184,27 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         }
 
         // Start vesting only this holder's underlying-token rewards, using their address as the distributor token ID.
-        DISTRIBUTOR.beginVesting({
-            hook: address(stickyToken),
-            tokenIds: _singletonId(uint256(uint160(holder))),
-            tokens: _singletonToken(underlying)
-        });
+        uint256[] memory tokenIds = _singletonId(uint256(uint160(holder)));
+
+        // Restrict every group's claim to the project's underlying token.
+        IERC20[] memory tokens = _singletonToken(underlying);
+
+        // Each group keeps its own claim cursor, so every requested group is materialized separately.
+        // Solidity initializes the index to zero, covering every requested group.
+        // forge-lint: disable-next-line(uninitialized-local)
+        for (uint256 i; i < groupIds.length; i++) {
+            // The caller pays for the group list it chose.
+            // forge-lint: disable-next-item(calls-loop)
+            DISTRIBUTOR.beginVesting({
+                hook: address(stickyToken), groupId: groupIds[i], tokenIds: tokenIds, tokens: tokens
+            });
+        }
 
         // Let keepers track which holder's rewards were started and who initiated vesting.
         // The immutable distributor starts vesting without transferring tokens or changing adapter configuration.
         // forge-lint: disable-next-item(reentrancy-events)
         emit BeganAutoStickVesting({
-            projectId: projectId, holder: holder, token: address(underlying), caller: msg.sender
+            projectId: projectId, holder: holder, token: address(underlying), groupIds: groupIds, caller: msg.sender
         });
     }
 
@@ -194,17 +213,22 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// amount, terminal, or beneficiary. The whole flow is atomic — if any step fails, the collection reverts too.
     /// @param projectId The ID of the sticky project to compound into.
     /// @param holder The holder whose rewards are compounded.
+    /// @param groupIds The reward groups to collect from.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
     function compoundFor(
         uint256 projectId,
-        address holder
+        address holder,
+        uint256[] calldata groupIds
     )
         external
         override
         nonReentrant
         returns (uint256 underlyingAmount, uint256 stickyTokenCount)
     {
+        // A compound with no groups to collect from has nothing to stake.
+        _requireGroupIds(groupIds);
+
         // Derive the reward asset and share token so a keeper cannot substitute the assets being compounded.
         (IERC20Metadata underlying, IJBToken stickyToken) = _resolveProject(projectId);
 
@@ -235,6 +259,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         (underlyingAmount, stickyTokenCount) = _collectAndStick({
             projectId: projectId,
             holder: holder,
+            groupIds: groupIds,
             underlying: underlying,
             stickyToken: stickyToken,
             minimumAmount: config.minimumAmount
@@ -296,14 +321,21 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// The rewards route through the holder's wallet, so their allowance must cover the claim. The hook must accept
     /// this adapter as a payer through per-holder trust or launch-time project pre-approval.
     /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
+    /// @param groupIds The reward groups to collect from.
     /// @return underlyingAmount The underlying-token amount claimed and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
-    function stickRewardsFor(uint256 projectId)
+    function stickRewardsFor(
+        uint256 projectId,
+        uint256[] calldata groupIds
+    )
         external
         override
         nonReentrant
         returns (uint256 underlyingAmount, uint256 stickyTokenCount)
     {
+        // A compound with no groups to collect from has nothing to stake.
+        _requireGroupIds(groupIds);
+
         // Derive the assets from the deployment so a manual compound follows the same project routing as automation.
         (IERC20Metadata underlying, IJBToken stickyToken) = _resolveProject(projectId);
 
@@ -314,7 +346,12 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
 
         // The caller's consent allows any positive reward that issues shares, without an automation cooldown.
         (underlyingAmount, stickyTokenCount) = _collectAndStick({
-            projectId: projectId, holder: msg.sender, underlying: underlying, stickyToken: stickyToken, minimumAmount: 1
+            projectId: projectId,
+            holder: msg.sender,
+            groupIds: groupIds,
+            underlying: underlying,
+            stickyToken: stickyToken,
+            minimumAmount: 1
         });
     }
 
@@ -326,19 +363,24 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @dev A ready status is a preview; balances, approvals, backing and configuration can change before execution.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder to check.
+    /// @param groupIds The reward groups to collect from.
     /// @return status The current auto-stick status.
-    /// @return collectableAmount The underlying-token amount currently collectable from the distributor.
+    /// @return collectableAmount The underlying-token amount currently collectable across the groups.
     /// @return allowance The holder's current underlying-token allowance to this adapter.
     /// @return nextCompoundAt The earliest timestamp the next compound can happen.
     function statusOf(
         uint256 projectId,
-        address holder
+        address holder,
+        uint256[] calldata groupIds
     )
         external
         view
         override
         returns (JBAutoStickStatus status, uint256 collectableAmount, uint256 allowance, uint256 nextCompoundAt)
     {
+        // Mirror execution, which rejects an empty group list before reading anything.
+        _requireGroupIds(groupIds);
+
         // Resolve the exact assets that execution would use before querying rewards or approvals.
         (IERC20Metadata underlying, IJBToken stickyToken) = _resolveProject(projectId);
 
@@ -351,8 +393,8 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         JBAutoStickConfig memory config = configOf[projectId][holder];
 
         // Report vested rewards even when another condition blocks execution, so the holder can inspect the amount.
-        collectableAmount = DISTRIBUTOR.collectableFor({
-            hook: address(stickyToken), tokenId: uint256(uint160(holder)), token: underlying
+        collectableAmount = _collectableFor({
+            stickyToken: stickyToken, tokenId: uint256(uint160(holder)), groupIds: groupIds, underlying: underlying
         });
 
         // Show the approval available for moving collected rewards from the holder's wallet into this adapter.
@@ -406,14 +448,16 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// this requires an underlying token whose balances do not rebase during collection or payment.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose rewards are collected and stuck.
+    /// @param groupIds The reward groups to collect from.
     /// @param underlying The project's underlying token, already resolved and validated.
     /// @param stickyToken The project's sticky token, already resolved and validated.
-    /// @param minimumAmount The smallest amount worth sticking.
+    /// @param minimumAmount The smallest combined amount worth sticking.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
     function _collectAndStick(
         uint256 projectId,
         address holder,
+        uint256[] calldata groupIds,
         IERC20Metadata underlying,
         IJBToken stickyToken,
         uint256 minimumAmount
@@ -430,9 +474,10 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         // Sticky uses the holder's address as its distributor token ID, binding rewards to the same beneficiary.
         uint256 tokenId = uint256(uint160(holder));
 
-        // Quote only this project's vested underlying-token rewards for the minimum and approval checks.
+        // Quote only this project's vested underlying-token rewards, across the requested groups, for the minimum and
+        // approval checks.
         uint256 collectable =
-            DISTRIBUTOR.collectableFor({hook: address(stickyToken), tokenId: tokenId, token: underlying});
+            _collectableFor({stickyToken: stickyToken, tokenId: tokenId, groupIds: groupIds, underlying: underlying});
 
         // Avoid changing distributor state for a reward smaller than the amount this call permits.
         if (collectable < minimumAmount) {
@@ -461,17 +506,31 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         // Snapshot the holder's balance so pre-existing wallet funds cannot be mistaken for newly collected rewards.
         uint256 holderBalanceBefore = underlying.balanceOf(holder);
 
-        // Collect to the token ID's canonical beneficiary, preserving the distributor's holder-bound reward routing.
-        // Both callers hold the reentrancy guard; only the holder can change their own configuration.
-        // forge-lint: disable-next-item(reentrancy-no-eth)
-        DISTRIBUTOR.collectVestedRewards({
-            hook: address(stickyToken),
-            tokenIds: _singletonId(tokenId),
-            tokens: _singletonToken(underlying),
-            beneficiary: holder
-        });
+        // Collect only this holder's position, using their address as the distributor token ID.
+        uint256[] memory tokenIds = _singletonId(tokenId);
 
-        // Reinvest only the actual balance increase, accounting for any difference from the distributor's quote.
+        // Restrict every group's collection to the project's underlying token.
+        IERC20[] memory tokens = _singletonToken(underlying);
+
+        // Collect every requested group to the token ID's canonical beneficiary, preserving the distributor's
+        // holder-bound reward routing. Both callers hold the reentrancy guard; only the holder can change their own
+        // configuration.
+        // Solidity initializes the index to zero, covering every requested group.
+        // forge-lint: disable-next-line(uninitialized-local)
+        for (uint256 i; i < groupIds.length; i++) {
+            // Each group vests separately, so each is collected separately; the caller pays for the list it chose.
+            // forge-lint: disable-next-item(reentrancy-no-eth,calls-loop)
+            DISTRIBUTOR.collectVestedRewards({
+                hook: address(stickyToken),
+                groupId: groupIds[i],
+                tokenIds: tokenIds,
+                tokens: tokens,
+                beneficiary: holder
+            });
+        }
+
+        // Reinvest only the actual balance increase across every collection, accounting for any difference from the
+        // distributor's quote.
         underlyingAmount = underlying.balanceOf(holder) - holderBalanceBefore;
 
         // Enforce the minimum on delivered rewards as well, so an optimistic quote cannot bypass the threshold.
@@ -538,6 +597,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
             projectId: projectId,
             holder: holder,
             token: address(underlying),
+            groupIds: groupIds,
             underlyingAmount: underlyingAmount,
             stickyTokenCount: stickyTokenCount,
             caller: msg.sender
@@ -585,6 +645,34 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
             || HOOK.isGranterOf({projectId: projectId, granter: address(this)});
     }
 
+    /// @notice The vested underlying-token rewards a holder can collect right now across the requested groups.
+    /// @param stickyToken The project's sticky token, used as the distributor's reward hook.
+    /// @param tokenId The holder's distributor token ID.
+    /// @param groupIds The reward groups to sum.
+    /// @param underlying The project's underlying token.
+    /// @return collectable The combined collectable amount, in the underlying token's decimals.
+    function _collectableFor(
+        IJBToken stickyToken,
+        uint256 tokenId,
+        uint256[] calldata groupIds,
+        IERC20Metadata underlying
+    )
+        internal
+        view
+        returns (uint256 collectable)
+    {
+        // Solidity initializes the index to zero, covering every requested group.
+        // forge-lint: disable-next-line(uninitialized-local)
+        for (uint256 i; i < groupIds.length; i++) {
+            // Each group vests separately, so the quote is the sum of every requested group's unlocked amount.
+            // The caller pays for the group list it chose.
+            // forge-lint: disable-next-item(calls-loop)
+            collectable += DISTRIBUTOR.collectableFor({
+                hook: address(stickyToken), groupId: groupIds[i], tokenId: tokenId, token: underlying
+            });
+        }
+    }
+
     /// @notice Previews the exact share issuance for this adapter's payment to a holder.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder who receives the issued shares.
@@ -607,6 +695,13 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         (, stickyTokenCount,,) = TERMINAL.previewPayFor({
             projectId: projectId, token: address(underlying), amount: amount, beneficiary: holder, metadata: bytes("")
         });
+    }
+
+    /// @notice Reverts when no reward groups are requested.
+    /// @param groupIds The reward groups requested.
+    function _requireGroupIds(uint256[] calldata groupIds) internal pure {
+        // Every entry point needs at least one group to read or collect from.
+        if (groupIds.length == 0) revert JBStickyAutoStick_EmptyGroupIds(groupIds.length);
     }
 
     /// @notice Resolves a project's underlying and sticky tokens through the configured deployer.
