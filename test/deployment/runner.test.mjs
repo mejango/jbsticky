@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { dependencies, networks, preflight, run, verifyDependencies } from '../../script/deploy.mjs';
+import { dependencies, networks, preflight, requireOneAddressPerGroup, run, suite, verifyDependencies } from '../../script/deploy.mjs';
 
 function fixture(group) {
   const env = { SPHINX_ORG_ID: JSON.parse(readFileSync('sphinx.lock')).orgId, SPHINX_API_KEY: 'test-key',
     SPHINX_MANAGED_BASE_URL: 'https://sphinx.example.test' };
   const files = {};
+  const manifest = JSON.stringify(Object.fromEntries(suite.map((field, i) => [field, `0x${String(i).repeat(2)}`])));
   for (const [, chainId, key, folder] of networks[group]) {
     env[key] = 'http://127.0.0.1:8545';
     for (const name of ['JBController', 'JBDirectory', 'JBMultiTerminal']) {
@@ -14,8 +15,10 @@ function fixture(group) {
         address: '0x' + '12'.repeat(20), chainId: `0x${chainId.toString(16)}`,
       });
     }
+    files[`deployments/${folder}/simulation.json`] = manifest;
+    files[`deployments/${folder}/verified.json`] = manifest;
   }
-  return { env, read: file => files[file] ?? readFileSync(file, 'utf8') };
+  return { env, files, read: file => files[file] ?? readFileSync(file, 'utf8') };
 }
 
 const block = { number: '0x64', hash: '0x' + 'ab'.repeat(32) };
@@ -107,8 +110,13 @@ test('runner destinations match the Sphinx entrypoint exactly', () => {
 test('release dependencies must match pinned clean sources', () => {
   verifyDependencies(readOnlyTool);
   assert.throws(() => verifyDependencies((command, args) => ({ status: 0, stdout: args[2] === 'rev-parse' ? 'wrong' : '' })), /reviewed revision/);
-  assert.throws(() => verifyDependencies((command, args) => args[2] === 'status'
-    ? { status: 0, stdout: ' M src/JBController.sol' } : readOnlyTool(command, args)), /must be clean/);
+  for (const change of [' M src/JBController.sol', '?? src/JBNew.sol', 'R  test/Old.t.sol -> src/Moved.sol']) {
+    assert.throws(() => verifyDependencies((command, args) => args[2] === 'status'
+      ? { status: 0, stdout: change } : readOnlyTool(command, args)), /must be clean/);
+  }
+  // Test edits, scratch directories and Finder droppings do not compile into the contracts.
+  verifyDependencies((command, args) => args[2] === 'status'
+    ? { status: 0, stdout: ' M test/JBController.t.sol\n?? .DS_Store\n?? src/.DS_Store\n?? .scratch/\n' } : readOnlyTool(command, args));
   const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
   for (const revision of Object.values(dependencies)) assert.ok(workflow.includes(revision));
 });
@@ -135,4 +143,82 @@ test('proposal rejects a missing lock, wrong organization, or unregistered proje
     };
     assert.throws(() => run('propose', 'testnets', { ...setup, spawn() { assert.fail('must not execute'); } }));
   }
+});
+
+test('every compiled source root is pinned: linked checkouts by revision, packages by the lockfile', () => {
+  const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+  for (const name of ['JBStickyDeployer', 'JBStickyHook', 'JBStickyDistributor', 'JBStickyRewardReceiverFactory', 'JBStickyAutoStick']) {
+    const artifact = JSON.parse(readFileSync(`out/${name}.sol/${name}.json`, 'utf8'));
+    for (const source of Object.keys(artifact.metadata.sources)) {
+      if (/^(src|script)\//.test(source)) continue;
+      const pkg = source.match(/^node_modules\/((?:@[^/]+\/)?[^/]+)\//)?.[1];
+      assert.ok(pkg, `${source} must be this repository's or an installed package's source`);
+      const entry = lock.packages[`node_modules/${pkg}`];
+      assert.ok(entry, `${pkg} must be in the lockfile`);
+      if (entry.link) assert.ok(dependencies[pkg], `${pkg} is linked, so its revision must be pinned for release`);
+      else assert.ok(entry.integrity, `${pkg} must carry a lockfile integrity hash`);
+    }
+  }
+});
+
+test('an artifacts run executes the explorer script only after the pin and checkout gates', () => {
+  const calls = [];
+  run('artifacts', 'testnets', { ...fixture('testnets'), spawn(command, args, options) {
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    calls.push({ command, args });
+    assert.equal(options.env.FOUNDRY_PROFILE, 'deploy');
+    assert.equal(options.env.STICKY_REVISION, 'abc123');
+    return { status: 0 };
+  } });
+  assert.deepEqual(calls, [{ command: 'node', args: ['script/artifacts.mjs', 'testnets'] }]);
+  assert.throws(() => run('artifacts', 'mainnets', { ...fixture('mainnets'), spawn(command, args) {
+    if (command === 'git' && args[0] === '-C' && args[2] === 'rev-parse') return { status: 0, stdout: 'wrong' };
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    assert.fail('artifacts must not run against unreviewed dependencies');
+  } }), /reviewed revision/);
+});
+
+test('an uncommitted checkout can rehearse but neither propose, verify nor emit artifacts', () => {
+  const dirtyGit = (command, args) => command === 'git' && args[0] === 'status' ? { status: 0, stdout: ' M src/JBStickyHook.sol' } : readOnlyTool(command, args);
+  for (const action of ['propose', 'verify', 'artifacts']) {
+    assert.throws(() => run(action, 'testnets', { ...fixture('testnets'), spawn(command, args) {
+      const tool = dirtyGit(command, args);
+      if (tool) return tool;
+      assert.fail(`${action} must not execute anything from a dirty checkout`);
+    } }), /uncommitted/);
+  }
+  // Manifests the runner itself wrote are not source changes.
+  let verifyRuns = 0;
+  run('verify', 'testnets', { ...fixture('testnets'), spawn(command, args, options) {
+    if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '?? deployments/sepolia/verified.json\n' };
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    verifyRuns++;
+    assert.equal(options.env.STICKY_REVISION, 'abc123');
+    return { status: 0 };
+  } });
+  assert.equal(verifyRuns, 4);
+  let forgeRuns = 0;
+  run('rehearse', 'testnets', { ...fixture('testnets'), spawn(command, args, options) {
+    const tool = dirtyGit(command, args);
+    if (tool) return tool;
+    forgeRuns++;
+    assert.equal(options.env.STICKY_REVISION, 'abc123-dirty');
+    return { status: 0 };
+  } });
+  assert.equal(forgeRuns, 4);
+});
+
+test('a chain predicting different addresses stops the group before the Sphinx proposal', () => {
+  const setup = fixture('mainnets');
+  setup.files['deployments/base/simulation.json'] = JSON.stringify({ ...JSON.parse(setup.files['deployments/base/simulation.json']), autoStick: '0xee' });
+  assert.throws(() => requireOneAddressPerGroup('mainnets', 'simulation', setup.read), /base predicts a different deployment/);
+  assert.throws(() => run('propose', 'mainnets', { ...setup, spawn(command, args) {
+    const tool = readOnlyTool(command, args);
+    if (tool) return tool;
+    assert.notEqual(command, 'node_modules/.bin/sphinx', 'the proposal must not be collected');
+    return { status: 0 };
+  } }), /different deployment/);
 });

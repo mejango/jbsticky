@@ -124,7 +124,8 @@ npm run deploy:verify -- --rpc-url ethereum_sepolia -vv
 ```
 
 Use `deploy:rehearse:testnets` / `deploy:rehearse:mainnets` to rehearse whole groups,
-and `deploy:post:testnets` / `deploy:post:mainnets` to verify them after Sphinx execution.
+and `deploy:post:testnets` / `deploy:post:mainnets` to verify them after Sphinx execution and write the
+explorer-verified per-contract artifacts.
 Grouped proposal commands rehearse every destination before collecting a proposal.
 Set `STICKY_ENV_FILE=../../deploy-all-v6/.env` to reuse the workspace credentials.
 Repeat rehearsals and verification for every intended network. `simulation.json` describes simulated state; only post-execution verification produces `verified.json`. Retain executed Sphinx receipts and publish the verified release artifacts before configuring a live client. The site should remain in demo mode until its addresses and target-chain transaction flows have been checked. Source changes produce new deployment predictions and do not upgrade existing immutable Sticky projects.

@@ -14,8 +14,11 @@ export function verifyDependencies(spawn = spawnSync) {
     const args = ['-C', `node_modules/${name}`];
     const revision = spawn('git', [...args, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
     const status = spawn('git', [...args, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
-    if (revision.status !== 0 || revision.stdout.trim() !== expected || status.status !== 0 || status.stdout.trim()) {
-      throw new Error(`${name} must be clean at the reviewed revision ${expected}.`);
+    // Only a linked package's `src/` compiles into the contracts; tests, scratch files and Finder droppings do not.
+    const sourceChanges = status.stdout?.split('\n')
+      .filter(line => /^.{3}(.* -> )?src\//.test(line) && !/\/\.DS_Store$/.test(line)) ?? [];
+    if (revision.status !== 0 || revision.stdout.trim() !== expected || status.status !== 0 || sourceChanges.length) {
+      throw new Error(`${name} must be clean under src/ at the reviewed revision ${expected}.`);
     }
   }
 }
@@ -57,9 +60,23 @@ export function preflight(group, env = process.env, read = readFileSync) {
   if (errors.length) throw new Error(errors.join('\n'));
 }
 
+// The manifest fields every chain of a group must predict identically; the core binds the same addresses everywhere.
+export const suite = ['deployer', 'hook', 'distributor', 'rewardReceiverFactory', 'autoStick'];
+
+// Every chain of a group must predict one suite.
+export function requireOneAddressPerGroup(group, kind, read = readFileSync) {
+  let expected;
+  for (const [alias, , , folder] of networks[group]) {
+    const manifest = JSON.parse(read(`deployments/${folder}/${kind}.json`, 'utf8'));
+    const identity = suite.map(field => `${field}=${String(manifest[field]).toLowerCase()}`).join(' ');
+    expected ??= identity;
+    if (identity !== expected) throw new Error(`${alias} predicts a different deployment than the rest of ${group}: ${identity}`);
+  }
+}
+
 export function run(action, group, { env = process.env, spawn = spawnSync, read = readFileSync } = {}) {
-  if (!['preflight', 'rehearse', 'propose', 'verify'].includes(action)) {
-    throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify> <testnets|mainnets>');
+  if (!['preflight', 'rehearse', 'propose', 'verify', 'artifacts'].includes(action)) {
+    throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
   }
   preflight(group, env, read);
   if (action === 'propose') {
@@ -80,15 +97,19 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
       throw new Error('SPHINX_ORG_ID does not match the committed sphinx.lock organization.');
     }
   }
-  if (action === 'propose' || action === 'verify') verifyDependencies(spawn);
+  if (action !== 'rehearse') verifyDependencies(spawn);
   if (action === 'preflight') return;
   const revision = spawn('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
   if (revision.status !== 0) throw new Error('Cannot record the source revision.');
   const status = spawn('git', ['status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' });
   if (status.status !== 0) throw new Error('Cannot inspect the source checkout.');
+  // The runner's own outputs under deployments/ do not make the reviewed source dirty.
+  const dirty = status.stdout.split('\n').some(line => line.trim() && !/^.{3}deployments\//.test(line));
+  // Only a committed checkout may reach the Safe or certify a live deployment; rehearsals may carry development changes.
+  if (dirty && action !== 'rehearse') throw new Error(`Commit the reviewed checkout before ${action}; it has uncommitted changes.`);
   const childEnv = {
     ...env, FOUNDRY_PROFILE: 'deploy',
-    STICKY_REVISION: revision.stdout.trim() + (status.stdout.trim() ? '-dirty' : ''),
+    STICKY_REVISION: revision.stdout.trim() + (dirty ? '-dirty' : ''),
   };
   const execute = (command, args, chainId = 0, block = { number: '0', hash: '0x' + '00'.repeat(32) }) => {
     const result = spawn(command, args, { env: {
@@ -97,6 +118,11 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     }, stdio: 'inherit' });
     if (result.error || result.status !== 0) throw new Error(`${command} failed; stopping ${group} ${action}.`);
   };
+  // Explorer verification and per-contract artifacts read the verified manifests, so they follow a verify.
+  if (action === 'artifacts') {
+    execute('node', ['script/artifacts.mjs', group]);
+    return;
+  }
   // Rehearse every destination successfully before creating a Sphinx proposal.
   const script = action === 'verify' ? 'Verify' : 'Rehearse';
   for (const [alias, chainId] of networks[group]) {
@@ -117,6 +143,7 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
     execute('forge', ['script', `script/${script}.s.sol:${script}`, '--rpc-url', alias,
       '--fork-block-number', block.number, '-vv'], chainId, block);
   }
+  requireOneAddressPerGroup(group, script === 'Verify' ? 'verified' : 'simulation', read);
   if (action === 'propose') {
     execute('node_modules/.bin/sphinx', ['propose', 'script/Deploy.s.sol', '--target-contract', 'Deploy', '--networks', group]);
   }
@@ -124,7 +151,7 @@ export function run(action, group, { env = process.env, spawn = spawnSync, read 
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    if (process.argv.length !== 4) throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify> <testnets|mainnets>');
+    if (process.argv.length !== 4) throw new Error('Usage: deploy.sh <preflight|rehearse|propose|verify|artifacts> <testnets|mainnets>');
     run(process.argv[2], process.argv[3]);
     console.log(`Sticky ${process.argv[2]} completed for ${process.argv[3]}.`);
   } catch (error) {

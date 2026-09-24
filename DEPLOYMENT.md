@@ -28,7 +28,7 @@ Changing source, compiler settings, dependency versions, or constructor argument
 
 ## Configuration and preflight
 
-Copy `.env.example` to `.env`, provide RPC endpoints for the intended network group, and configure `SPHINX_ORG_ID`, `SPHINX_API_KEY`, and `SPHINX_MANAGED_BASE_URL` for the existing Sphinx organization. The npm deployment commands select the `deploy` Foundry profile (`isolate = false`), which is compatible with Sphinx and avoids Foundry 1.8.1's isolated Optimism factory-call failure. Local contract tests keep the default isolated execution model; the real-project `fork` profile uses non-isolated execution for the same production artifact inspection as rehearsals. For direct `sphinx` or deployment `forge script` commands, set `FOUNDRY_PROFILE=deploy`. The deployment commands load `.env` with portable POSIX shell syntax and also accept environment variables supplied by CI. Never commit credentials.
+Copy `.env.example` to `.env`, provide RPC endpoints for the intended network group, configure `SPHINX_ORG_ID`, `SPHINX_API_KEY`, and `SPHINX_MANAGED_BASE_URL` for the existing Sphinx organization, and `ETHERSCAN_API_KEY` (one Etherscan v2 key serves every chain) for the post-execution artifacts. The npm deployment commands select the `deploy` Foundry profile (`isolate = false`), which is compatible with Sphinx and avoids Foundry 1.8.1's isolated Optimism factory-call failure. Local contract tests keep the default isolated execution model; the real-project `fork` profile uses non-isolated execution for the same production artifact inspection as rehearsals. For direct `sphinx` or deployment `forge script` commands, set `FOUNDRY_PROFILE=deploy`. The deployment commands load `.env` with portable POSIX shell syntax and also accept environment variables supplied by CI. Never commit credentials.
 
 | Sphinx / RPC alias | Environment variable | Core artifact folder |
 | --- | --- | --- |
@@ -42,11 +42,13 @@ Copy `.env.example` to `.env`, provide RPC endpoints for the intended network gr
 | arbitrum_sepolia | RPC_ARBITRUM_SEPOLIA | arbitrum_sepolia |
 
 Sticky uses the registered `v6-deployment` Sphinx project and the public `sphinx.lock`
-from `deploy-all-v6`, so proposal review uses the same V6 Safe. The lock contains
-public organization/project/Safe configuration, not credentials. The proposal
-runner checks that its organization matches `SPHINX_ORG_ID` and that the configured
-project exists. The installed Sphinx CLI synchronizes this lock during proposal
-collection; review any resulting Safe configuration changes before execution.
+from `deploy-all-v6`, so proposal review uses the same 4-of-8 `V6 Deployment` Safe
+(`0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18`, the same address on every chain).
+The lock contains public organization/project/Safe configuration, not credentials.
+The proposal runner checks that its organization matches `SPHINX_ORG_ID` and that
+the configured project exists; `Deploy.run()` refuses any other Safe. The installed
+Sphinx CLI synchronizes this lock during proposal collection; review any resulting
+Safe configuration changes before execution.
 
 The core reader defaults to `node_modules/@bananapus/core-v6/deployments/<network>/`. An optional `NANA_CORE_DEPLOYMENT_PATH` overrides the directory containing the network folders. Only `JBController.json`, `JBDirectory.json`, and `JBMultiTerminal.json` are required. Each artifact must record the connected chain ID. The reader checks live contract code, controller launch authorization, and controller/directory/terminal/token/project/store/split/price/ruleset registry bindings before deploying anything. It does not require a forwarder.
 
@@ -104,28 +106,48 @@ Preflight checks all four RPC variables and the three core address/chain-ID
 artifacts per destination. It does not contact RPCs. Rehearsal binds each RPC to its expected chain ID, checks live core bindings, and
 simulates fresh deployment and restart on every destination. It reads a canonical
 RPC block header and pins Forge to that height; the header number and hash are
-recorded separately from the EVM block height.
+recorded separately from the EVM block height. After the group's rehearsals the
+runner requires every chain to have predicted the same deployer, hook, distributor,
+reward receiver factory and adapter; the core binds the same addresses on all eight
+chains, so mainnets and testnets predict one suite.
 Proposal commands require Sphinx credentials, the public project lock, and clean
 core/distributor checkouts at the reviewed commits recorded in `script/deploy.mjs`,
 and rerun the entire group's
-rehearsals before invoking the pinned local Sphinx CLI. A failed chain stops the
-command before proposal submission. `deploy:testnets` and `deploy:mainnets` are
-aliases for these proposal commands. Sphinx execution remains a separate step.
+rehearsals before invoking the pinned local Sphinx CLI. A failed or divergent chain
+stops the command before proposal submission. `deploy:testnets` and
+`deploy:mainnets` are aliases for these proposal commands. Sphinx execution remains
+a separate step.
 
-`deploy:post:*` aliases `deploy:verify:*`: it verifies the group on live RPCs and
-writes the per-chain manifests. It does not publish packages, distribute artifacts,
-or configure the website; follow the publication steps below. If a later chain
-fails, earlier manifests remain valid for their recorded block, but the group is
-incomplete. No group command broadcasts directly through Forge.
+`deploy:post:*` runs `deploy:verify:*`, which verifies the group on live RPCs,
+requires the same agreement, and writes `deployments/<network>/verified.json`; it
+then runs `deploy:artifacts:*` (`script/artifacts.mjs`), which verifies the five
+sources on Etherscan and writes `deployments/<network>/JBStickyDeployer.json`,
+`JBStickyHook.json`, `JBStickyDistributor.json`, `JBStickyRewardReceiverFactory.json`
+and `JBStickyAutoStick.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
+repositories keep: address, ABI, constructor arguments, creation receipt, bytecode,
+metadata and source revision. The constructor arguments come from the bindings the
+verified manifest recorded, and for every factory-deployed contract the explorer's
+creation bytecode must equal the compiled creation code followed by those
+arguments; the hook is created by the deployer's constructor, so its receipt is the
+deployer's creation transaction. Commit both kinds of file. `deploy:post:*` does
+not publish packages or configure the website; follow the publication steps below.
+If a later chain fails, earlier manifests remain valid for their recorded block,
+but the group is incomplete. No group command broadcasts directly through Forge.
 
-Proposal and verification commands reject changed or mismatched local core and
-distributor dependencies; a clean Sticky tree alone cannot identify symlinked
-sources. Rehearsals allow development changes. CI and runner tests keep the
-reviewed dependency commits aligned.
+Proposal, verification and artifact commands reject changed or mismatched local
+core and distributor dependencies (their commits, and any change under their
+`src/`; tests and scratch files do not compile into the contracts), and an
+uncommitted Sticky checkout, where the runner's own outputs under `deployments/`
+do not count. A clean Sticky tree alone cannot identify symlinked sources.
+Rehearsals allow development changes. CI and runner tests keep the reviewed
+dependency commits aligned, and `npm run test:deployment` checks that every source
+root of the compiled suite is pinned: the linked checkouts by revision, the npm
+packages by the lockfile's integrity hashes.
 
 The grouped commands record the current Git commit automatically, appending
-`-dirty` when the checkout has changes. Commit the reviewed release and rerun its
-rehearsals before proposal collection; use the identical checkout for verification.
+`-dirty` when a rehearsal's checkout has changes. Commit the reviewed release and
+rerun its rehearsals before proposal collection; use the identical checkout for
+verification.
 The single-chain `deploy:rehearse` and `deploy:verify` commands remain available
 for diagnosis and accept normal Forge options; source your environment and set
 `STICKY_REVISION` explicitly when using those commands.
@@ -167,4 +189,4 @@ single-chain Forge calls do not provide those RPC fields automatically; retain
 their fork context separately. Deployment start blocks for client event discovery
 must come from execution receipts, not verification manifests. `revision: unrecorded` means the operator did not set `STICKY_REVISION`; fill that gap by rerunning with the actual reviewed commit before publishing artifacts.
 
-Retain the executed Sphinx proposal/transaction receipts and its standard deployment artifacts alongside the verified manifest. Publish only verified artifacts for chains that have executed, and propagate them through the existing V6 artifact distribution process before configuring the website. Confirm the deployer, hook, token registry, distributor, reward receiver factory, and adapter against the manifest; keep the website in demo mode until those checks and target-chain transaction smoke tests succeed. No live deployment or production artifact is implied by files generated during local tests.
+Retain the executed Sphinx proposal/transaction receipts alongside the verified manifest and the per-contract artifacts `deploy:post:*` writes. Publish only verified artifacts for chains that have executed, and propagate them through the existing V6 artifact distribution process before configuring the website. Confirm the deployer, hook, token registry, distributor, reward receiver factory, and adapter against the manifest; keep the website in demo mode until those checks and target-chain transaction smoke tests succeed. No live deployment or production artifact is implied by files generated during local tests.
