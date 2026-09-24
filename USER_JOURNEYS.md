@@ -2,7 +2,7 @@
 
 ## Repo Purpose
 
-This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanently configured staking projects, backing-priced Sticky shares that are soulbound or transferable, per-deposit tranche accounting, holder streaks, opt-in reward compounding, cross-chain reward receivers, and the Sticky webclient. Juicebox core handles custody, issuance math, and cash out economics; `JBStickyDistributor` handles rewards, by vote snapshot or by tenure. Start here if you're integrating staking into a client, designing a reward program on streak data, or launching a sticky project for a token. See [the webclient guide](webclient/README.md) for site configuration and production checks.
+This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanently configured staking projects, backing-priced Sticky shares that are soulbound or transferable, per-deposit tranche accounting, holder streaks, opt-in reward compounding, cross-chain reward receivers, and the Sticky webclient. Juicebox core handles custody, issuance math, and cash out economics; `StickyDistributor` handles rewards, by vote snapshot or by tenure. Start here if you're integrating staking into a client, designing a reward program on streak data, or launching a sticky project for a token. See [the webclient guide](webclient/README.md) for site configuration and production checks.
 
 ## Primary Actors
 
@@ -14,11 +14,11 @@ This repo owns staking-with-streaks for ERC-20 tokens on Juicebox V6: permanentl
 
 ## Key Surfaces
 
-- `JBStickyDeployer.deployStickyFor`: launch a locked sticky project for a token.
+- `StickyDeployer.deployStickyFor`: launch a locked sticky project for a token.
 - `JBMultiTerminal.pay` and `previewPayFor` (core): stake and quote.
 - `JBMultiTerminal.cashOutTokensOf` (core): unstake.
-- `JBStickyHook` views/events: all balance, streak, tranche, and trust data.
-- `JBStickyDistributor.fund` / `collectVestedRewards` (with an optional `groupId`), `JBStickyAutoStick`, `JBStickyRewardReceiverFactory`: rewards.
+- `StickyHook` views/events: all balance, streak, tranche, and trust data.
+- `StickyDistributor.fund` / `collectVestedRewards` (with an optional `groupId`), `StickyAutoStick`, `StickyRewardReceiverFactory`: rewards.
 
 ## Journey 1: Launch a sticky project
 
@@ -52,7 +52,7 @@ Zero tax gives a proportional gross reclaim. Positive tax below the maximum redu
 
 **Intent:** reward a holder with pre-staked tokens, no action required from them.
 
-Pay the sticky project with `beneficiary` set to the holder. The payer must be one of the project's launch-time granters or a sender the holder has trusted via `setTrustedSenderFor`; otherwise the pay reverts with `JBStickyHook_SenderNotTrusted`. The grant is priced like any deposit and lands as a new tranche with its own timestamp: the holder's streak is neither broken nor backdated, and amount-weighted math can't be laundered through an old streak.
+Pay the sticky project with `beneficiary` set to the holder. The payer must be one of the project's launch-time granters or a sender the holder has trusted via `setTrustedSenderFor`; otherwise the pay reverts with `StickyHook_SenderNotTrusted`. The grant is priced like any deposit and lands as a new tranche with its own timestamp: the holder's streak is neither broken nor backdated, and amount-weighted math can't be laundered through an old streak.
 
 ## Journey 5: Reward holders
 
@@ -68,7 +68,7 @@ Through a split: set `hook = distributor`, `beneficiary = stickyToken`, and `pro
 
 Rewards vest over four weekly rounds and have a two-year claim window before unclaimed inventory can be recycled. Vesting needs a transaction: call `beginVesting(hook, groupId, tokenIds, tokens)`, or use `collectVestedRewards(hook, groupId, ...)` to collect vested rewards and begin eligible allocations. Tenure claims read the holder's live tranches, so they must be claimed while those tranches are still held; an exit first forfeits them to the pot. Anyone may collect on a holder's behalf to that holder's address. A holder calling directly may choose their own beneficiary. Auto-stick always collects to the holder.
 
-Other chain: call `JBStickyRewardReceiverFactory.predictReceiverOf(destinationStickyToken, groupId)` on the destination chain. Address parity across chains requires matching factory and distributor addresses, creation code, destination Sticky-token address, and group; common salts alone are insufficient. Verify the destination reward token and its supported bridge route, then bridge with that receiver as beneficiary. Once the ERC-20 arrival is claimable on the destination, complete the bridge claim and call `settleFor(destinationStickyToken, groupId, destinationRewardToken)`. The receiver can receive tokens before deployment. Anyone may settle, so funding belongs to the round current when settlement executes. The Sticky project needs no sucker deployment of its own; the reward token needs the route. Receivers provide no recovery path for an incorrect destination or unsupported asset.
+Other chain: call `StickyRewardReceiverFactory.predictReceiverOf(destinationStickyToken, groupId)` on the destination chain. Address parity across chains requires matching factory and distributor addresses, creation code, destination Sticky-token address, and group; common salts alone are insufficient. Verify the destination reward token and its supported bridge route, then bridge with that receiver as beneficiary. Once the ERC-20 arrival is claimable on the destination, complete the bridge claim and call `settleFor(destinationStickyToken, groupId, destinationRewardToken)`. The receiver can receive tokens before deployment. Anyone may settle, so funding belongs to the round current when settlement executes. The Sticky project needs no sucker deployment of its own; the reward token needs the route. Receivers provide no recovery path for an incorrect destination or unsupported asset.
 
 ## Journey 6: Compound rewards
 
@@ -76,7 +76,7 @@ Other chain: call `JBStickyRewardReceiverFactory.predictReceiverOf(destinationSt
 
 **Intent:** turn vested underlying-token rewards back into the position without extra steps.
 
-One-time compound: trust the adapter through `setTrustedSenderFor` unless the project listed it as a granter at launch, approve it for the collectable underlying amount, and call `JBStickyAutoStick.stickRewardsFor(projectId, groupIds)` with the reward groups to collect from (`[0]` for ownership rewards, more for tenure pots). These may require separate wallet transactions. The adapter collects each group's vested rewards to the holder, pulls exactly the total delivered amount, quotes the terminal, and pays the project with the holder as beneficiary and the quoted share minimum.
+One-time compound: trust the adapter through `setTrustedSenderFor` unless the project listed it as a granter at launch, approve it for the collectable underlying amount, and call `StickyAutoStick.stickRewardsFor(projectId, groupIds)` with the reward groups to collect from (`[0]` for ownership rewards, more for tenure pots). These may require separate wallet transactions. The adapter collects each group's vested rewards to the holder, pulls exactly the total delivered amount, quotes the terminal, and pays the project with the holder as beneficiary and the quoted share minimum.
 
 Keeper mode: `setConfigFor(projectId, enabled: true, minimumAmount, cooldown)` with a positive minimum and a cooldown between one and thirty days. Anyone can call `beginVestingFor(projectId, holder, groupIds)` for an enabled holder, and `compoundFor(projectId, holder, groupIds)` once the combined reward across those groups, cooldown, allowance, and trust conditions pass; `statusOf(projectId, holder, groupIds)` previews the same ladder. An empty group list reverts. A keeper chooses which enabled position and groups to process; it cannot redirect that position's token, beneficiary, or destination. Keeper availability is separate from permissionless execution. Compounding is best effort: if someone collected to the holder first, the tokens stay in the holder's wallet and can be staked manually. Disabling the configuration stops keeper compounding; allowance revocation is a separate wallet action.
 

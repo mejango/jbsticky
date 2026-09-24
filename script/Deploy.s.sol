@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
+// forge-lint: disable-next-line(pragma-inconsistent)
 pragma solidity 0.8.28;
 
 import {Sphinx} from "@sphinx-labs/contracts/contracts/foundry/SphinxPlugin.sol";
 
-import {JBStickyDeployment} from "./helpers/JBStickyDeployment.sol";
-import {JBStickyCoreDeployment} from "./structs/JBStickyCoreDeployment.sol";
-import {JBStickyDeploymentAddresses} from "./structs/JBStickyDeploymentAddresses.sol";
+import {StickyDeployment} from "./helpers/StickyDeployment.sol";
+import {StickyCoreDeployment} from "./structs/StickyCoreDeployment.sol";
+import {StickyDeploymentAddresses} from "./structs/StickyDeploymentAddresses.sol";
 
 /// @notice Proposes the deterministic Sticky singleton suite through the Juicebox V6 Sphinx workflow.
-contract Deploy is JBStickyDeployment, Sphinx {
+contract Deploy is StickyDeployment, Sphinx {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
@@ -28,7 +29,7 @@ contract Deploy is JBStickyDeployment, Sphinx {
     //*********************************************************************//
 
     /// @notice Verified core dependencies for the current chain.
-    JBStickyCoreDeployment internal _core;
+    StickyCoreDeployment internal _core;
 
     //*********************************************************************//
     // ----------------------- public transactions ----------------------- //
@@ -43,7 +44,7 @@ contract Deploy is JBStickyDeployment, Sphinx {
 
     /// @notice Collects only missing deployment transactions and validates every new or reused contract.
     function deploy() public sphinx {
-        JBStickyDeploymentAddresses memory deployed = _deploy(_core);
+        StickyDeploymentAddresses memory deployed = _deploy(_core);
         _writeManifest({core: _core, deployed: deployed, kind: "simulation"});
     }
 

@@ -8,7 +8,7 @@
 referenced by `2026-08-13-criteria-window-generalization.md`. The encoding itself
 (`minWeeks * 1000 + maxWeeks`), the window math, validation, and every claim-side rule are unchanged —
 only the field the number arrives in changes.
-**Lands on:** the open PR (`sticky-distributor`, mejango/jbsticky#1), before merge.
+**Lands on:** the open PR (`sticky-distributor`, mejango/sticky#1), before merge.
 
 ## Why
 
@@ -60,7 +60,7 @@ everyone-pool. The default case needs no special handling.
 
 ## Changes
 
-**Contract** (`src/JBStickyDistributor.sol`), one line of logic:
+**Contract** (`src/StickyDistributor.sol`), one line of logic:
 
 ```
 uint256 criteria = context.split.projectId;

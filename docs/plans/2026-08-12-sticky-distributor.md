@@ -1,12 +1,12 @@
 > **Superseded** by [`2026-09-24-tenure-rewards.md`](2026-09-24-tenure-rewards.md), which records the design as shipped: a `JBDistributor` subclass instead of a fork, the snapshot epoch pinned at round start, no `totalStakedOf` or `firstStakeEpochPlusOneOf` storage, same-week tranche merging, per-group receivers, and multi-group auto-stick. Kept as the design history of the epoch-bucket mechanism and the group encoding.
 
-# JBStickyDistributor Implementation Plan
+# StickyDistributor Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A stick-time-gated reward distributor: airdroppers fund pots that split pro-rata only across tokens stuck ≥ k weeks, with lazy one-phase claims.
 
-**Architecture:** `JBStickyHook` gains weekly `netStakedIn` epoch buckets maintained on every tranche add/consume. `JBStickyDistributor` (a clean single-contract fork of `JBDistributor` + `JBTokenDistributor`, loans dropped) records a criteria pot's denominator at fund time by summing buckets older than k weeks at current values; claims weight each holder by their live tranches older than k weeks. Group 0 keeps the exact ERC20Votes snapshot path; splits carry criteria via small `lockedUntil` values.
+**Architecture:** `StickyHook` gains weekly `netStakedIn` epoch buckets maintained on every tranche add/consume. `StickyDistributor` (a clean single-contract fork of `JBDistributor` + `JBTokenDistributor`, loans dropped) records a criteria pot's denominator at fund time by summing buckets older than k weeks at current values; claims weight each holder by their live tranches older than k weeks. Group 0 keeps the exact ERC20Votes snapshot path; splits carry criteria via small `lockedUntil` values.
 
 **Tech Stack:** Solidity 0.8.28, Foundry (via_ir — use `vm.getBlockTimestamp()` not `block.timestamp` in tests per the warp-rematerialization gotcha), existing `@bananapus/*` pins.
 
@@ -14,11 +14,11 @@
 
 ## Global Constraints
 
-- Repo: `extensions/JBSticky` (its own git repo, push direct to `mejango/jbsticky`).
+- Repo: `extensions/Sticky` (its own git repo, push direct to `mejango/sticky`).
 - Epochs: fixed `1 weeks`, global unix anchor: `epoch = timestamp / 1 weeks`.
 - Criteria: threshold only, `k` in whole weeks, `1 ≤ k ≤ 520`; `groupId = k`; groupIds with bits above 240 reserved for future curves — revert at fund time.
 - Group 0 = everyone-pool, votes-snapshot mechanics, byte-for-byte base behavior.
-- Distributor storage keyed by `hook` = sticky token address; `projectId` derived via `IJBStickyToken(hook).PROJECT_ID()`.
+- Distributor storage keyed by `hook` = sticky token address; `projectId` derived via `IStickyToken(hook).PROJECT_ID()`.
 - No changes to `node_modules/@bananapus/distributor-v6` (reference source only).
 - Solvency invariant: Σ claimed ≤ funded per (hook, group, token, round). Bucket invariant: Σ netStakedIn == Σ stakedBalanceOf per project.
 - Comments follow repo natspec style; no retrospective comments.
@@ -29,9 +29,9 @@
 ### Task 1: Hook epoch buckets
 
 **Files:**
-- Modify: `src/JBStickyHook.sol` (`_addTo` ~:377, `_consumeFrom` ~:401, storage section ~:100)
-- Modify: `src/interfaces/IJBStickyHook.sol`
-- Test: `test/JBStickyHook_Unit.t.sol` (append)
+- Modify: `src/StickyHook.sol` (`_addTo` ~:377, `_consumeFrom` ~:401, storage section ~:100)
+- Modify: `src/interfaces/IStickyHook.sol`
+- Test: `test/StickyHook_Unit.t.sol` (append)
 
 **Interfaces:**
 - Consumes: existing `_addTo`/`_consumeFrom` tranche flow.
@@ -40,7 +40,7 @@
   - `mapping(uint256 projectId => mapping(uint256 epoch => uint256)) public netStakedIn;`
   - `mapping(uint256 projectId => uint256) public firstStakeEpochPlusOneOf;` (0 = never staked; stores epoch+1 so unix-epoch-0 test timestamps can't alias the sentinel)
 
-- [ ] **Step 1: Write failing tests** (append to `test/JBStickyHook_Unit.t.sol`, following the file's existing setup pattern)
+- [ ] **Step 1: Write failing tests** (append to `test/StickyHook_Unit.t.sol`, following the file's existing setup pattern)
 
 ```solidity
 function test_bucketsTrackStakeByEpoch() public {
@@ -124,7 +124,7 @@ netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= remaining
 netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= tranche.amount;
 ```
 
-Add both getters to `IJBStickyHook` and `override` specifiers.
+Add both getters to `IStickyHook` and `override` specifiers.
 
 - [ ] **Step 4: Run full suite**
 
@@ -138,8 +138,8 @@ Expected: all PASS (transfer-path coverage comes free: `recordTransfer` calls `_
 ### Task 2: Hook batch view
 
 **Files:**
-- Modify: `src/JBStickyHook.sol` (public views section), `src/interfaces/IJBStickyHook.sol`
-- Test: `test/JBStickyHook_Unit.t.sol` (append)
+- Modify: `src/StickyHook.sol` (public views section), `src/interfaces/IStickyHook.sol`
+- Test: `test/StickyHook_Unit.t.sol` (append)
 
 **Interfaces:**
 - Produces (used by Task 5): `function netStakedInEpochs(uint256 projectId, uint256 fromEpoch, uint256 toEpoch) external view returns (uint256[] memory amounts);` — inclusive bounds, reverts if `fromEpoch > toEpoch`.
@@ -160,7 +160,7 @@ function test_netStakedInEpochsRange() public {
     assertEq(amounts[2], 50e18);
 
     vm.expectRevert(
-        abi.encodeWithSelector(JBStickyHook.JBStickyHook_InvalidEpochRange.selector, 12, 10)
+        abi.encodeWithSelector(StickyHook.StickyHook_InvalidEpochRange.selector, 12, 10)
     );
     hook.netStakedInEpochs(PROJECT_ID, 12, 10);
 }
@@ -172,7 +172,7 @@ function test_netStakedInEpochsRange() public {
 
 ```solidity
 /// @notice Thrown when an epoch range's bounds are inverted.
-error JBStickyHook_InvalidEpochRange(uint256 fromEpoch, uint256 toEpoch);
+error StickyHook_InvalidEpochRange(uint256 fromEpoch, uint256 toEpoch);
 
 /// @notice The net still-held stake for each epoch in an inclusive range.
 /// @param projectId The ID of the sticky project.
@@ -189,7 +189,7 @@ function netStakedInEpochs(
     override
     returns (uint256[] memory amounts)
 {
-    if (fromEpoch > toEpoch) revert JBStickyHook_InvalidEpochRange({fromEpoch: fromEpoch, toEpoch: toEpoch});
+    if (fromEpoch > toEpoch) revert StickyHook_InvalidEpochRange({fromEpoch: fromEpoch, toEpoch: toEpoch});
     amounts = new uint256[](toEpoch - fromEpoch + 1);
     for (uint256 i; i < amounts.length; i++) {
         amounts[i] = netStakedIn[projectId][fromEpoch + i];
@@ -202,18 +202,18 @@ function netStakedInEpochs(
 
 ---
 
-### Task 3: Fork scaffold — JBStickyDistributor compiles with group-0 semantics
+### Task 3: Fork scaffold — StickyDistributor compiles with group-0 semantics
 
 **Files:**
-- Create: `src/JBStickyDistributor.sol`
-- Create: `src/interfaces/IJBStickyDistributor.sol`
-- Create: `src/structs/JBStickyRewardRoundData.sol`
-- Test: `test/JBStickyDistributor_Unit.t.sol` (new)
+- Create: `src/StickyDistributor.sol`
+- Create: `src/interfaces/IStickyDistributor.sol`
+- Create: `src/structs/StickyRewardRoundData.sol`
+- Test: `test/StickyDistributor_Unit.t.sol` (new)
 
 **Interfaces:**
-- Consumes: `node_modules/@bananapus/distributor-v6/src/{JBDistributor,JBTokenDistributor}.sol` as copy source; `IJBStickyHook` from Task 1-2; `IJBStickyToken.PROJECT_ID()`.
-- Produces (used by Tasks 4-7): one contract `JBStickyDistributor` with constructor
-  `(IJBDirectory directory, IJBStickyHook stickyHook, uint256 initialRoundDuration, uint256 initialVestingRounds, uint48 initialClaimDuration)`,
+- Consumes: `node_modules/@bananapus/distributor-v6/src/{JBDistributor,JBTokenDistributor}.sol` as copy source; `IStickyHook` from Task 1-2; `IStickyToken.PROJECT_ID()`.
+- Produces (used by Tasks 4-7): one contract `StickyDistributor` with constructor
+  `(IJBDirectory directory, IStickyHook stickyHook, uint256 initialRoundDuration, uint256 initialVestingRounds, uint48 initialClaimDuration)`,
   public `STICKY_HOOK`, and these externals (group-0 behavior identical to the base):
   `fund(address hook, IERC20 token, uint256 amount)`,
   `beginVesting(address hook, uint256[] tokenIds, IERC20[] tokens)`,
@@ -222,10 +222,10 @@ function netStakedInEpochs(
   `processSplitWith(JBSplitHookContext calldata context)`, `poke()`,
   plus the base's public views/state (`currentRound`, `roundStartTimestamp`, `rewardRoundOf`, `vestingDataOf`, `collectableFor`, `totalVestingAmountOf`, `nextClaimRoundOf`, `roundSnapshotBlock`, `balanceOf`).
 
-- [ ] **Step 1: Copy and collapse.** Concatenate `JBDistributor.sol` and `JBTokenDistributor.sol` from `node_modules/@bananapus/distributor-v6/src/` into one `JBStickyDistributor is IJBStickyDistributor` contract (internal virtual-hook indirection flattened: `_claimPastRewards`, `_tokenStake*`, `_totalStake`, `_canClaim`, `_claimBeneficiaryOf`, `_requireCanClaimTokenIds`, `_validateTokenIds` become plain internal functions with the token-distributor bodies). Delete wholesale:
+- [ ] **Step 1: Copy and collapse.** Concatenate `JBDistributor.sol` and `JBTokenDistributor.sol` from `node_modules/@bananapus/distributor-v6/src/` into one `StickyDistributor is IStickyDistributor` contract (internal virtual-hook indirection flattened: `_claimPastRewards`, `_tokenStake*`, `_totalStake`, `_canClaim`, `_claimBeneficiaryOf`, `_requireCanClaimTokenIds`, `_validateTokenIds` become plain internal functions with the token-distributor bodies). Delete wholesale:
   - REVLoans/REVOwner: `REV_LOANS`, `REV_OWNER`, `CONTROLLER` (only used for loans/revnet lookups — token registry not needed since `hook` IS the sticky token), constructor permission-grant block, `_PENDING_VESTING_LOAN_ID`, `activeVestingLoanIdOf`, `totalLoanedVestingAmountOf`, `_vestingLoanOf`, `borrowAgainstVesting`, `repayVestingLoan`, `writeOffLiquidatedVestingLoan`, `_revnetIdOf`, `_requireNoActiveVestingLoan`, `JBVestingLoan` imports, `JBDistributor_VestingLoansDisabled` paths.
   - 721-isms: `releaseForfeitedRewards`, `_tokenBurned`, `_unlockRewards`'s `ownerClaim=false` branch (keep the owner-claim path only).
-  - Rename errors/events `JBDistributor_*`/`JBTokenDistributor_*` → `JBStickyDistributor_*`.
+  - Rename errors/events `JBDistributor_*`/`JBTokenDistributor_*` → `StickyDistributor_*`.
 - Replace `JBRewardRoundData` with the new struct (one added field):
 
 ```solidity
@@ -236,7 +236,7 @@ function netStakedInEpochs(
 /// @custom:member claimDeadline The timestamp used by expiration logic. Zero means no expiration.
 /// @custom:member totalStake The aggregate stake denominator used to split the round.
 /// @custom:member snapshotEpoch The stick-age epoch at the first funding, used by criteria groups (0 for group 0).
-struct JBStickyRewardRoundData {
+struct StickyRewardRoundData {
     uint208 amount;
     uint48 snapshotBlock;
     uint208 claimedAmount;
@@ -247,7 +247,7 @@ struct JBStickyRewardRoundData {
 ```
 
 - Constructor stores `DIRECTORY`, `STICKY_HOOK`, round/vesting/claim params; keep the base's zero-round-duration revert.
-- [ ] **Step 2: Write the group-0 parity test** (new file, model setup on `test/JBSticky_Integration.t.sol`'s deploy helpers: deploy hook + deployer + a sticky project + the new distributor):
+- [ ] **Step 2: Write the group-0 parity test** (new file, model setup on `test/Sticky_Integration.t.sol`'s deploy helpers: deploy hook + deployer + a sticky project + the new distributor):
 
 ```solidity
 function test_group0FundClaimCollect_parity() public {
@@ -274,16 +274,16 @@ function test_group0FundClaimCollect_parity() public {
 }
 ```
 
-- [ ] **Step 3: Iterate until green** — `forge build && forge test --match-contract JBStickyDistributor -vv`. The scaffold is done when this parity test passes with the votes path.
-- [ ] **Step 4: Full suite green; commit** — `feat: fork JBStickyDistributor scaffold (group-0 votes parity, loans dropped)`
+- [ ] **Step 3: Iterate until green** — `forge build && forge test --match-contract StickyDistributor -vv`. The scaffold is done when this parity test passes with the votes path.
+- [ ] **Step 4: Full suite green; commit** — `feat: fork StickyDistributor scaffold (group-0 votes parity, loans dropped)`
 
 ---
 
 ### Task 4: Criteria groupId validation + criteria-aware fund
 
 **Files:**
-- Modify: `src/JBStickyDistributor.sol`, `src/interfaces/IJBStickyDistributor.sol`
-- Test: `test/JBStickyDistributor_Unit.t.sol` (append)
+- Modify: `src/StickyDistributor.sol`, `src/interfaces/IStickyDistributor.sol`
+- Test: `test/StickyDistributor_Unit.t.sol` (append)
 
 **Interfaces:**
 - Produces (used by Tasks 5-7):
@@ -292,7 +292,7 @@ function test_group0FundClaimCollect_parity() public {
   - `function beginVesting(address hook, uint256 groupId, uint256[] tokenIds, IERC20[] tokens) external;`
   - `function collectVestedRewards(address hook, uint256 groupId, uint256[] tokenIds, IERC20[] tokens, address beneficiary) external;`
   - `function recycleExpiredRewards(address hook, uint256 groupId, IERC20 token, uint256[] rounds) external returns (uint256);`
-  - `error JBStickyDistributor_InvalidCriteria(uint256 groupId);`
+  - `error StickyDistributor_InvalidCriteria(uint256 groupId);`
   - internal `_requireValidGroup(uint256 groupId)`: allows 0 and `[1, MAX_CRITERIA_WEEKS]`, reverts otherwise (future curveIds land above bit 240 and are rejected here until implemented).
 
 - [ ] **Step 1: Failing tests**
@@ -303,11 +303,11 @@ function test_fundRejectsInvalidCriteria() public {
     vm.startPrank(funder);
     reward.approve(address(distributor), 10e18);
 
-    vm.expectRevert(abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, 521));
+    vm.expectRevert(abi.encodeWithSelector(StickyDistributor.StickyDistributor_InvalidCriteria.selector, 521));
     distributor.fund(address(stickyToken), reward, 10e18, 521);
 
     vm.expectRevert(
-        abi.encodeWithSelector(JBStickyDistributor.JBStickyDistributor_InvalidCriteria.selector, uint256(1) << 240)
+        abi.encodeWithSelector(StickyDistributor.StickyDistributor_InvalidCriteria.selector, uint256(1) << 240)
     );
     distributor.fund(address(stickyToken), reward, 10e18, uint256(1) << 240);
     vm.stopPrank();
@@ -342,11 +342,11 @@ function test_fundWithCriteriaCreatesGroupPot() public {
 ### Task 5: Fund-time bucket-walk denominator
 
 **Files:**
-- Modify: `src/JBStickyDistributor.sol` (`_recordRewardRound`)
-- Test: `test/JBStickyDistributor_Unit.t.sol` (append)
+- Modify: `src/StickyDistributor.sol` (`_recordRewardRound`)
+- Test: `test/StickyDistributor_Unit.t.sol` (append)
 
 **Interfaces:**
-- Consumes: `STICKY_HOOK.netStakedInEpochs`, `firstStakeEpochPlusOneOf` (Tasks 1-2); `IJBStickyToken(hook).PROJECT_ID()`.
+- Consumes: `STICKY_HOOK.netStakedInEpochs`, `firstStakeEpochPlusOneOf` (Tasks 1-2); `IStickyToken(hook).PROJECT_ID()`.
 - Produces: criteria rounds record `totalStake = Σ netStakedIn[e]` for `e ∈ [firstStakeEpoch, snapshotEpoch − k]`, pinned at first funding of (hook, group, token, round).
 
 - [ ] **Step 1: Failing tests**
@@ -423,7 +423,7 @@ function _agedTotalStake(
     view
     returns (uint256 total)
 {
-    uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
+    uint256 projectId = IStickyToken(hook).PROJECT_ID();
     uint256 firstPlusOne = STICKY_HOOK.firstStakeEpochPlusOneOf(projectId);
 
     // No stake ever, or the threshold reaches past the first stake: nothing qualifies.
@@ -447,8 +447,8 @@ function _agedTotalStake(
 ### Task 6: Criteria claim path — live-tranche numerator
 
 **Files:**
-- Modify: `src/JBStickyDistributor.sol` (`_claimRewardRoundFor` dispatch + new `_agedStakeOf`)
-- Test: `test/JBStickyDistributor_Unit.t.sol` (append)
+- Modify: `src/StickyDistributor.sol` (`_claimRewardRoundFor` dispatch + new `_agedStakeOf`)
+- Test: `test/StickyDistributor_Unit.t.sol` (append)
 
 **Interfaces:**
 - Consumes: `STICKY_HOOK.tranchesOf(projectId, holder)` (oldest-first, nondecreasing timestamps), `rewardRound.snapshotEpoch` (Task 5), `ctx.groupId` already threaded through `JBClaimContext`.
@@ -540,8 +540,8 @@ function _agedStakeOf(
 {
     if (snapshotEpoch < weeksRequired) return 0;
     uint256 cutoff = snapshotEpoch - weeksRequired;
-    JBStickyTranche[] memory tranches =
-        STICKY_HOOK.tranchesOf({projectId: IJBStickyToken(hook).PROJECT_ID(), holder: account});
+    StickyTranche[] memory tranches =
+        STICKY_HOOK.tranchesOf({projectId: IStickyToken(hook).PROJECT_ID(), holder: account});
     for (uint256 i; i < tranches.length; i++) {
         // Tranches are oldest-first with nondecreasing timestamps; stop at the first too-young one.
         if (uint256(tranches[i].timestamp) / STICKY_HOOK.EPOCH_DURATION() > cutoff) break;
@@ -558,8 +558,8 @@ function _agedStakeOf(
 ### Task 7: Splits carry criteria via lockedUntil
 
 **Files:**
-- Modify: `src/JBStickyDistributor.sol` (`processSplitWith`)
-- Test: `test/JBStickyDistributor_Unit.t.sol` (append)
+- Modify: `src/StickyDistributor.sol` (`processSplitWith`)
+- Test: `test/StickyDistributor_Unit.t.sol` (append)
 
 **Interfaces:**
 - Consumes: `context.split.lockedUntil` (uint48, delivered on both terminal and controller paths); `MAX_CRITERIA_WEEKS` (Task 4).
@@ -610,12 +610,12 @@ uint256 groupId = (lockedUntil >= 1 && lockedUntil <= MAX_CRITERIA_WEEKS) ? lock
 ### Task 8: Invariant suite — solvency and bucket conservation
 
 **Files:**
-- Create: `test/JBStickyDistributor_Invariant.t.sol`
+- Create: `test/StickyDistributor_Invariant.t.sol`
 
 **Interfaces:**
 - Consumes: everything above. Handler drives: stake, unstake, transfer (transferable-mode project), fund (random group ∈ {0,1,2,4}), beginVesting, collect, recycle, warp (bounded jumps up to 3 weeks).
 
-- [ ] **Step 1: Write the handler + two invariants** (follow `test/JBStickyHook_Unit.t.sol` setup style; bound all fuzz inputs; handler tracks ghost totals):
+- [ ] **Step 1: Write the handler + two invariants** (follow `test/StickyHook_Unit.t.sol` setup style; bound all fuzz inputs; handler tracks ghost totals):
 
 ```solidity
 function invariant_potSolvency() public view {
@@ -643,8 +643,8 @@ The handler exposes `worstRound()` (tracks the (group, round) with the highest c
 ### Task 9: Deploy scripts + integration test
 
 **Files:**
-- Modify: `script/Deploy.s.sol`, `script/DeployLocal.s.sol` (replace the `JBTokenDistributor` deployment with `JBStickyDistributor`)
-- Test: `test/JBSticky_Integration.t.sol` (append)
+- Modify: `script/Deploy.s.sol`, `script/DeployLocal.s.sol` (replace the `JBTokenDistributor` deployment with `StickyDistributor`)
+- Test: `test/Sticky_Integration.t.sol` (append)
 
 **Interfaces:**
 - Consumes: constructor `(directory, stickyHook, roundDuration, vestingRounds, claimDuration)`.
@@ -672,7 +672,7 @@ function test_integration_criteriaPotEndToEnd() public {
 ```
 
 - [ ] **Step 3: Run everything** — `forge build && forge test`. All green.
-- [ ] **Step 4: Commit** — `feat: deploy JBStickyDistributor; end-to-end criteria integration test`
+- [ ] **Step 4: Commit** — `feat: deploy StickyDistributor; end-to-end criteria integration test`
 
 ---
 
@@ -689,5 +689,5 @@ function test_integration_criteriaPotEndToEnd() public {
 ## Self-Review Notes
 
 - Spec coverage: hook buckets (T1-2), fork + group 0 parity (T3), criteria encoding + validation (T4), fund-time denominator (T5), lazy claim numerator + forfeit rule (T6), lockedUntil splits (T7), invariants from the spec's edge-case list (T8), deploy + E2E incl. recycle-stays-gated (T9), docs (T10). Webclient work is explicitly out of contract scope per the spec.
-- Type consistency: `groupId = k` (plain uint, 1..520) everywhere; `snapshotEpoch` uint48 in `JBStickyRewardRoundData`; `netStakedIn`/`firstStakeEpochPlusOneOf`/`netStakedInEpochs` names match across T1/T2/T5; `_agedTotalStake`/`_agedStakeOf` defined where used.
+- Type consistency: `groupId = k` (plain uint, 1..520) everywhere; `snapshotEpoch` uint48 in `StickyRewardRoundData`; `netStakedIn`/`firstStakeEpochPlusOneOf`/`netStakedInEpochs` names match across T1/T2/T5; `_agedTotalStake`/`_agedStakeOf` defined where used.
 - Known judgment calls left to the implementer: exact placement of flattened internals in the fork (T3 step 1 lists what to delete, not line numbers — the copy source is pinned in node_modules and stable), and whether T4/T5's `_recordRewardRound` change lands in one commit (allowed, noted in T4 step 3).

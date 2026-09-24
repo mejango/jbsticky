@@ -6,19 +6,19 @@ import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {console2} from "forge-std/console2.sol";
 
-import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
-import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
-import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
-import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
+import {StickyAutoStick} from "../src/StickyAutoStick.sol";
+import {StickyDeployer} from "../src/StickyDeployer.sol";
+import {StickyDistributor} from "../src/StickyDistributor.sol";
+import {StickyRewardReceiverFactory} from "../src/StickyRewardReceiverFactory.sol";
 
-import {JBStickyDeployment} from "./helpers/JBStickyDeployment.sol";
+import {StickyDeployment} from "./helpers/StickyDeployment.sol";
 import {MockArt} from "./mocks/MockArt.sol";
 import {MockBan} from "./mocks/MockBan.sol";
-import {JBStickyCoreDeployment} from "./structs/JBStickyCoreDeployment.sol";
+import {StickyCoreDeployment} from "./structs/StickyCoreDeployment.sol";
 
-/// @notice Deploys JBSticky plus a mintable test token to a local fork of a chain with nana core, and launches a
+/// @notice Deploys Sticky plus a mintable test token to a local fork of a chain with nana core, and launches a
 /// sticky project for it. For local development only.
-contract DeployLocal is JBStickyDeployment {
+contract DeployLocal is StickyDeployment {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
@@ -34,7 +34,7 @@ contract DeployLocal is JBStickyDeployment {
     /// @dev This non-idempotent fixture deliberately uses shortened distributor durations. Never use it for production.
     function run() public {
         if (!vm.envOr({name: "STICKY_LOCAL_DEMO", defaultValue: false})) revert DeployLocal_LocalDemoNotEnabled();
-        JBStickyCoreDeployment memory core = _loadCore();
+        StickyCoreDeployment memory core = _loadCore();
         IJBController controller = core.controller;
         IJBTerminal terminal = core.terminal;
 
@@ -48,10 +48,10 @@ contract DeployLocal is JBStickyDeployment {
 
         MockArt art = new MockArt();
         MockBan ban = new MockBan();
-        JBStickyDeployer deployer = new JBStickyDeployer({controller: controller, terminal: terminal});
+        StickyDeployer deployer = new StickyDeployer({controller: controller, terminal: terminal});
 
         // A demo rewards distributor with fast rounds: 10-minute rounds, vested after 2 rounds, 7-day claims.
-        JBStickyDistributor distributor = new JBStickyDistributor({
+        StickyDistributor distributor = new StickyDistributor({
             controller: controller,
             directory: controller.DIRECTORY(),
             stickyHook: deployer.HOOK(),
@@ -60,8 +60,8 @@ contract DeployLocal is JBStickyDeployment {
             initialClaimDuration: 7 days
         });
 
-        JBStickyAutoStick autoStick = new JBStickyAutoStick({deployer: deployer, distributor: distributor});
-        JBStickyRewardReceiverFactory rewardReceiverFactory = new JBStickyRewardReceiverFactory(distributor);
+        StickyAutoStick autoStick = new StickyAutoStick({deployer: deployer, distributor: distributor});
+        StickyRewardReceiverFactory rewardReceiverFactory = new StickyRewardReceiverFactory(distributor);
 
         // The immutable adapter is available to every holder from launch. This does not enable auto-stick or grant a
         // token allowance for anyone; each holder still opts in and approves their own underlying token.
@@ -70,6 +70,7 @@ contract DeployLocal is JBStickyDeployment {
         granters[1] = address(autoStick);
 
         // ART: zero cash-out tax; redemption follows the configured backing economics.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         uint256 projectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(art)),
             name: "Streaking ART",
@@ -79,9 +80,11 @@ contract DeployLocal is JBStickyDeployment {
             granters: granters,
             soulbound: true
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         art.mint({to: msg.sender, amount: 1_000_000e18});
 
         // BAN: applies the protocol's 10% cash-out tax curve and applicable fees.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         uint256 banProjectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(ban)),
             name: "Streaking BAN",
@@ -91,18 +94,19 @@ contract DeployLocal is JBStickyDeployment {
             granters: granters,
             soulbound: true
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         ban.mint({to: msg.sender, amount: 1_000_000e18});
 
         vm.stopBroadcast();
 
         console2.log({p0: "ART", p1: address(art)});
         console2.log({p0: "BAN", p1: address(ban)});
-        console2.log({p0: "JBStickyDeployer", p1: address(deployer)});
-        console2.log({p0: "JBStickyHook", p1: address(deployer.HOOK())});
+        console2.log({p0: "StickyDeployer", p1: address(deployer)});
+        console2.log({p0: "StickyHook", p1: address(deployer.HOOK())});
         console2.log({p0: "projectId", p1: projectId});
         console2.log({p0: "banProjectId", p1: banProjectId});
-        console2.log({p0: "JBStickyDistributor", p1: address(distributor)});
-        console2.log({p0: "JBStickyAutoStick", p1: address(autoStick)});
-        console2.log({p0: "JBStickyRewardReceiverFactory", p1: address(rewardReceiverFactory)});
+        console2.log({p0: "StickyDistributor", p1: address(distributor)});
+        console2.log({p0: "StickyAutoStick", p1: address(autoStick)});
+        console2.log({p0: "StickyRewardReceiverFactory", p1: address(rewardReceiverFactory)});
     }
 }

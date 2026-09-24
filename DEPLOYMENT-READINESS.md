@@ -7,7 +7,7 @@ only in fork state, verified executable code and immutable bindings, and repeate
 to validate reuse. No Sphinx proposal was
 submitted and no on-chain transaction was broadcast.
 
-The receiver/factory rename and the tenure-rewards change (`JBStickyDistributor`
+The receiver/factory rename and the tenure-rewards change (`StickyDistributor`
 replaces `JBTokenDistributor`, the distributor is bound to the hook, the claim
 window is two years, receivers are keyed by group, and the hook's runtime changed)
 change deployment inputs, so regenerate predictions and rerun deployment

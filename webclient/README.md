@@ -57,8 +57,8 @@ before selecting it for a production launch. Set optional extension addresses
 only where those extensions are deployed. A successful health check verifies the
 site's build and configuration, not on-chain contract deployment or RPC uptime.
 
-`JBStickyRewardReceiver` holds arriving ERC-20 rewards for one Sticky token and
-reward group until they are settled into the distributor. `JBStickyRewardReceiverFactory`
+`StickyRewardReceiver` holds arriving ERC-20 rewards for one Sticky token and
+reward group until they are settled into the distributor. `StickyRewardReceiverFactory`
 predicts and deploys those receivers, so each project and group has its own
 destination address even before its receiver is deployed. Configure the factory address using
 `STICKY_REWARD_RECEIVER_FACTORY_<chainId>` (or the global

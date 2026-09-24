@@ -12,11 +12,11 @@ const addresses = {
 };
 const word = value => BigInt(value).toString(16).padStart(64, '0');
 const expectedArgs = {
-  JBStickyDeployer: [addresses.controller, addresses.terminal],
-  JBStickyHook: [addresses.directory, addresses.deployer],
-  JBStickyDistributor: [addresses.controller, addresses.directory, addresses.hook, '604800', '4', '63072000'],
-  JBStickyRewardReceiverFactory: [addresses.distributor],
-  JBStickyAutoStick: [addresses.deployer, addresses.distributor],
+  StickyDeployer: [addresses.controller, addresses.terminal],
+  StickyHook: [addresses.directory, addresses.deployer],
+  StickyDistributor: [addresses.controller, addresses.directory, addresses.hook, '604800', '4', '63072000'],
+  StickyRewardReceiverFactory: [addresses.distributor],
+  StickyAutoStick: [addresses.deployer, addresses.distributor],
 };
 
 function artifact(name) {
@@ -48,8 +48,8 @@ function fixture(group, { revision = 'abc123' } = {}) {
         if (searchParams.get('action') === 'getcontractcreation') {
           const address = searchParams.get('contractaddresses');
           const name = contracts.find(contract => addresses[contract.field] === address).name;
-          const child = name === 'JBStickyHook';
-          return { result: [{ txHash: `0xtx-${child ? 'JBStickyDeployer' : name}`,
+          const child = name === 'StickyHook';
+          return { result: [{ txHash: `0xtx-${child ? 'StickyDeployer' : name}`,
             creationBytecode: child ? undefined : `${code}${expectedArgs[name].map(word).join('')}` }] };
         }
         return { result: { blockHash: '0x' + 'bb'.repeat(32), transactionHash: searchParams.get('txhash') } };
@@ -83,7 +83,7 @@ for (const group of Object.keys(networks)) {
         assert.deepEqual(record.history, []);
       }
       // The hook is created by the deployer's constructor, so its receipt is the deployer's creation transaction.
-      assert.equal(written[`deployments/${folder}/JBStickyHook.json`].receipt.transactionHash, '0xtx-JBStickyDeployer');
+      assert.equal(written[`deployments/${folder}/StickyHook.json`].receipt.transactionHash, '0xtx-StickyDeployer');
     }
     assert.equal(verified.length, networks[group].length * contracts.length);
     for (const { command, args } of verified) {
@@ -102,7 +102,7 @@ for (const group of Object.keys(networks)) {
 test('a dirty revision is recorded as such, and a missing explorer key stops before any read', async () => {
   const dirty = fixture('testnets', { revision: 'abc123-dirty' });
   await emit('testnets', dirty.options);
-  assert.equal(dirty.written['deployments/sepolia/JBStickyDeployer.json'].gitDirty, true);
+  assert.equal(dirty.written['deployments/sepolia/StickyDeployer.json'].gitDirty, true);
   const { options, fetched } = fixture('testnets');
   await assert.rejects(emit('testnets', { ...options, env: {} }), /Missing ETHERSCAN_API_KEY/);
   assert.equal(fetched.length, 0);
@@ -119,14 +119,14 @@ test('creation bytecode that disagrees with the recorded bindings stops the grou
     }
     return body;
   };
-  await assert.rejects(emit('mainnets', options), /creation bytecode of JBStickyDistributor/);
-  assert.ok(!written['deployments/ethereum/JBStickyDistributor.json']);
+  await assert.rejects(emit('mainnets', options), /creation bytecode of StickyDistributor/);
+  assert.ok(!written['deployments/ethereum/StickyDistributor.json']);
 });
 
 test('explorer verification failure stops the group, but an already verified source does not', async () => {
   const failing = fixture('testnets');
   failing.options.spawn = () => ({ status: 1, stdout: 'Compiler error' });
-  await assert.rejects(emit('testnets', failing.options), /explorer verification of JBStickyDeployer failed/);
+  await assert.rejects(emit('testnets', failing.options), /explorer verification of StickyDeployer failed/);
   const verified = fixture('testnets');
   verified.options.spawn = () => ({ status: 1, stderr: 'Contract source code already verified' });
   await emit('testnets', verified.options);
@@ -135,16 +135,16 @@ test('explorer verification failure stops the group, but an already verified sou
 
 test('constructor bindings are encoded from the manifest and rejected when the compiled constructor changes', () => {
   const manifest = { ...addresses };
-  const distributor = contracts.find(contract => contract.name === 'JBStickyDistributor');
-  const { args, argsHex } = constructorArgs(distributor, manifest, JSON.parse(artifact('JBStickyDistributor')));
-  assert.deepEqual(args, expectedArgs.JBStickyDistributor);
-  assert.equal(argsHex, expectedArgs.JBStickyDistributor.map(word).join(''));
+  const distributor = contracts.find(contract => contract.name === 'StickyDistributor');
+  const { args, argsHex } = constructorArgs(distributor, manifest, JSON.parse(artifact('StickyDistributor')));
+  assert.deepEqual(args, expectedArgs.StickyDistributor);
+  assert.equal(argsHex, expectedArgs.StickyDistributor.map(word).join(''));
   assert.throws(() => constructorArgs(distributor, manifest, { abi: [{ type: 'constructor', inputs: [{ type: 'address' }] }] }), /no longer matches/);
   assert.throws(() => constructorArgs(distributor, manifest, { abi: [{ type: 'constructor',
     inputs: [...Array(5).fill({ type: 'address' }), { type: 'bytes' }] }] }), /no longer matches/);
-  assert.throws(() => constructorArgs(distributor, { ...manifest, hook: undefined }, JSON.parse(artifact('JBStickyDistributor'))), /no hook address/);
+  assert.throws(() => constructorArgs(distributor, { ...manifest, hook: undefined }, JSON.parse(artifact('StickyDistributor'))), /no hook address/);
   // The compiled distributor takes exactly the policy the helper encodes.
-  const compiled = JSON.parse(readFileSync('out/JBStickyDistributor.sol/JBStickyDistributor.json', 'utf8'));
+  const compiled = JSON.parse(readFileSync('out/StickyDistributor.sol/StickyDistributor.json', 'utf8'));
   assert.deepEqual(compiled.abi.find(entry => entry.type === 'constructor').inputs.map(input => input.type),
     ['address', 'address', 'address', 'uint256', 'uint256', 'uint48']);
 });

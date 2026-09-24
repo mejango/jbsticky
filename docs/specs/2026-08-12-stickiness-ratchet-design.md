@@ -133,10 +133,10 @@ exodus buys nothing — NAV in, same toll out).
 
 | Where | Change |
 |---|---|
-| `JBStickyHook.beforePayRecordedWith` | return NAV weight instead of `context.weight` — **the one change** |
-| `JBStickyHook.beforeCashOutRecordedWith` | **unchanged** — stock curve passes through |
-| `JBStickyDeployer.deployStickyFor` | **unchanged** — `cashOutTaxRate` is already the toll param |
-| `JBStickyHook` | new views `backingOf(projectId)`, `unwindPreviewOf(projectId, count)` |
+| `StickyHook.beforePayRecordedWith` | return NAV weight instead of `context.weight` — **the one change** |
+| `StickyHook.beforeCashOutRecordedWith` | **unchanged** — stock curve passes through |
+| `StickyDeployer.deployStickyFor` | **unchanged** — `cashOutTaxRate` is already the toll param |
+| `StickyHook` | new views `backingOf(projectId)`, `unwindPreviewOf(projectId, count)` |
 | Tranche/streak machinery | untouched |
 | Core protocol | none |
 
