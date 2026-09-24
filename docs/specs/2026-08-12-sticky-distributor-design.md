@@ -1,3 +1,5 @@
+> **Superseded** by [`2026-09-24-tenure-rewards.md`](2026-09-24-tenure-rewards.md), which records the design as shipped: a `JBDistributor` subclass instead of a fork, the snapshot epoch pinned at round start, no `totalStakedOf` or `firstStakeEpochPlusOneOf` storage, same-week tranche merging, per-group receivers, and multi-group auto-stick. Kept as the design history of the epoch-bucket mechanism and the group encoding.
+
 # JBStickyDistributor — stick-time-gated reward distribution
 
 **Date:** 2026-08-12

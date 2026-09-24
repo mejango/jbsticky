@@ -7,7 +7,8 @@ Sticky permanently binds projects to a specific core release and underlying toke
 | Risk | Consequence | Integration requirement |
 | --- | --- | --- |
 | Maximum cash out tax | Every redemption returns zero, including a whole-supply exit | Show this permanent outcome before launch and before a holder stakes |
-| Snapshot reward capture | Temporary ownership can retain rewards after exiting | Treat rewards as balance-at-a-block allocations; inspect the actual snapshot before funding |
+| Snapshot reward capture | Temporary ownership can retain group-0 rewards after exiting | Treat group-0 rewards as balance-at-a-block allocations; fund a tenure group when age should matter |
+| Tenure claims need a live position | Exiting before claiming forfeits a tenure allocation to the pot | Claim tenure rewards before unstaking; tell holders the claim window |
 | Unsupported underlying token | Transfer failures, backing mismatch, or unexpected value loss | Review transfer, rebase, freeze, mint, and upgrade behavior before accepting an asset |
 | Incorrect core or deployment identity | Immutable bindings can point to unsuitable or privileged dependencies | Verify code, bindings, chain, and executed receipts for the reviewed release |
 | Incorrect bridge destination | Rewards can become inaccessible or fund unintended holders | Predict the receiver on the destination chain and verify the reward-token route |
@@ -26,11 +27,19 @@ Value added to a Sticky project's balance through `addToBalanceOf` or a `preferA
 
 ## Reward allocation and timing
 
-The shared distributor uses ownership snapshots without a minimum stake age. First positive funding or settlement pins the current round if needed. Anyone can call `poke()` to pin both the current and next round if unset, using the previous block. That timing is shared by every project on the distributor.
+Group 0 uses ownership snapshots without a minimum stake age. First positive funding or settlement pins the current round if needed. Anyone can call `poke()` to pin both the current and next round if unset, using the previous block. That timing is shared by every project on the distributor.
 
-A holder can acquire shares, wait one block, pin snapshots, and exit while retaining the pinned allocations. A positive cash out tax raises stake/redeem cost but cannot prevent a profitable capture when rewards exceed that cost. Transferable shares can be temporarily acquired and returned without redeeming at all. Soulbound transfers and accurate tranche timestamps do not make this distributor age-aware. Programs promising tenure rewards need their own allocation mechanism.
+A holder can acquire shares, wait one block, pin snapshots, and exit while retaining the pinned group-0 allocations. A positive cash out tax raises stake/redeem cost but cannot prevent a profitable capture when rewards exceed that cost. Transferable shares can be temporarily acquired and returned without redeeming at all. Funders who want age to matter must fund a tenure group; group 0 remains age-blind by design.
 
-The round current at receiver settlement determines its recipients. Anyone can settle immediately or across a round boundary. A funder cannot reserve an arrival for a chosen future round by leaving it in a receiver. Funding a snapshot with zero eligible supply can leave that round without a claimant until its unclaimed inventory becomes recyclable.
+Tenure groups weigh tranche age in whole weeks, measured from the week the round started in. A stake made earlier in that same week, or after the round started, is not eligible for that round regardless of the clock; the earliest it can qualify is a round starting `minWeeks` weeks later. A funder cannot shift a round's window by funding it later in the round. Rounds start on the distributor's own schedule, not on week boundaries, so a round can span two weeks; its window is still the one pinned by its start.
+
+A tenure denominator is read from the hook's buckets at the round's first funding. A claim reads the holder's live tranches, so a holder must still hold the qualifying tranches when they claim: exiting or transferring first forfeits that allocation, which stays in the pot and recycles into the current round after the claim window. Partial exits consume the newest tranches first, so a tenure allocation survives a partial exit that leaves the aged tranches intact, while a recency window loses eligibility from its newest tranches first. Bounded windows pay deposits, not people: a continuous staker's cohort share is only the slice deposited in that window.
+
+The denominator read relies on the hook's buckets summing to the token supply. During a payment the terminal mints before the hook records the tranche, so a denominator read in that gap would count the unrecorded mint; reaching it requires an underlying token with transfer callbacks, which Sticky does not support. The effect is a lower per-holder payout for that round, with the shortfall recycling after the claim window, not an overpayment.
+
+The round current at receiver settlement determines its recipients and, for tenure groups, its window. Anyone can settle immediately or across a round boundary. A funder cannot reserve an arrival for a chosen future round by leaving it in a receiver. Funding a round with zero eligible stake, including a tenure window nothing has aged into, leaves that round without a claimant until its unclaimed inventory becomes recyclable.
+
+Splits carry the group in `split.projectId`. Tools that render a split destination without checking its hook first will show that number as a project. An invalid group or an unregistered beneficiary silently funds group 0; a funder who intends a tenure group must confirm the split's `projectId` decodes as one.
 
 Every share holder is self-delegated, contracts included, so reward weight follows balances by design. An AMM pool that holds transferable shares receives an allocation that anyone can collect to the pool and then skim. Sticky tokens cannot be another Sticky project's staked token, so no terminal holds reward weight.
 
@@ -43,10 +52,12 @@ Vesting starts through a transaction for eligible past allocations; elapsed time
 - **Protocol controls.** Core creation fees, feeless configuration, and default price feeds retain their respective authority models. Sticky's exact post-pay check prevents a mismatched fallback price from silently changing issued shares; a failed feed can still make payments revert.
 - **Underlying custody.** The terminal's internal ledger is not a guarantee against token rebases, freezes, upgrades, or malicious callbacks. Fee-on-transfer and rebasing underlying tokens are unsupported; some paths may appear to work without making the whole integration safe.
 - **Project identity.** Launching is permissionless. A familiar token name, symbol, or project URI does not authenticate its underlying asset or launcher. Use chain and contract addresses from a confirmed launch event.
-- **Share transfers.** In transferable mode, an unsolicited transfer can start a position without the payment trust gate. Transfers create fresh recipient tranches but preserve an existing recipient's holder streak. Granters are permanent and cannot be individually revoked by holders.
-- **Reward receivers.** Cross-chain address parity depends on factory and distributor addresses, creation code, and the destination Sticky-token address. These contracts do not validate bridge messages or recover mistaken native-token or ERC-20 transfers to unsupported destinations.
+- **Share transfers.** In transferable mode, an unsolicited transfer can start a position without the payment trust gate. Transferred tokens join the recipient's current-week tranche or start a new one, and preserve an existing recipient's holder streak. Granters are permanent and cannot be individually revoked by holders.
+- **Reward receivers.** Cross-chain address parity depends on factory and distributor addresses, creation code, the destination Sticky-token address, and the group. These contracts do not validate bridge messages or recover mistaken native-token or ERC-20 transfers to unsupported destinations. A tenure-group receiver for a token the hook does not track cannot settle; its balance stays in the receiver.
 
 ## Operational limits
+
+An exit debits one epoch bucket per distinct week it consumes. Same-week deposits merge, so dust cannot multiply that work, but a position built up weekly for ten years (520 tranches) costs about 3.3M gas to exit fully from cold storage, roughly 6,300 gas per week. Tenure denominators walk at most `MAX_CRITERIA_WEEKS` buckets plus the weeks elapsed since the round started.
 
 Whole-array tranche reads are unbounded; use pagination at a pinned block. RPC failures and incomplete log ranges must be distinguished from a zero balance or absent reward. A submitted transaction is not a confirmed action: recover the canonical receipt before retrying a launch, approval, stake, or bridge operation.
 

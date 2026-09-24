@@ -7,9 +7,11 @@ only in fork state, verified executable code and immutable bindings, and repeate
 to validate reuse. No Sphinx proposal was
 submitted and no on-chain transaction was broadcast.
 
-The receiver/factory rename changes deployment inputs, so regenerate predictions
-and rerun deployment rehearsals for the renamed contracts before collecting a
-Sphinx proposal. Live production readiness still requires executed receipts,
+The receiver/factory rename and the tenure-rewards change (`JBStickyDistributor`
+replaces `JBTokenDistributor`, the distributor is bound to the hook, the claim
+window is two years, receivers are keyed by group, and the hook's runtime changed)
+change deployment inputs, so regenerate predictions and rerun deployment
+rehearsals before collecting a Sphinx proposal. Live production readiness still requires executed receipts,
 post-execution verification, published
 artifacts, and wallet/bridge smoke checks. Read [AUDIT_REPORT.md](AUDIT_REPORT.md)
 for findings, fixes, and remaining economic/recovery limits.
@@ -47,8 +49,9 @@ Arbitrum; only the RPC height identifies the L2 fork used by Forge.
 | sepolia | 11155111 | 11689657 | 11689657 |
 
 All eight rehearsals predicted the same suite addresses below. These are historical
-predictions from before the receiver/factory rename and must not be used as current
-release addresses. Generate current predictions with the reviewed renamed source.
+predictions from before the receiver/factory rename and the tenure-rewards change
+and must not be used as current release addresses. Generate current predictions
+with the reviewed source.
 
 | Component (current name) | Historical predicted address |
 | --- | --- |
@@ -64,7 +67,8 @@ token address; equal factory addresses alone are insufficient.
 
 ## Validation
 
-The results below were recorded before the receiver/factory rename.
+The results below were recorded before the receiver/factory rename and the
+tenure-rewards change; rerun every gate on the reviewed source.
 
 - **143 Solidity tests passed**, zero failed, across twelve suites; includes 21 deployment regressions, direct/forwarded/nested creation-fee attribution, independent withdrawals, and the snapshot-reward characterization.
 - **34 real-project fork tests passed**, zero failed and zero skipped, through `npm run test:fork` with strict lint: 14 each on Base `6` (Artizen) and Ethereum `3` (Revnet Network), plus six Ethereum `3` to Base `3` reward-bridge tests. These acquire real project tokens through deployed payment contracts and deploy Sticky locally through the production helper. [Pinned state, scenarios, and rerun commands](test/fork/README.md).

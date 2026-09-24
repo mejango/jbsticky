@@ -11,6 +11,7 @@ import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBStickyHook} from "../src/JBStickyHook.sol";
+import {JBStickyRewardReceiver} from "../src/JBStickyRewardReceiver.sol";
 import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
 import {JBStickyToken} from "../src/JBStickyToken.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
@@ -454,6 +455,90 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
 
     // Deploy a sticky-tuned distributor and an auto-stick adapter, stake 30/10 for user/granter, and fund
     // 100 ART of rewards so the user's fully-vested share is 75 ART.
+    function test_perGroupReceiversFundSeparatePots() public {
+        JBStickyDistributor distributor = new JBStickyDistributor({
+            controller: jbController(),
+            directory: jbDirectory(),
+            stickyHook: hook,
+            initialRoundDuration: 1 days,
+            initialVestingRounds: 2,
+            initialClaimDuration: 30 days
+        });
+        JBStickyRewardReceiverFactory receiverFactory = new JBStickyRewardReceiverFactory(distributor);
+
+        // A holder stakes, then two weeks pass so their tranche is old enough for a one-week tenure window.
+        _stake(user, user, 30e6);
+        vm.warp(vm.getBlockTimestamp() + 2 weeks);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // The default group's receiver and the tenure group's receiver are different counterfactual addresses.
+        address defaultReceiver = receiverFactory.predictReceiverOf({stickyToken: address(token), groupId: 0});
+        address tenureReceiver = receiverFactory.predictReceiverOf({stickyToken: address(token), groupId: 1000});
+        assertTrue(defaultReceiver != tenureReceiver);
+
+        // A group the distributor rejects has no receiver to predict or deploy.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyRewardReceiverFactory.JBStickyRewardReceiverFactory_InvalidGroupId.selector, 4
+            )
+        );
+        receiverFactory.predictReceiverOf({stickyToken: address(token), groupId: 4});
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                JBStickyRewardReceiverFactory.JBStickyRewardReceiverFactory_InvalidGroupId.selector, 4
+            )
+        );
+        receiverFactory.deployReceiverFor({stickyToken: address(token), groupId: 4});
+
+        // Arrivals at each receiver settle into their own pots.
+        art.mint({to: defaultReceiver, amount: 40e6});
+        art.mint({to: tenureReceiver, amount: 60e6});
+        assertEq(
+            receiverFactory.settleFor({stickyToken: address(token), groupId: 0, token: IERC20(address(art))}), 40e6
+        );
+        assertEq(
+            receiverFactory.settleFor({stickyToken: address(token), groupId: 1000, token: IERC20(address(art))}), 60e6
+        );
+        assertEq(receiverFactory.receiverOf({stickyToken: address(token), groupId: 0}), defaultReceiver);
+        assertEq(receiverFactory.receiverOf({stickyToken: address(token), groupId: 1000}), tenureReceiver);
+        assertEq(JBStickyRewardReceiver(tenureReceiver).GROUP_ID(), 1000);
+        assertEq(JBStickyRewardReceiver(tenureReceiver).STICKY_TOKEN(), address(token));
+        assertEq(address(JBStickyRewardReceiver(tenureReceiver).DISTRIBUTOR()), address(distributor));
+        (uint208 defaultPot,,,, uint208 defaultStake) =
+            distributor.rewardRoundOf(address(token), 0, IERC20(address(art)), distributor.currentRound());
+        (uint208 tenurePot,,,, uint208 tenureStake) =
+            distributor.rewardRoundOf(address(token), 1000, IERC20(address(art)), distributor.currentRound());
+        assertEq(defaultPot, 40e6);
+        assertEq(tenurePot, 60e6);
+        assertEq(defaultStake, 30e18);
+        assertEq(tenureStake, 30e18);
+
+        // Once the round completes, both pots start vesting; two rounds later they are fully unlocked.
+        uint256[] memory groupIds = new uint256[](2);
+        groupIds[1] = 1000;
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = uint256(uint160(user));
+        IERC20[] memory tokens = new IERC20[](1);
+        tokens[0] = IERC20(address(art));
+        vm.warp(vm.getBlockTimestamp() + 1 days + 1);
+        vm.roll(vm.getBlockNumber() + 1);
+        distributor.beginVesting({hook: address(token), groupId: 0, tokenIds: tokenIds, tokens: tokens});
+        distributor.beginVesting({hook: address(token), groupId: 1000, tokenIds: tokenIds, tokens: tokens});
+        vm.warp(vm.getBlockTimestamp() + 2 days);
+        vm.roll(vm.getBlockNumber() + 1);
+
+        // The holder collects from both groups in one auto-stick call.
+        JBStickyAutoStick adapter = new JBStickyAutoStick({deployer: deployer, distributor: distributor});
+        vm.startPrank(user);
+        hook.setTrustedSenderFor({projectId: projectId, sender: address(adapter), trusted: true});
+        art.approve({spender: address(adapter), value: type(uint256).max});
+        vm.stopPrank();
+        vm.prank(user);
+        (uint256 underlyingAmount,) = adapter.stickRewardsFor({projectId: projectId, groupIds: groupIds});
+        assertEq(underlyingAmount, 100e6);
+        assertEq(hook.stakedBalanceOf(projectId, user), 130e18);
+    }
+
     function _autoStickFixture() internal returns (JBStickyDistributor distributor, JBStickyAutoStick adapter) {
         distributor = new JBStickyDistributor({
             controller: jbController(),

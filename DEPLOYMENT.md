@@ -135,7 +135,7 @@ for diagnosis and accept normal Forge options; source your environment and set
 The script keeps the original `JBStickyDeployerV6` and `JBStickyAutoStickV6` salts and explicitly uses the canonical factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`. It validates that factory's exact runtime. The suite is:
 
 1. `JBStickyDeployer`, which creates its accounting hook in its constructor.
-2. `JBTokenDistributor`, with 7-day rounds, 4-round vesting, a 3-year claim window, and loans disabled.
+2. `JBStickyDistributor`, bound to that deployer's hook, with 7-day rounds, 4-round vesting, a 2-year claim window, and loans disabled.
 3. `JBStickyRewardReceiverFactory`, bound to that distributor.
 4. `JBStickyAutoStick`, bound to that deployer and distributor.
 
@@ -147,7 +147,7 @@ npm run deploy:mainnets
 
 These commands create Sphinx proposals. Review the exact predicted addresses, missing deployment transactions, bytecode, constructors, network group, and Sphinx Safe before approving execution through the existing Sphinx process. Do not use `forge script --broadcast` with the Sphinx entrypoint.
 
-A repeated proposal collection skips existing deployments only after checking their compiled executable runtime and all immutable bindings. Every occurrence of a compiler-reported immutable must agree; checking only its getter is insufficient. The hook must be the deployer's nonce-1 CREATE child. The distributor must retain its original valid starting timestamp. Unexpected code or settings cause a failure rather than silent reuse. A changed source revision deploys new predictions; it does not upgrade or replace earlier immutable projects.
+A repeated proposal collection skips existing deployments only after checking their compiled executable runtime and all immutable bindings. Every occurrence of a compiler-reported immutable must agree; checking only its getter is insufficient. The hook must be the deployer's nonce-1 CREATE child. The distributor must be bound to that hook with a matching epoch duration and retain its original valid starting timestamp. Unexpected code or settings cause a failure rather than silent reuse. A changed source revision deploys new predictions; it does not upgrade or replace earlier immutable projects.
 
 ## Verification and publication
 

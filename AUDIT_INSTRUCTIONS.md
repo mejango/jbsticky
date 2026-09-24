@@ -8,7 +8,7 @@ Find a concrete sequence that loses backing, corrupts share or tranche accountin
 
 - Solidity in `src/`, including interfaces, structs, and `JBStickyPricing`.
 - Deployment and verification under `script/`, environment handling, and Sphinx network groups.
-- The core pay/mint/burn/cash-out flows and distributor snapshot/vesting calls actually used by Sticky.
+- The core pay/mint/burn/cash-out flows and the inherited `JBDistributor` snapshot, vesting, and recycling logic actually used by `JBStickyDistributor`.
 - `webclient/` configuration, project identity, quote units, transaction preparation, receipt recovery, rewards, and cross-chain flows.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md), [INVARIANTS.md](./INVARIANTS.md), [RISKS.md](./RISKS.md), and [USER_JOURNEYS.md](./USER_JOURNEYS.md), then trace source in this order:
@@ -16,9 +16,10 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md), [INVARIANTS.md](./INVARIANTS.md), [RI
 1. `JBStickyDeployer`: permanent project metadata, ownership, accepted token, and core bindings.
 2. `JBStickyPricing`, `JBStickyPriceFeed`, and `JBStickyHook`: exact issuance, orphaned backing, callback authentication, and position accounting.
 3. `JBStickyToken`: every mint, transfer, burn, delegation, and checkpoint transition.
-4. `JBStickyAutoStick`, `JBStickyRewardReceiverFactory`, and `JBStickyRewardReceiver`: collection consent, balance deltas, settlement timing, and destination identity.
-5. Core `JBMultiTerminal`, `JBTerminalStore`, `JBController`, `JBTokens`, and `JBPrices`, paired with distributor `JBDistributor` and `JBTokenDistributor`.
-6. Deployment helpers and the client transaction path for the same operation.
+4. `JBStickyDistributor`: group encoding, the window pinned at round start, the denominator read from the hook's buckets at first funding, live-tranche numerators, the pot-remainder cap, split fallback to group 0, and the unregistered-token check.
+5. `JBStickyAutoStick`, `JBStickyRewardReceiverFactory`, and `JBStickyRewardReceiver`: collection consent across groups, balance deltas, settlement timing, group validation, and destination identity.
+6. Core `JBMultiTerminal`, `JBTerminalStore`, `JBController`, `JBTokens`, and `JBPrices`, paired with distributor `JBDistributor`.
+7. Deployment helpers and the client transaction path for the same operation.
 
 ## Attack sequences
 
@@ -26,11 +27,13 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md), [INVARIANTS.md](./INVARIANTS.md), [RI
 - Leave one holder with dust and redeem every share belonging to another. Repeat in soulbound and transferable projects; another account's residual position must not impose a minimum balance on the exiter.
 - Reduce supply to a few atoms, increase backing per atom, and try exact and inexact deposits across 0–36 accounting decimals. Rejected payments must not donate value; accepted payments must match exact rounded issuance.
 - Reenter during the underlying token's transfer or approval callbacks. Attempt mint-time share transfers, controller burns, nested deposits, and donations before the after-pay reconciliation.
-- Build many positive tranches, exit partially and fully, then reuse the position. Check newest-first consumption, timestamp preservation, logarithmic partial exits, and bounded reads.
+- Build many positive tranches in the same week and across weeks, exit partially and fully, then reuse the position. Check newest-first consumption, timestamp preservation, same-week merging, that every consumed tranche debits its original epoch bucket, that buckets always sum to supply, and bounded reads.
+- Stake before and after a round start in the same week, fund a tenure group early and late in the round, exit and transfer between funding and claiming, and claim in every order. The recorded denominator must equal the in-window stake at first funding, no later stake may enter the window, and the sum of claims must never exceed the pot.
+- Fund a tenure group through a split whose `projectId` is invalid, whose beneficiary is a token the hook does not track, or whose `lockedUntil` is set; fund directly with the same inputs.
 - Compare cash outs at zero, intermediate, and maximum tax for a partial holder exit and the whole supply. Include a feeless beneficiary, fee-free surplus, a failed fee route, and low-decimal rounding. Compare gross preview with net receipt.
-- Acquire shares for one block, call `poke()`, exit, and fund both pinned rounds. Repeat with transferable shares returned to their source. Do not mistake checkpoint integrity for tenure-based reward eligibility.
+- Acquire shares for one block, call `poke()`, exit, and fund both pinned group-0 rounds. Repeat with transferable shares returned to their source, and repeat against a tenure group, which must pay that position nothing.
 - Begin vesting, permissionlessly collect to the holder, and attempt a later compound. Fail each approval, transfer, preview, and payment step to check atomicity and that unrelated wallet funds are untouched.
-- Fund a predicted receiver before deployment, settle across a round boundary, and compare predictions across different factories, distributors, destination tokens, and compiled creation code.
+- Fund a predicted receiver before deployment, settle across a round boundary, and compare predictions across different factories, distributors, destination tokens, groups, and compiled creation code.
 - Change the connected account or chain during a multi-step client action; reject a signature, lose the RPC response after submission, and resume after reload. Verify destination, minimums, canonical receipts, and whether a retry would duplicate value movement.
 - Rehearse clean, partial, repeated, and mismatched deployments on both network groups. Treat foreign code, immutable mismatches, stale manifests, and unverified privileged core bindings as distinct failures.
 
