@@ -21,6 +21,7 @@ contract JBStickyTestLauncher is IJBPayerTracker {
         returns (uint256 projectId)
     {
         originalPayer = msg.sender;
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         projectId = deployer.deployStickyFor{value: msg.value}({
             stakedToken: underlying,
             name: "Forwarded Sticky",

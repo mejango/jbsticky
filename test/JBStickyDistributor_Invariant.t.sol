@@ -17,6 +17,7 @@ import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
 import {JBStickyTranche} from "../src/structs/JBStickyTranche.sol";
 
 /// @notice An 18-decimal ERC-20 standing in for the staked and reward tokens driven by the invariant handler.
+// forge-lint: disable-next-line(multi-contract-file)
 contract InvariantErc20 is ERC20 {
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
@@ -44,6 +45,7 @@ contract InvariantErc20 is ERC20 {
 /// @dev Every action bumps the block number first, so default-group votes snapshots (which require a strictly past
 /// block) never revert regardless of call order. The second project keeps a lean action set (stake, fund, claim only)
 /// since it exists solely to exercise per-hook custody isolation, not bucket conservation.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyDistributorHandler is Test {
     //*********************************************************************//
     // ------------------------------ structs ---------------------------- //
@@ -358,6 +360,7 @@ contract JBStickyDistributorHandler is Test {
         if (amount == 0) return;
 
         vm.prank(from);
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         IERC20(address(STICKY_TOKEN)).transfer({to: to, value: amount});
 
         // The receiver's moved tokens land in a tranche timestamped at the transfer.
@@ -374,6 +377,7 @@ contract JBStickyDistributorHandler is Test {
         if (count == 0) return;
 
         vm.prank(actor);
+        // forge-lint: disable-next-item(unused-return)
         TERMINAL.cashOutTokensOf({
             holder: actor,
             projectId: PROJECT_ID,
@@ -408,6 +412,7 @@ contract JBStickyDistributorHandler is Test {
     function sumBuckets() external view returns (uint256 total) {
         if (maxTouchedEpoch < minTouchedEpoch) return 0;
         for (uint256 epoch = minTouchedEpoch; epoch <= maxTouchedEpoch; epoch++) {
+            // forge-lint: disable-next-line(calls-loop)
             total += HOOK.netStakedIn({projectId: PROJECT_ID, epoch: epoch});
         }
     }
@@ -416,7 +421,9 @@ contract JBStickyDistributorHandler is Test {
     /// @return total The summed balances.
     function sumStakedBalances() external view returns (uint256 total) {
         uint256 length = actors.length;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < length; i++) {
+            // forge-lint: disable-next-line(calls-loop)
             total += HOOK.stakedBalanceOf({projectId: PROJECT_ID, holder: actors[i]});
         }
     }
@@ -453,6 +460,7 @@ contract JBStickyDistributorHandler is Test {
     /// @return sum The summed tranche amounts.
     function liveWindowSum(uint256 targetProjectId, uint256 lo, uint256 hi) public view returns (uint256 sum) {
         uint256 actorsLength_ = actors.length;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 a; a < actorsLength_; a++) {
             sum += _actorWindowWeight({targetProjectId: targetProjectId, actor: actors[a], lo: lo, hi: hi});
         }
@@ -469,6 +477,7 @@ contract JBStickyDistributorHandler is Test {
         uint256 base = DISTRIBUTOR.CRITERIA_BASE();
         uint256 minWeeks = groupId / base;
         uint256 maxWeeks = groupId % base;
+        // forge-lint: disable-next-line(boolean-cst)
         if (snapshotEpoch < minWeeks) return (0, 0, true);
         hi = snapshotEpoch - minWeeks;
         lo = maxWeeks == 0 || snapshotEpoch < maxWeeks ? 0 : snapshotEpoch - maxWeeks;
@@ -547,9 +556,11 @@ contract JBStickyDistributorHandler is Test {
         if (amount == 0) return;
 
         uint256 round = DISTRIBUTOR.currentRound();
+        // forge-lint: disable-next-line(unused-return)
         (uint208 amountBefore,,,,) = DISTRIBUTOR.rewardRoundOf(hookAddr, groupId, IERC20(address(REWARD)), round);
 
         REWARD.mint({to: address(this), amount: amount});
+        // forge-lint: disable-next-line(unused-return)
         REWARD.approve({spender: address(DISTRIBUTOR), value: amount});
         uint256 balanceBefore = REWARD.balanceOf(address(DISTRIBUTOR));
 
@@ -603,6 +614,7 @@ contract JBStickyDistributorHandler is Test {
             return;
         }
 
+        // forge-lint: disable-next-line(unused-return)
         (, uint256 actualAmount,) = DISTRIBUTOR.vestingDataOf(hookAddr, groupId, tokenId, token, vestingCountBefore);
         uint256 diff = actualAmount > expectedShare ? actualAmount - expectedShare : expectedShare - actualAmount;
         if (diff > ghostWorstEntitlementMismatch) ghostWorstEntitlementMismatch = diff;
@@ -613,6 +625,7 @@ contract JBStickyDistributorHandler is Test {
     /// @param groupId The tenure group pinned.
     /// @param round The round pinned.
     function _recordDenominatorCheck(address hookAddr, uint256 groupId, uint256 round) internal {
+        // forge-lint: disable-next-line(unused-return)
         (,,,, uint208 totalStake) = DISTRIBUTOR.rewardRoundOf(hookAddr, groupId, IERC20(address(REWARD)), round);
         (uint256 lo, uint256 hi, bool isEmpty) = windowOf({groupId: groupId, round: round});
         uint256 expected = isEmpty
@@ -646,12 +659,15 @@ contract JBStickyDistributorHandler is Test {
         rounds[0] = round;
 
         if (groupId == 0) {
+            // forge-lint: disable-next-item(unused-return)
             DISTRIBUTOR.recycleExpiredRewards({
                 hook: address(STICKY_TOKEN), token: IERC20(address(REWARD)), rounds: rounds
             });
         } else {
-            (uint208 amountBefore,,,,) =
-                DISTRIBUTOR.rewardRoundOf(address(STICKY_TOKEN), groupId, IERC20(address(REWARD)), currentR);
+            (
+                uint208 amountBefore,,,,
+                // forge-lint: disable-next-line(unused-return)
+            ) = DISTRIBUTOR.rewardRoundOf(address(STICKY_TOKEN), groupId, IERC20(address(REWARD)), currentR);
             uint256 recycled = DISTRIBUTOR.recycleExpiredRewards({
                 hook: address(STICKY_TOKEN), groupId: groupId, token: IERC20(address(REWARD)), rounds: rounds
             });
@@ -676,7 +692,9 @@ contract JBStickyDistributorHandler is Test {
     function _stakeIn(uint256 targetProjectId, address actor, uint256 amount) internal {
         STAKED.mint({to: actor, amount: amount});
         vm.startPrank(actor);
+        // forge-lint: disable-next-line(unused-return)
         STAKED.approve({spender: address(TERMINAL), value: amount});
+        // forge-lint: disable-next-item(unused-return)
         TERMINAL.pay({
             projectId: targetProjectId,
             token: address(STAKED),
@@ -701,8 +719,14 @@ contract JBStickyDistributorHandler is Test {
     /// @param groupId The group read.
     /// @param round The round read.
     function _updateWorstRound(address hookAddr, uint256 groupId, uint256 round) internal {
-        (uint208 amount, uint48 snapshotBlock, uint208 claimedAmount, uint48 claimDeadline, uint208 totalStake) =
-            DISTRIBUTOR.rewardRoundOf(hookAddr, groupId, IERC20(address(REWARD)), round);
+        (
+            uint208 amount,
+            uint48 snapshotBlock,
+            uint208 claimedAmount,
+            uint48 claimDeadline,
+            uint208 totalStake
+            // forge-lint: disable-next-line(calls-loop)
+        ) = DISTRIBUTOR.rewardRoundOf(hookAddr, groupId, IERC20(address(REWARD)), round);
 
         if (amount == 0) return;
 
@@ -728,8 +752,10 @@ contract JBStickyDistributorHandler is Test {
     /// @param seed The seed selecting the group.
     /// @return groupId The selected group.
     function _criteriaGroup(uint256 seed) internal pure returns (uint256 groupId) {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256[6] memory groups =
             [uint256(2000), uint256(4000), uint256(1002), uint256(1004), uint256(2004), uint256(4008)];
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         return groups[seed % 6];
     }
 
@@ -768,7 +794,9 @@ contract JBStickyDistributorHandler is Test {
         view
         returns (uint256 weight)
     {
+        // forge-lint: disable-next-line(calls-loop)
         JBStickyTranche[] memory tranches = HOOK.tranchesOf(targetProjectId, actor);
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 t; t < tranches.length; t++) {
             uint256 epoch = uint256(tranches[t].timestamp) / EPOCH_DURATION;
             if (epoch < lo || epoch > hi) continue;
@@ -784,6 +812,7 @@ contract JBStickyDistributorHandler is Test {
     /// @return groupId The selected group.
     function _criteriaGroupForClaim(address hookAddr, uint256 seed) internal view returns (uint256 groupId) {
         uint256 lastFunded = ghostLastFundedCriteriaGroup[hookAddr];
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         bool reuseLastFunded = (seed / 6) % 2 == 0;
         if (lastFunded != 0 && reuseLastFunded) return lastFunded;
         return _criteriaGroup(seed);
@@ -818,13 +847,20 @@ contract JBStickyDistributorHandler is Test {
     {
         // Only a single unclaimed round is attributable to one vesting entry. `CLAIM_DURATION` exceeds
         // `ROUND_DURATION` in this fixture, so the round just completed cannot have expired.
+        // forge-lint: disable-next-line(boolean-cst)
         if (groupId == 0 || round == 0 || round - firstRound != 1) return (false, 0, 0);
 
-        (uint208 amount,, uint208 claimedAmount,, uint208 totalStake) =
-            DISTRIBUTOR.rewardRoundOf(hookAddr, groupId, token, firstRound);
+        (
+            uint208 amount,,
+            uint208 claimedAmount,,
+            uint208 totalStake
+            // forge-lint: disable-next-line(unused-return)
+        ) = DISTRIBUTOR.rewardRoundOf(hookAddr, groupId, token, firstRound);
+        // forge-lint: disable-next-line(boolean-cst)
         if (totalStake == 0) return (false, 0, 0);
 
         (uint256 lo, uint256 hi, bool isEmpty) = windowOf({groupId: groupId, round: firstRound});
+        // forge-lint: disable-next-line(boolean-cst)
         if (isEmpty) return (false, 0, 0);
 
         uint256 targetProjectId = hookAddr == address(STICKY_TOKEN) ? PROJECT_ID : PROJECT_ID_2;
@@ -864,6 +900,7 @@ contract JBStickyDistributorHandler is Test {
         returns (uint256 length)
     {
         while (true) {
+            // forge-lint: disable-next-line(calls-loop)
             try DISTRIBUTOR.vestingDataOf(hookAddr, groupId, tokenId, token, length) returns (
                 uint256, uint256, uint256
             ) {
@@ -880,6 +917,7 @@ contract JBStickyDistributorHandler is Test {
 /// @notice Invariant suite: the distributor can never over-promise its reward-token inventory, one hook's custody
 /// can never leak into another's, the primary project's per-epoch buckets always sum to exactly what is staked, and
 /// tenure denominators and entitlements always agree with independent brute-force recomputations.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     //*********************************************************************//
     // ----------------------- internal constants ------------------------ //
@@ -946,6 +984,7 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
 
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), 2 * fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         _projectId = _deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(_staked)),
             name: "Sticky",
@@ -959,6 +998,7 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
 
         // A second, soulbound sticky project sharing the same staked and reward tokens, so custody isolation between
         // hooks is actually exercised instead of assumed.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         _projectId2 = _deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(_staked)),
             name: "Sticky 2",
@@ -979,6 +1019,7 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
             initialClaimDuration: _CLAIM_DURATION
         });
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         address[] memory actors = new address[](5);
         actors[0] = makeAddr("actor0");
         actors[1] = makeAddr("actor1");
@@ -1009,9 +1050,13 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     function test_handlerReachesNonzeroFundingAndCollection() public {
         address actor = _handler.actors(0);
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.stake({actorSeed: 0, amountSeed: 100e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.stake2({actorSeed: 0, amountSeed: 100e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.fundDefaultGroup({amountSeed: 100e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.fundDefaultGroup2({amountSeed: 100e18});
 
         // Age the stake four weeks before pinning any tenure round: two round-length jumps, since `warp` bounds a
@@ -1027,8 +1072,11 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
         );
 
         // `_criteriaGroup`'s array is `[2000, 4000, 1002, 1004, 2004, 4008]`; seeds 0, 3 and 5 select one shape each.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.fundCriteriaGroup({groupSeed: 0, amountSeed: 100e18}); // tenure: 2+ weeks
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.fundCriteriaGroup({groupSeed: 3, amountSeed: 100e18}); // recency: last 4 completed weeks
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _handler.fundCriteriaGroup({groupSeed: 5, amountSeed: 100e18}); // cohort: 4-8 weeks
         assertEq(_handler.ghostWorstDenominatorMismatch(), 0);
 
@@ -1096,7 +1144,9 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     /// later can land inside it. Exact agreement at pin time is checked by `invariant_denominatorMatchesBruteForce`.
     function invariant_criteriaWindowSolvency() public view {
         uint256 roundsLength = _handler.touchedCriteriaRoundsLength();
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < roundsLength; i++) {
+            // forge-lint: disable-next-line(calls-loop)
             (address hookAddr, uint256 groupId, uint256 round) = _handler.touchedCriteriaRoundAt(i);
             _assertCriteriaRoundWindowSolvency({hookAddr: hookAddr, groupId: groupId, round: round});
         }
@@ -1130,6 +1180,7 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     function invariant_potSolvency() public view {
         assertGe(_reward.balanceOf(address(_distributor)), _handler.ghostFundedTotal() - _handler.ghostCollectedTotal());
 
+        // forge-lint: disable-next-line(unused-return)
         (uint208 amount,, uint208 claimedAmount,,) = _handler.worstRound();
         assertGe(amount, claimedAmount);
     }
@@ -1145,15 +1196,18 @@ contract JBStickyDistributorInvariantTest is TestBaseWorkflow {
     /// @param groupId The tenure group checked.
     /// @param round The round checked.
     function _assertCriteriaRoundWindowSolvency(address hookAddr, uint256 groupId, uint256 round) internal view {
+        // forge-lint: disable-next-line(calls-loop,unused-return)
         (uint208 amount,,,, uint208 totalStake) = _distributor.rewardRoundOf(hookAddr, groupId, _reward, round);
 
         // Only a funded round has a pinned denominator to compare against.
         if (amount == 0) return;
 
+        // forge-lint: disable-next-line(calls-loop)
         (uint256 lo, uint256 hi, bool isEmpty) = _handler.windowOf({groupId: groupId, round: round});
         if (isEmpty) return;
 
         uint256 targetProjectId = hookAddr == address(_stickyToken) ? _projectId : _projectId2;
+        // forge-lint: disable-next-line(calls-loop)
         assertLe(_handler.liveWindowSum({targetProjectId: targetProjectId, lo: lo, hi: hi}), uint256(totalStake));
     }
 }

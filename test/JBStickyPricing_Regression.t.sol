@@ -37,15 +37,18 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     JBStickyDeployer internal _deployer;
 
     /// @notice The account that donates backing without minting shares.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _donor = makeAddr("pricing donor");
 
     /// @notice The hook accounting for share positions and orphaned backing.
     IJBStickyHook internal _hook;
 
     /// @notice The holder who stakes before donations arrive.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _incumbent = makeAddr("pricing incumbent");
 
     /// @notice The holder who stakes after donations arrive.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _newcomer = makeAddr("pricing newcomer");
 
     /// @notice The project under test.
@@ -62,6 +65,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         super.setUp();
         _deployer = new JBStickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _hook = _deployer.HOOK();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(6);
         _projectId = _deploy({underlying: _underlying, tax: 0});
     }
@@ -70,13 +74,16 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     /// holder who enters just before a `preferAddToBalance` payout split and exits right after captures its share.
     function test_acceptedRisk_payoutSplitInflowCapturedByTransientHolder() public {
         // An honest holder owns 1% of the supply before the transient holder arrives.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake({holder: _incumbent, amount: 1e6, minimum: 1});
         uint256 payoutProjectId = _launchPayoutProjectSplittingTo(_projectId);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _fund({holder: _donor, amount: 1000e6});
         vm.prank(_donor);
         jbMultiTerminal().pay({
             projectId: payoutProjectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 1000e6,
             beneficiary: _donor,
             minReturnedTokens: 0,
@@ -87,11 +94,13 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         // In one transaction: enter with 99% of supply, trigger the payout split, then exit.
         uint256 deposit = 99e6;
         uint256 shares = _stake({holder: _newcomer, amount: deposit, minimum: 1});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(shares * 100, _shares().totalSupply() * 99);
         uint256 backingBefore = _backing();
         jbMultiTerminal().sendPayoutsOf({
             projectId: payoutProjectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 1000e6,
             currency: uint32(uint160(address(_underlying))),
             minTokensPaidOut: 0
@@ -100,41 +109,57 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         assertGt(inflow, 0);
         uint256 reclaimed = _cashOut({holder: _newcomer, count: shares});
         uint256 captured = reclaimed - deposit;
+        // forge-lint: disable-next-line(reentrancy-events)
         emit log_named_uint("inflow added to Sticky balance", inflow);
+        // forge-lint: disable-next-line(reentrancy-events)
         emit log_named_uint("transient holder captured", captured);
 
         // The transient holder keeps its 99% share of the inflow, less the 2.5% fee its cash out owes on the whole
         // fee-free surplus the split created.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertApproxEqAbs({left: captured, right: inflow * 99 / 100 - inflow * 25 / 1000, maxDelta: 2});
     }
 
     function test_bootstrapBelowInitialMinimumPreviewsZeroAndRevertsAtomically() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 1e12 - 1}), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _assertZeroIssuanceRevertsAtomically(1e12 - 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
     }
 
     function test_bootstrapRoundingLossAboveOneBasisPointReverts() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(24);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 1_999_999}), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _assertZeroIssuanceRevertsAtomically(1_999_999);
         assertEq(_hook.orphanedBalanceOf(_projectId), 0);
     }
 
     function test_bootstrapRoundingProtectionHasOneBasisPointBoundary() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(24);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         // Bootstrap one whole token so later deposits are priced at the same one-to-one rate.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _incumbent, amount: 1e24, minimum: 1e18}), 1e18);
         // A loss of almost one share atom is too large for 9,999 ideal atoms, but within tolerance for 10,000.
         assertEq(_preview({holder: _newcomer, amount: 9_998_999_999}), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 9_999_999_999}), 9999);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _newcomer, amount: 9_999_999_999, minimum: 9999}), 9999);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 reclaim = _cashOut({holder: _newcomer, count: 9999});
         assertGe(reclaim, 9_999_000_000);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertLe(reclaim, 9_999_999_999);
     }
 
@@ -143,31 +168,45 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     }
 
     function test_decimals18RoundTrip() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exercisePrecision(18);
     }
 
     function test_decimals24RoundTrip() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exercisePrecision(24);
     }
 
     function test_decimals36RoundTrip() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exercisePrecision(36);
     }
 
     function test_decimals6RoundTrip() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exercisePrecision(6);
     }
 
     function test_donationFrontRunningCannotBypassReviewedMintMinimum() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake({holder: _incumbent, amount: 10e6, minimum: 10e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 reviewedMinimum = _preview({holder: _newcomer, amount: 10e6});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(reviewedMinimum, 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _fund({holder: _newcomer, amount: 10e6});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBMultiTerminal.JBMultiTerminal_UnderMin.selector, 5e18, 10e18));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay({holder: _newcomer, amount: 10e6, minimum: reviewedMinimum});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(_newcomer), 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 20e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_shares().totalSupply(), 10e18);
         assertEq(_shares().balanceOf(_newcomer), 0);
         assertEq(_hook.stakedBalanceOf(_projectId, _newcomer), 0);
@@ -175,26 +214,37 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     }
 
     function test_eighteenDecimalsFirstMintBoundary() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exerciseFirstMintBoundary(18);
     }
 
     function test_emptyProjectPrefundingNeverBelongsToFirstDepositor() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(17e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 10e6}), 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 shares = _stake({holder: _newcomer, amount: 10e6, minimum: 10e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.orphanedBalanceOf(_projectId), 17e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _newcomer, count: shares}), 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 17e6);
         assertEq(_shares().totalSupply(), 0);
 
         // The same donor cannot retrieve the orphan by repeatedly starting and ending a new share supply.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 nextShares = _stake({holder: _donor, amount: 3e6, minimum: 3e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _donor, count: nextShares}), 3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 17e6);
     }
 
     function test_fullVoluntaryBurnResetsOrphanBaselineForNewSupply() public {
         _donate(7e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 shares = _stake({holder: _incumbent, amount: 10e6, minimum: 10e18});
         _donate(13e6);
         _burn({holder: _incumbent, count: shares});
@@ -202,134 +252,194 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         assertEq(_hook.stakedBalanceOf(_projectId, _incumbent), 0);
 
         // All old backing, including later donations, becomes orphaned after the last share is voluntarily burned.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 newShares = _stake({holder: _newcomer, amount: 5e6, minimum: 5e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.orphanedBalanceOf(_projectId), 30e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _newcomer, count: newShares}), 5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 30e6);
     }
 
     /// @notice A holder can reclaim all their backing without another holder burning their last atom.
     function test_holderCanExitIndependentlyWhenAnotherHolderRetainsOneAtom() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
 
         // Establish an exact ratio of 100 underlying tokens to the minimum bootstrap share supply.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 incumbentShares = _stake({holder: _incumbent, amount: 1e12, minimum: 1e12});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(100e18 - 1e12);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 newcomerShares = _stake({holder: _newcomer, amount: 200e18, minimum: 2e12});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(newcomerShares, 2e12);
 
         // The initial holder can reclaim almost all the initial backing while retaining a single share atom.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: incumbentShares - 1}), 100e18 - 1e8);
         assertEq(_shares().balanceOf(_incumbent), 1);
 
         // A partial withdrawal leaves the supply at the initial minimum, with 100 underlying tokens behind.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 initialReclaim = _cashOut({holder: _newcomer, count: 1e12 + 1});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(initialReclaim, 100e18 + 1e8);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 100e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_shares().totalSupply(), 1e12);
 
         // The holder's final withdrawal does not depend on the dust holder's cooperation.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 finalReclaim = _cashOut({holder: _newcomer, count: newcomerShares - 1e12 - 1});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(initialReclaim + finalReclaim, 200e18);
         assertEq(_shares().balanceOf(_newcomer), 0);
     }
 
     function test_hundredPercentTaxLeavesOrphanForNextSupply() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _projectId = _deploy({underlying: _underlying, tax: 10_000});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 shares = _stake({holder: _incumbent, amount: 10e6, minimum: 10e18});
         assertEq(_cashOut({holder: _incumbent, count: shares}), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 10e6);
         assertEq(_shares().totalSupply(), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 nextShares = _stake({holder: _newcomer, amount: 5e6, minimum: 5e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(nextShares, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.orphanedBalanceOf(_projectId), 10e6);
         assertEq(_cashOut({holder: _newcomer, count: nextShares}), 0);
 
         _stake({holder: _donor, amount: 2e6, minimum: 2e18});
         assertEq(_hook.orphanedBalanceOf(_projectId), 15e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 17e6);
     }
 
     function test_initialMinimumKeepsInexactDepositsUsableAfterDonation() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
         // The smallest allowed bootstrap retains useful precision after this large donation.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
         _donate(1000e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 quote = _preview({holder: _newcomer, amount: 100e18 + 1});
         assertGt(quote, 0);
         // A one-wei donation front-run changes the price by less than the rounding tolerance.
         _donate(1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 shares = _stake({holder: _newcomer, amount: 100e18 + 1, minimum: quote - 1});
         assertGe(shares, quote - 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertLe(_cashOut({holder: _newcomer, count: shares}), 100e18 + 1);
     }
 
     function test_newcomerPaysForShareOfDonatedBacking() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 incumbentShares = _stake({holder: _incumbent, amount: 10e6, minimum: 10e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 10e6}), 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 newcomerShares = _stake({holder: _newcomer, amount: 10e6, minimum: 5e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(newcomerShares, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _newcomer, count: newcomerShares}), 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: incumbentShares}), 20e6);
         assertEq(_backing(), 0);
     }
 
     function test_partialVoluntaryBurnRaisesPriceForNewDepositors() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 incumbentShares = _stake({holder: _incumbent, amount: 10e6, minimum: 10e18});
         _burn({holder: _incumbent, count: incumbentShares / 2});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 10e6}), 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 newcomerShares = _stake({holder: _newcomer, amount: 10e6, minimum: 5e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(newcomerShares, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _newcomer, count: newcomerShares}), 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: incumbentShares / 2}), 10e6);
         assertEq(_backing(), 0);
     }
 
     function test_roundingLossAboveOneBasisPointPreviewsZeroAndRevertsAtomically() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake({holder: _incumbent, amount: 1e12, minimum: 1e12});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(1e12);
         // Three underlying atoms should buy 1.5 share atoms; accepting one would sacrifice a third of their value.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 3}), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _assertZeroIssuanceRevertsAtomically(3);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: 1e12}), 2e12);
     }
 
     function test_thirtySixDecimalsFirstMintBoundary() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exerciseFirstMintBoundary(36);
     }
 
     function test_tinySupplyAndOneTokenDonationStillPricesInexactDeposits() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exerciseTinySupplyDonation(1e18);
     }
 
     function test_tinySupplyAndTwentyTokenDonationStillPricesInexactDeposits() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exerciseTinySupplyDonation(20e18);
     }
 
     function test_twentyFourDecimalsFirstMintBoundary() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _exerciseFirstMintBoundary(24);
     }
 
     function test_voluntaryBurnCanLeaveOneAtomAndUnsafeDepositsRevert() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake({holder: _incumbent, amount: 1e18, minimum: 1e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _burn({holder: _incumbent, count: 1e18 - 1});
         assertEq(_shares().totalSupply(), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(20e18);
 
         // Coarse prices may make an inexact payment unissuable, but rejected payments cannot take funds.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_preview({holder: _newcomer, amount: 21e18 + 3}), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _assertZeroIssuanceRevertsAtomically(21e18 + 3);
 
         // An exact payment still buys its fair share, and either holder can leave independently.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _newcomer, amount: 21e18, minimum: 1}), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: 1}), 21e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _newcomer, count: 1}), 21e18);
         assertEq(_shares().totalSupply(), 0);
     }
@@ -342,8 +452,11 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     )
         public
     {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         incumbentAmount = bound(incumbentAmount, 1e6, 1e15);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         donation = bound(donation, 1, 1e15);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         newcomerAmount = bound(newcomerAmount, 1e6, 1e15);
         uint256 incumbentShares = _stake({holder: _incumbent, amount: incumbentAmount, minimum: 1});
         _donate(donation);
@@ -374,9 +487,13 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     )
         public
     {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         prefunding = bound(prefunding, 1, 1e15);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         burnedDeposit = bound(burnedDeposit, 1, 1e15);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         laterDeposit = bound(laterDeposit, 1, 1e15);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         liveDonation = bound(liveDonation, 1, 1e15);
         _donate(prefunding);
         uint256 firstShares = _stake({holder: _incumbent, amount: burnedDeposit, minimum: 1});
@@ -388,7 +505,9 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         assertEq(_backing(), prefunding + burnedDeposit);
         assertEq(_hook.orphanedBalanceOf(_projectId), prefunding + burnedDeposit);
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 finalShares = _stake({holder: _incumbent, amount: 1e6, minimum: 1});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: finalShares}), 1e6);
         assertEq(_backing(), prefunding + burnedDeposit);
         assertEq(_shares().totalSupply(), 0);
@@ -409,9 +528,13 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         public
         pure
     {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         amount = bound(amount, 1, 1e24);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         supply = bound(supply, 1, 1e24);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         backing = bound(backing, 1, 1e24);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unsafe-typecast)
         decimals = uint8(bound(decimals, 0, 36));
         uint256 weight =
             JBStickyPricing.weightFrom({amount: amount, supply: supply, backing: backing, decimals: decimals});
@@ -421,6 +544,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         uint256 issued = Math.mulDiv({x: amount, y: weight, denominator: backing});
         assertGt(issued, 0);
         assertLe(issued * backing, amount * supply);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertGe(issued * backing * 10_000, amount * supply * 9999);
         assertGe((backing + amount) * supply, backing * (supply + issued));
     }
@@ -479,6 +603,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function _deploy(JBStickyPricingToken underlying, uint256 tax) internal returns (uint256 projectId) {
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         return _deployer.deployStickyFor{value: fee}({
             stakedToken: underlying,
             name: "Sticky pricing",
@@ -510,11 +635,14 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function _exerciseFirstMintBoundary(uint8 decimals) internal {
         _underlying = new JBStickyPricingToken(decimals);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 oneShareAtom = 10 ** (decimals - 18);
         // The bootstrap must reach the initial minimum; one atom short previews zero and reverts atomically.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 floorAmount = oneShareAtom * 1e12;
         assertEq(_preview({holder: _newcomer, amount: floorAmount - 1}), 0);
         _assertZeroIssuanceRevertsAtomically(floorAmount - 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _incumbent, amount: floorAmount, minimum: 1e12}), 1e12);
         // Once bootstrapped, a single share atom is the smallest deposit at the one-to-one rate. A zero payment is
         // not a rounding case, so only precisions above 18 have an amount just short of one atom.
@@ -524,6 +652,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         }
         assertEq(_stake({holder: _newcomer, amount: oneShareAtom, minimum: 1}), 1);
         assertEq(_cashOut({holder: _newcomer, count: 1}), oneShareAtom);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _incumbent, count: 1e12}), floorAmount);
     }
 
@@ -532,12 +661,19 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function _exercisePrecision(uint8 decimals) internal {
         _underlying = new JBStickyPricingToken(decimals);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 unit = 10 ** decimals;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 incumbentShares = _stake({holder: _incumbent, amount: 10 * unit, minimum: 10e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(incumbentShares, 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(10 * unit);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 newcomerShares = _stake({holder: _newcomer, amount: 10 * unit, minimum: 5e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(newcomerShares, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut({holder: _newcomer, count: newcomerShares}), 10 * unit);
         assertEq(_cashOut({holder: _incumbent, count: incumbentShares}), 20 * unit);
         assertEq(_backing(), 0);
@@ -546,19 +682,26 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     /// @notice Exercise an inexact deposit against the minimum bootstrap supply after a donation.
     /// @param donation The donation in underlying token atoms.
     function _exerciseTinySupplyDonation(uint256 donation) internal {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(18);
         _projectId = _deploy({underlying: _underlying, tax: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _incumbent, amount: 1e12, minimum: 1e12}), 1e12);
         _donate(donation);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 backing = donation + 1e12;
 
         // Rounding an exchange rate before multiplication makes every payment here return zero. The exact backing
         // denominator and the initial share precision let a deposit that is not a whole multiple of the atom price
         // buy shares without minting extra claims.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 quote = _preview({holder: _newcomer, amount: backing + 7});
         assertGt(quote, 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake({holder: _newcomer, amount: backing + 7, minimum: quote}), quote);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertLe(_cashOut({holder: _newcomer, count: quote}), backing + 7);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertGe(_cashOut({holder: _incumbent, count: 1e12}), backing);
         assertEq(_backing(), 0);
         assertEq(_shares().totalSupply(), 0);
@@ -570,6 +713,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function _fund(address holder, uint256 amount) internal {
         _underlying.mint({account: holder, amount: amount});
         vm.prank(holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve({spender: address(jbMultiTerminal()), value: type(uint256).max});
     }
 
@@ -580,6 +724,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
     function _launchPayoutProjectSplittingTo(uint256 stickyProjectId) internal returns (uint256 projectId) {
         uint32 currency = uint32(uint160(address(_underlying)));
         JBRulesetConfig[] memory rulesets = new JBRulesetConfig[](1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         rulesets[0].weight = 1e18;
         rulesets[0].approvalHook = IJBRulesetApprovalHook(address(0));
         rulesets[0].metadata = JBRulesetMetadata({
@@ -616,6 +761,7 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
         rulesets[0].splitGroups = new JBSplitGroup[](1);
         rulesets[0].splitGroups[0] = JBSplitGroup({groupId: uint256(uint160(address(_underlying))), splits: splits});
         JBCurrencyAmount[] memory payoutLimits = new JBCurrencyAmount[](1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         payoutLimits[0] = JBCurrencyAmount({amount: 1000e6, currency: currency});
         rulesets[0].fundAccessLimitGroups = new JBFundAccessLimitGroup[](1);
         rulesets[0].fundAccessLimitGroups[0] = JBFundAccessLimitGroup({
@@ -625,12 +771,14 @@ contract JBStickyPricingRegressionTest is TestBaseWorkflow {
             surplusAllowances: new JBCurrencyAmount[](0)
         });
         JBAccountingContext[] memory contexts = new JBAccountingContext[](1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         contexts[0] = JBAccountingContext({token: address(_underlying), decimals: 6, currency: currency});
         JBTerminalConfig[] memory terminals = new JBTerminalConfig[](1);
         terminals[0] =
             JBTerminalConfig({terminal: IJBTerminal(address(jbMultiTerminal())), accountingContextsToAccept: contexts});
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         return jbController().launchProjectFor{value: fee}({
             owner: _donor, projectUri: "", rulesetConfigurations: rulesets, terminalConfigurations: terminals, memo: ""
         });

@@ -13,6 +13,7 @@ import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
 
 /// @notice An ERC-20 with configurable decimals that serves as both the staked and the reward token.
+// forge-lint: disable-next-line(multi-contract-file)
 contract StickyRewardRegressionToken is ERC20 {
     //*********************************************************************//
     // -------------- internal immutable stored properties -------------- //
@@ -54,6 +55,7 @@ contract StickyRewardRegressionToken is ERC20 {
 
 /// @notice Regressions for compounding distributor rewards through the auto-stick adapter against real V6
 /// contracts.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
     //*********************************************************************//
     // ------------------------------ structs ---------------------------- //
@@ -81,9 +83,11 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
     JBStickyDeployer internal _deployer;
 
     /// @notice The account that stakes into every fixture and whose rewards are compounded.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("reward holder");
 
     /// @notice The account that compounds on the holder's behalf.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _keeper = makeAddr("reward keeper");
 
     //*********************************************************************//
@@ -96,6 +100,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
     }
 
     function test_compoundKeepsZeroIssuanceRewardsClaimable() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         RewardFixture memory fixture = _rewardFixture({tokenDecimals: 24, reward: 999_999, donation: 0});
         uint256 balanceBefore = fixture.underlying.balanceOf(address(jbMultiTerminal()));
         uint256 sharesBefore = fixture.stickyToken.balanceOf(_holder);
@@ -105,30 +110,43 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, fixture.projectId, 999_999
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector,
+                fixture.projectId,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                999_999
             )
         );
         vm.prank(_keeper);
         fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
 
         _assertRewardUnmoved({
-            fixture: fixture, reward: 999_999, balanceBefore: balanceBefore, sharesBefore: sharesBefore
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            fixture: fixture,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            reward: 999_999,
+            balanceBefore: balanceBefore,
+            sharesBefore: sharesBefore
         });
     }
 
     function test_compoundUsesBackingPriceWithoutChangingBeneficiary() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         RewardFixture memory fixture = _rewardFixture({tokenDecimals: 6, reward: 10e6, donation: 1e6});
         uint256 sharesBefore = fixture.stickyToken.balanceOf(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 preview = _preview({fixture: fixture, amount: 10e6});
         assertGt(preview, 0);
         assertLt(preview, 10e18);
         vm.prank(_keeper);
         (uint256 amount, uint256 count) =
             fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(amount, 10e6);
         assertEq(count, preview);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore + count);
         assertEq(fixture.stickyToken.balanceOf(_keeper), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(fixture.underlying.balanceOf(_holder), 37);
         assertEq(fixture.underlying.balanceOf(_keeper), 0);
         assertEq(fixture.underlying.balanceOf(address(fixture.adapter)), 0);
@@ -136,6 +154,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
     }
 
     function test_priorPermissionlessCollectionKeepsRewardsWithHolder() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         RewardFixture memory fixture = _rewardFixture({tokenDecimals: 6, reward: 10e6, donation: 0});
         uint256[] memory holderIds = new uint256[](1);
         holderIds[0] = uint256(uint160(_holder));
@@ -149,39 +168,54 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
             });
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 0, 1));
         fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(fixture.underlying.balanceOf(_holder), 10e6 + 37);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore);
         assertEq(fixture.underlying.balanceOf(_keeper), 0);
     }
 
     function test_selfServiceKeepsZeroIssuanceRewardsClaimable() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         RewardFixture memory fixture = _rewardFixture({tokenDecimals: 24, reward: 999_999, donation: 0});
         uint256 balanceBefore = fixture.underlying.balanceOf(address(jbMultiTerminal()));
         uint256 sharesBefore = fixture.stickyToken.balanceOf(_holder);
         vm.expectRevert(
             abi.encodeWithSelector(
-                JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, fixture.projectId, 999_999
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector,
+                fixture.projectId,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                999_999
             )
         );
         vm.prank(_holder);
         fixture.adapter.stickRewardsFor({projectId: fixture.projectId, groupIds: _defaultGroup()});
 
         _assertRewardUnmoved({
-            fixture: fixture, reward: 999_999, balanceBefore: balanceBefore, sharesBefore: sharesBefore
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            fixture: fixture,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            reward: 999_999,
+            balanceBefore: balanceBefore,
+            sharesBefore: sharesBefore
         });
     }
 
     function test_smallest24DecimalIssuanceUsesTerminalPreview() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         RewardFixture memory fixture = _rewardFixture({tokenDecimals: 24, reward: 1e6, donation: 0});
         uint256 sharesBefore = fixture.stickyToken.balanceOf(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 preview = _preview({fixture: fixture, amount: 1e6});
         assertEq(preview, 1);
         vm.prank(_keeper);
         (uint256 amount, uint256 count) =
             fixture.adapter.compoundFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(amount, 1e6);
         assertEq(count, preview);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore + count);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(fixture.underlying.balanceOf(_holder), 37);
         assertEq(fixture.underlying.balanceOf(address(fixture.adapter)), 0);
         assertEq(fixture.underlying.allowance(address(fixture.adapter), address(jbMultiTerminal())), 0);
@@ -223,6 +257,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         fixture.underlying = new StickyRewardRegressionToken(tokenDecimals);
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         fixture.projectId = _deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(fixture.underlying)),
             name: "Sticky reward regression",
@@ -234,6 +269,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         });
         fixture.stickyToken = jbTokens().tokenOf(fixture.projectId);
         uint256 initialStake = 10 ** tokenDecimals;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         fixture.underlying.mint({beneficiary: _holder, amount: initialStake + 37});
         vm.startPrank(_holder);
         fixture.underlying.approve({spender: address(jbMultiTerminal()), value: initialStake});
@@ -265,6 +301,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
             controller: jbController(),
             directory: jbDirectory(),
             stickyHook: _deployer.HOOK(),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             initialRoundDuration: 1 days,
             initialVestingRounds: 2,
             initialClaimDuration: 30 days
@@ -279,8 +316,10 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         _deployer.HOOK().setTrustedSenderFor({
             projectId: fixture.projectId, sender: address(fixture.adapter), trusted: true
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         fixture.adapter.setConfigFor({projectId: fixture.projectId, enabled: true, minimumAmount: 1, cooldown: 1 days});
         vm.stopPrank();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(block.timestamp + 1 days + 1);
         vm.roll(block.number + 1);
         fixture.adapter.beginVestingFor({projectId: fixture.projectId, holder: _holder, groupIds: _defaultGroup()});
@@ -327,6 +366,7 @@ contract JBStickyRewardsRegressionTest is TestBaseWorkflow {
         );
         assertEq(fixture.underlying.balanceOf(address(jbMultiTerminal())), balanceBefore);
         assertEq(fixture.stickyToken.balanceOf(_holder), sharesBefore);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(fixture.underlying.balanceOf(_holder), 37);
         assertEq(fixture.underlying.balanceOf(address(fixture.adapter)), 0);
         assertEq(fixture.underlying.allowance(address(fixture.adapter), address(jbMultiTerminal())), 0);

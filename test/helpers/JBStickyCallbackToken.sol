@@ -61,6 +61,7 @@ contract JBStickyCallbackToken is ERC20 {
     /// @param hook The spender whose approval should trigger the callback.
     /// @param target The contract to call.
     /// @param data The calldata to send to the target.
+    // forge-lint: disable-next-line(missing-zero-check)
     function configureCallback(address terminal, address hook, address target, bytes calldata data) external {
         _terminal = terminal;
         _hook = hook;
@@ -109,6 +110,7 @@ contract JBStickyCallbackToken is ERC20 {
     /// @param target The contract to call.
     /// @param data The calldata to send to the target.
     function _execute(address target, bytes memory data) internal {
+        // forge-lint: disable-next-line(low-level-calls)
         (bool success, bytes memory reason) = target.call(data);
         if (!success) revert JBStickyCallbackToken_CallFailed(reason);
     }

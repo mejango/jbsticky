@@ -70,6 +70,7 @@ contract DeployLocal is JBStickyDeployment {
         granters[1] = address(autoStick);
 
         // ART: zero cash-out tax; redemption follows the configured backing economics.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         uint256 projectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(art)),
             name: "Streaking ART",
@@ -79,9 +80,11 @@ contract DeployLocal is JBStickyDeployment {
             granters: granters,
             soulbound: true
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         art.mint({to: msg.sender, amount: 1_000_000e18});
 
         // BAN: applies the protocol's 10% cash-out tax curve and applicable fees.
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         uint256 banProjectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(ban)),
             name: "Streaking BAN",
@@ -91,6 +94,7 @@ contract DeployLocal is JBStickyDeployment {
             granters: granters,
             soulbound: true
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         ban.mint({to: msg.sender, amount: 1_000_000e18});
 
         vm.stopBroadcast();

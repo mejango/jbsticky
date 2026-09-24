@@ -7,6 +7,7 @@ pragma solidity ^0.8.0;
 /// @custom:member distributor The shared reward distributor.
 /// @custom:member rewardReceiverFactory The reward receiver factory.
 /// @custom:member autoStick The opt-in compounding adapter.
+// forge-lint: disable-next-line(pascal-case-struct)
 struct JBStickyDeploymentAddresses {
     address deployer;
     address hook;

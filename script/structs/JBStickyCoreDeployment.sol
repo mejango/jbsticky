@@ -9,6 +9,7 @@ import {IJBMultiTerminal} from "@bananapus/core-v6/src/interfaces/IJBMultiTermin
 /// @custom:member controller The controller used to launch projects.
 /// @custom:member directory The directory shared by the controller and terminal.
 /// @custom:member terminal The terminal receiving stakes.
+// forge-lint: disable-next-line(pascal-case-struct)
 struct JBStickyCoreDeployment {
     IJBController controller;
     IJBDirectory directory;

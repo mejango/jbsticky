@@ -24,6 +24,7 @@ import {JBStickyToken} from "../../src/JBStickyToken.sol";
 import {JBStickyRealProjectContext, JBStickyRealProjectFork} from "./helpers/JBStickyRealProjectFork.sol";
 
 /// @notice The canonical OP messenger entry point used after a portal deposits an L1 message on Base.
+// forge-lint: disable-next-line(multi-contract-file)
 interface IStickyOPMessenger {
     /// @notice Whether the messenger has successfully relayed a message.
     /// @param messageHash The hash of the complete versioned relay calldata.
@@ -54,6 +55,7 @@ interface IStickyOPMessenger {
 /// live L2 messenger by its canonical aliased L1 sender, with the corresponding ETH. Both messengers, both suckers,
 /// project tokens, project accounting, claims, and the production Sticky suite execute their real code. This does
 /// not test the portal's consensus proof, sequencer, finality delay, or an off-chain relayer.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     //*********************************************************************//
     // ----------------------------- structs ----------------------------- //
@@ -109,12 +111,15 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     JBStickyRealProjectContext internal _ethereum;
 
     /// @notice The account that pays Ethereum project 3 and bridges its tokens.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _funder = makeAddr("cross-chain reward funder");
 
     /// @notice The Sticky holder on Base who receives the bridged rewards.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("cross-chain reward holder");
 
     /// @notice The unrelated account that claims, settles, vests, and compounds.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _keeper = makeAddr("cross-chain reward keeper");
 
     /// @notice The counterfactual reward receiver for the Sticky token's default group.
@@ -136,10 +141,15 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     /// @notice Resolves the production native bridge route and creates a backed Sticky position on its Base peer.
     function setUp() public {
         _ethereum =
-            _createProjectFork({rpcAlias: "ethereum", forkBlock: _ETHEREUM_BLOCK, chainId: 1, underlyingProjectId: 3});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
+        _createProjectFork({rpcAlias: "ethereum", forkBlock: _ETHEREUM_BLOCK, chainId: 1, underlyingProjectId: 3});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         address[] memory suckers = _SUCKER_REGISTRY.suckersOf(3);
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < suckers.length; i++) {
+            // forge-lint: disable-next-line(calls-loop,literal-instead-of-constant)
             if (JBSucker(payable(suckers[i])).peerChainId() != 8453) continue;
+            // forge-lint: disable-next-line(calls-loop)
             try JBOptimismSucker(payable(suckers[i])).OPMESSENGER() returns (IOPMessenger messenger) {
                 if (address(messenger) == _L1_MESSENGER) _source = JBOptimismSucker(payable(suckers[i]));
             } catch {}
@@ -148,6 +158,7 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         address peer = address(uint160(uint256(_source.peer())));
 
         // Resolve the existing destination project from the deployed sucker before launching Sticky around it.
+        // forge-lint: disable-next-line(unused-return)
         vm.createSelectFork({urlOrAlias: "base", blockNumber: _BASE_BLOCK});
         _destination = JBOptimismSucker(payable(peer));
         uint256 baseProjectId = _destination.projectId();
@@ -155,11 +166,17 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         assertEq(_destination.peerChainId(), 1);
         assertEq(address(_destination.OPMESSENGER()), _L2_MESSENGER);
         _base = _createProjectFork({
-            rpcAlias: "base", forkBlock: _BASE_BLOCK, chainId: 8453, underlyingProjectId: baseProjectId
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            rpcAlias: "base",
+            forkBlock: _BASE_BLOCK,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            chainId: 8453,
+            underlyingProjectId: baseProjectId
         });
         assertTrue(_SUCKER_REGISTRY.isSuckerOf({projectId: baseProjectId, addr: address(_destination)}));
         assertTrue(_destination.isMapped(JBConstants.NATIVE_TOKEN));
         (_stickyProjectId, _sticky) = _launchSticky({context: _base, soulbound: true, cashOutTaxRate: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 acquired = _buyUnderlying({context: _base, holder: _holder, nativeAmount: 0.01 ether});
         _stake({context: _base, projectId: _stickyProjectId, payer: _holder, beneficiary: _holder, amount: acquired});
         vm.roll(block.number + 1);
@@ -182,11 +199,16 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     /// @notice A failed source-side minimum returns the wallet, supply, allowance, treasury, and outbox unchanged.
     function test_ethereumProject3ToBaseReceiver_failedPreparePreservesTokensAndOutbox() public {
         vm.selectFork(_ethereum.forkId);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 reward = _buyUnderlying({context: _ethereum, holder: _funder, nativeAmount: 0.01 ether});
         JBOutboxTree memory beforeOutbox = _source.outboxOf(JBConstants.NATIVE_TOKEN);
         uint256 supplyBefore = _ethereum.underlying.totalSupply();
         uint256 backingBefore = _ethereum.core.terminal.STORE().balanceOf({
-            terminal: address(_ethereum.nativeTerminal), projectId: 3, token: JBConstants.NATIVE_TOKEN
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            terminal: address(_ethereum.nativeTerminal),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            projectId: 3,
+            token: JBConstants.NATIVE_TOKEN
         });
         vm.startPrank(_funder);
         _ethereum.underlying.approve({spender: address(_source), value: reward});
@@ -204,7 +226,11 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         assertEq(_ethereum.underlying.allowance(_funder, address(_source)), reward);
         assertEq(
             _ethereum.core.terminal.STORE().balanceOf({
-                terminal: address(_ethereum.nativeTerminal), projectId: 3, token: JBConstants.NATIVE_TOKEN
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                terminal: address(_ethereum.nativeTerminal),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                projectId: 3,
+                token: JBConstants.NATIVE_TOKEN
             }),
             backingBefore
         );
@@ -388,6 +414,7 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     /// @return message The complete L1 message to replay at the portal deposit boundary.
     function _prepareAndSend() internal returns (JBClaim memory claimData, BridgeMessage memory message) {
         vm.selectFork(_ethereum.forkId);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 reward = _buyUnderlying({context: _ethereum, holder: _funder, nativeAmount: 0.01 ether});
         JBOutboxTree memory beforeOutbox = _source.outboxOf(JBConstants.NATIVE_TOKEN);
         claimData.token = JBConstants.NATIVE_TOKEN;
@@ -401,7 +428,9 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         // The prior frontier contains every left sibling needed to prove this newly appended leaf. This works even
         // when the production sucker already has transfers; there is no empty-tree assumption or fabricated root.
         bytes32 zero;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < 32; i++) {
+            // forge-lint: disable-next-line(uninitialized-local)
             claimData.proof[i] = (beforeOutbox.tree.count >> i) & 1 == 1 ? beforeOutbox.tree.branch[i] : zero;
             zero = keccak256(abi.encode(zero, zero));
         }
@@ -426,9 +455,11 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
         vm.deal(_funder, fee);
         vm.recordLogs();
         vm.prank(_funder);
+        // forge-lint: disable-next-line(arbitrary-send-eth)
         _source.toRemote{value: fee}(JBConstants.NATIVE_TOKEN);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < logs.length; i++) {
             if (logs[i].emitter != _L1_MESSENGER || logs[i].topics[0] != _SENT_MESSAGE) continue;
             (address sender, bytes memory data, uint256 nonce, uint256 gasLimit) =
@@ -444,6 +475,7 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
             });
             found = true;
         }
+        // forge-lint: disable-next-line(uninitialized-local)
         assertTrue(found, "The deployed L1 messenger must accept the actual sucker message");
         assertEq(message.target, address(_destination));
         JBMessageRoot memory root = _messageRoot(message);
@@ -490,6 +522,7 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     function _vest() internal {
         JBStickyDistributor distributor = JBStickyDistributor(payable(_base.suite.distributor));
         assertEq(distributor.ROUND_DURATION(), 7 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(distributor.VESTING_ROUNDS(), 4);
         vm.warp(block.timestamp + distributor.ROUND_DURATION() + 1);
         vm.roll(block.number + 1);
@@ -527,8 +560,11 @@ contract JBStickyCrossChainRewardsForkTest is JBStickyRealProjectFork {
     /// @param message The captured remote call.
     /// @return root The outbox root, bridged value, and source accounting records.
     function _messageRoot(BridgeMessage memory message) internal pure returns (JBMessageRoot memory root) {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         bytes memory arguments = new bytes(message.message.length - 4);
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < arguments.length; i++) {
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             arguments[i] = message.message[i + 4];
         }
         return abi.decode(arguments, (JBMessageRoot));

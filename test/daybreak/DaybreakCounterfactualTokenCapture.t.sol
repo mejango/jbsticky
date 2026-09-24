@@ -12,6 +12,7 @@ import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
 import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
 
 /// @notice A freely mintable ERC-20 standing in for a reward or staked asset.
+// forge-lint: disable-next-line(multi-contract-file)
 contract DaybreakMintableToken is ERC20 {
     /// @notice Initializes the token's name and symbol.
     /// @param name The token name.
@@ -29,12 +30,14 @@ contract DaybreakMintableToken is ERC20 {
 /// @notice Share tokens are CREATE2-bound to their launcher and configuration, so a receiver prefunded for a
 /// launcher's predicted token cannot be captured by whoever launches first, and the launcher's own launch lands on
 /// the prediction made for the project ID it receives.
+// forge-lint: disable-next-line(multi-contract-file)
 contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
     //*********************************************************************//
 
     /// @notice The account that launches first with the victim's configuration.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _attacker = makeAddr("counterfactual token attacker");
 
     /// @notice The Sticky factory under test.
@@ -56,6 +59,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     DaybreakMintableToken internal _underlying;
 
     /// @notice The account whose predicted token address is prefunded.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _victim = makeAddr("counterfactual token victim");
 
     //*********************************************************************//
@@ -90,6 +94,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         // The counterfactual flow lets rewards arrive at the future token's receiver before either exists.
         address prefundedReceiver =
             _receiverFactory.predictReceiverOf({stickyToken: victimExpectedStickyToken, groupId: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 reward = 100e18;
         _rewardToken.mint({beneficiary: prefundedReceiver, amount: reward});
 
@@ -110,6 +115,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
             0
         );
         vm.expectRevert();
+        // forge-lint: disable-next-item(unused-return)
         _receiverFactory.settleFor({
             stickyToken: victimExpectedStickyToken, groupId: 0, token: IERC20(address(_rewardToken))
         });
@@ -122,6 +128,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         uint256 nextProjectId = jbProjects().count() + 1;
         address expectedStickyToken = _predictFor({launcher: _victim, projectId: nextProjectId});
         address prefundedReceiver = _receiverFactory.predictReceiverOf({stickyToken: expectedStickyToken, groupId: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 reward = 100e18;
         _rewardToken.mint({beneficiary: prefundedReceiver, amount: reward});
 
@@ -130,12 +137,15 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
         assertEq(address(jbTokens().tokenOf(projectId)), expectedStickyToken);
 
         // The victim stakes, becoming the entire supply, and the prefunding settles into their holders' round.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({beneficiary: _victim, amount: 1e18});
         vm.startPrank(_victim);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve({spender: address(jbMultiTerminal()), value: 1e18});
         jbMultiTerminal().pay({
             projectId: projectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 1e18,
             beneficiary: _victim,
             minReturnedTokens: 1,
@@ -176,6 +186,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     function _launchAs(address launcher) internal returns (uint256 projectId) {
         vm.deal(launcher, _fee);
         vm.prank(launcher);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         projectId = _deployer.deployStickyFor{value: _fee}({
             stakedToken: IERC20Metadata(address(_underlying)),
             name: "Victim Sticky",

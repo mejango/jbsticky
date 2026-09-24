@@ -33,6 +33,7 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
     JBStickyPriceFeed internal _feed;
 
     /// @notice The account that stakes and donates test underlying tokens.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("price feed holder");
 
     /// @notice The hook accounting for share positions and orphaned backing.
@@ -55,28 +56,41 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
     function setUp() public override {
         super.setUp();
         _creationFee = jbProjects().creationFee();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying = new JBStickyPricingToken(6);
         _deployer = new JBStickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
         _projectId = _launch(IERC20Metadata(address(_underlying)));
         _feed = JBStickyPriceFeed(address(_deployer.priceFeedOf(_projectId)));
         _hook = _deployer.HOOK();
         _token = jbTokens().tokenOf(_projectId);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({account: _holder, amount: 200e6});
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve({spender: address(jbMultiTerminal()), value: 200e6});
     }
 
     /// @notice Later metadata changes do not change feed precision, terminal accounting or minted shares.
     function test_cachedDecimalsIgnoreLaterTokenMetadataChanges() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake(10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(address(_underlying), abi.encodeCall(IERC20Metadata.decimals, ()), abi.encode(uint8(18)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.decimals(), 18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.DECIMALS(), 6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(18), 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake(5e6), 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 15e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut(5e18), 5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 10e6);
     }
 
@@ -94,70 +108,108 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
 
     /// @notice A wrong default used after the project feed fails cannot overmint or change any holder position.
     function test_defaultFallbackCannotChangeExactIssuance() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake(10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(10e6);
         uint256 currency = _feed.CURRENCY();
         uint256 baseCurrency = type(uint32).max;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         JBStickyTestPriceFeed wrongFeed = new JBStickyTestPriceFeed(5e6);
         vm.prank(jbPrices().owner());
         jbPrices().addPriceFeedFor({
             projectId: 0, pricingCurrency: currency, unitCurrency: baseCurrency, feed: wrongFeed
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCallRevert(address(_feed), abi.encodeCall(IJBPriceFeed.currentUnitPrice, (6)), bytes("feed failed"));
         assertEq(
             jbPrices().pricePerUnitOf({
-                projectId: _projectId, pricingCurrency: currency, unitCurrency: baseCurrency, decimals: 6
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                projectId: _projectId,
+                pricingCurrency: currency,
+                unitCurrency: baseCurrency,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                decimals: 6
             }),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             5e6,
             "the wrong default must actually be selected"
         );
         bytes32 beforeState = _stateHash();
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyHook.JBStickyHook_UnexpectedIssuedCount.selector, _projectId, 5e18, 20e18)
         );
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake(10e6);
         assertEq(_stateHash(), beforeState, "fallback issuance must revert balances and position atomically");
 
         // Restoring the exact feed makes the same payment safe without altering the project's configuration.
         vm.clearMockedCalls();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake(10e6), 5e18);
         assertEq(_token.totalSupply(), 15e18);
     }
 
     /// @notice Empty supply uses one unit; existing supply excludes orphaned donations through exit and restart.
     function test_feedBootstrapsAndExcludesOrphanBackingAcrossLifecycle() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 1e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _donate(7e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 1e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake(10e6), 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.orphanedBalanceOf(_projectId), 7e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 10e6);
         _donate(3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 13e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake(13e6), 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 26e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut(20e18), 26e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 7e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 1e6);
         _donate(4e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 1e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stake(2e6), 2e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.orphanedBalanceOf(_projectId), 11e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(6), 2e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_cashOut(2e18), 2e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_backing(), 11e6);
     }
 
     /// @notice The feed converts supported output precisions and rejects unsupported precision explicitly.
     function test_feedPrecisionBoundaries() public {
         assertEq(_feed.currentUnitPrice(0), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(18), 1e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(36), 1e36);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake(10e6);
         assertEq(_feed.currentUnitPrice(0), 10);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(18), 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.currentUnitPrice(36), 10e36);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBStickyPriceFeed.JBStickyPriceFeed_UnsupportedDecimals.selector, 37));
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _feed.currentUnitPrice(37);
     }
 
@@ -171,25 +223,32 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
         assertEq(feed.CURRENCY(), type(uint32).max);
         assertEq(baseCurrency, type(uint32).max - 1);
         assertEq(address(jbPrices().priceFeedFor(projectId, type(uint32).max, type(uint32).max - 1)), address(feed));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         JBStickyPricingToken(collisionToken).mint({account: _holder, amount: 12e6});
         vm.startPrank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         JBStickyPricingToken(collisionToken).approve({spender: address(jbMultiTerminal()), value: 12e6});
         uint256 minted = jbMultiTerminal().pay({
             projectId: projectId,
             token: collisionToken,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 12e6,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minReturnedTokens: 12e18,
             memo: "",
             metadata: bytes("")
         });
         vm.stopPrank();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(minted, 12e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(feed.currentUnitPrice(6), 12e6);
     }
 
     /// @notice A nonzero token address whose low 32 bits are zero fails before launching an unusable project.
     function test_zeroCurrencyIsRejectedBeforeProjectCreation() public {
+        // forge-lint: disable-next-line(too-many-digits)
         address zeroCurrencyToken = address(uint160(0x100000000));
         vm.etch(zeroCurrencyToken, address(_underlying).code);
         uint256 projectCount = jbProjects().count();
@@ -217,6 +276,7 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
         assertEq(address(_feed.TERMINAL()), address(jbMultiTerminal()));
         assertEq(address(_feed.TOKEN()), address(_token));
         assertEq(_feed.UNDERLYING_TOKEN(), address(_underlying));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_feed.DECIMALS(), 6);
         assertEq(_feed.CURRENCY(), currency);
     }
@@ -260,6 +320,7 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
     /// @return projectId The new project's ID.
     function _launch(IERC20Metadata underlying) internal returns (uint256 projectId) {
         vm.deal(address(this), _creationFee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         return _deployer.deployStickyFor{value: _creationFee}({
             stakedToken: underlying,
             name: "Sticky Feed",

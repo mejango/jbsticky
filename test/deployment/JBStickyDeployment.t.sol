@@ -35,12 +35,19 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
 
     function test_allNetworkFoldersMatchCurrentCoreLayout() public view {
         assertEq(_deployment.network(1), "ethereum");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(10), "optimism");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(8453), "base");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(42_161), "arbitrum");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(11_155_111), "sepolia");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(11_155_420), "optimism_sepolia");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(84_532), "base_sepolia");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_deployment.network(421_614), "arbitrum_sepolia");
     }
 
@@ -85,6 +92,7 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         vm.deal(address(this), fee);
         address[] memory granters = new address[](1);
         granters[0] = deployed.autoStick;
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         uint256 projectId = factory.deployStickyFor{value: fee}({
             stakedToken: underlying,
             name: "Deployment rehearsal",
@@ -118,13 +126,17 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         JBStickyDistributor distributor = JBStickyDistributor(payable(deployed.distributor));
         assertEq(address(distributor.STICKY_HOOK()), deployed.hook);
         assertEq(distributor.EPOCH_DURATION(), JBStickyHook(deployed.hook).EPOCH_DURATION());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(distributor.EPOCH_DURATION(), 1 weeks);
         assertEq(address(distributor.CONTROLLER()), address(_core.controller));
         assertEq(address(distributor.DIRECTORY()), address(_core.directory));
         assertEq(address(distributor.REV_LOANS()), address(0));
         assertEq(address(distributor.REV_OWNER()), address(0));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(distributor.ROUND_DURATION(), 7 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(distributor.VESTING_ROUNDS(), 4);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(distributor.CLAIM_DURATION(), 2 * 365 days);
         assertLe(deployed.distributor.code.length, 24_576);
 
@@ -134,8 +146,11 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
             controller: _core.controller,
             directory: _core.directory,
             stickyHook: other.HOOK(),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             initialRoundDuration: 7 days,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             initialVestingRounds: 4,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             initialClaimDuration: uint48(2 * 365 days)
         });
         vm.etch(deployed.distributor, address(different).code);
@@ -145,7 +160,9 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_loadsFlatCoreArtifactsWithoutForwarder() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(11_155_111);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         string memory root = _writeCoreArtifacts(11_155_111);
         JBStickyCoreDeployment memory loaded = _deployment.loadCore(root);
         assertEq(address(loaded.controller), address(_core.controller));
@@ -153,18 +170,26 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_manifestDistinguishesRpcBlockFromEvmHeight() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(42_161);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.roll(42);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "100");
         bytes32 rpcBlockHash = keccak256("canonical RPC block");
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(rpcBlockHash));
         JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
         _deployment.writeManifest(_core, deployed);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile("deployments/arbitrum/test.json");
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(vm.parseJsonUint(json, ".evmBlockNumber"), 42);
         assertEq(vm.parseJsonUint(json, ".rpcBlockNumber"), 100);
         assertEq(vm.parseJsonBytes32(json, ".rpcBlockHash"), rpcBlockHash);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_RPC_BLOCK_NUMBER", "0");
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_RPC_BLOCK_HASH", vm.toString(bytes32(0)));
     }
 
@@ -188,6 +213,7 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         vm.etch(deployed.deployer, address(different).code);
         _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
@@ -198,18 +224,23 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
             abi.encode(false)
         );
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
     function test_rejectsDifferentCorePriceRegistriesBeforeAnyDeployment() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("PRICES()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
     function test_rejectsDifferentCoreRulesetRegistries() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(address(_core.terminal.STORE()), abi.encodeWithSignature("RULESETS()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
@@ -219,23 +250,27 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
         code[0] = bytes1(uint8(code[0]) ^ 1);
         vm.etch(deployed.deployer, code);
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
     function test_rejectsMissingCoreCodeBeforeAnyDeployment() public {
         vm.etch(address(_core.terminal), hex"");
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_MissingCode.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
     function test_rejectsNoncanonicalUpperBitsInImmutableAddress() public {
         JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile("out/JBStickyDeployer.sol/JBStickyDeployer.json");
         string memory root = ".deployedBytecode.immutableReferences";
         string[] memory keys = vm.parseJsonKeys(json, root);
         JBStickyImmutableReference[] memory refs =
             abi.decode(vm.parseJson(json, string.concat(root, ".", keys[0])), (JBStickyImmutableReference[]));
         bytes memory code = deployed.deployer.code;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < refs.length; i++) {
             code[refs[i].start] = 0x01;
         }
@@ -246,20 +281,26 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
 
     function test_rejectsOneInconsistentImmutableOccurrence() public {
         JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile("out/JBStickyDeployer.sol/JBStickyDeployer.json");
         string memory root = ".deployedBytecode.immutableReferences";
         string[] memory keys = vm.parseJsonKeys(json, root);
         bool mutated;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < keys.length; i++) {
             JBStickyImmutableReference[] memory refs =
-                abi.decode(vm.parseJson(json, string.concat(root, ".", keys[i])), (JBStickyImmutableReference[]));
+            // forge-lint: disable-next-line(calls-loop)
+            abi.decode(vm.parseJson(json, string.concat(root, ".", keys[i])), (JBStickyImmutableReference[]));
             if (refs.length < 2) continue;
             bytes memory code = deployed.deployer.code;
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             code[refs[1].start + 31] = bytes1(uint8(code[refs[1].start + 31]) ^ 1);
+            // forge-lint: disable-next-line(calls-loop)
             vm.etch(deployed.deployer, code);
             mutated = true;
             break;
         }
+        // forge-lint: disable-next-line(uninitialized-local)
         assertTrue(mutated, "fixture must modify a repeated immutable");
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
         _deployment.verifyRuntime("JBStickyDeployer", deployed.deployer);
@@ -267,57 +308,79 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
 
     function test_rejectsUnsupportedChain() public {
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_UnsupportedChain.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.network(31_337);
     }
 
     function test_rejectsWrongCanonicalFactoryRuntime() public {
         vm.etch(_deployment.DETERMINISTIC_FACTORY(), hex"00");
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_RuntimeMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
     function test_rejectsWrongCoreArtifactChain() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(11_155_111);
         string memory root = _writeCoreArtifacts(1);
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_ChainMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.loadCore(root);
     }
 
     function test_rejectsWrongCoreBindingBeforeAnyDeployment() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(address(_core.terminal), abi.encodeWithSignature("DIRECTORY()"), abi.encode(address(0xdead)));
         vm.expectPartialRevert(JBStickyDeployment.JBStickyDeployment_BindingMismatch.selector);
+        // forge-lint: disable-next-line(unused-return)
         _deployment.deployFor(_core);
     }
 
     function test_rejectsWrongRpcChainBeforeReadingArtifacts() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(10);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_EXPECTED_CHAIN_ID", "1");
         vm.expectRevert(
             abi.encodeWithSelector(
-                JBStickyDeployment.JBStickyDeployment_ChainMismatch.selector, "RPC", uint256(1), uint256(10)
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                JBStickyDeployment.JBStickyDeployment_ChainMismatch.selector,
+                "RPC",
+                uint256(1),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                uint256(10)
             )
         );
+        // forge-lint: disable-next-line(unused-return)
         _deployment.loadCore("deployments/_missing");
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.setEnv("STICKY_EXPECTED_CHAIN_ID", "0");
     }
 
     function test_sameArtifactsAndCoreBindingsPredictSameAddressesOnEverySupportedChain() public {
         bytes32 expected = keccak256(abi.encode(_deployment.predict(_core)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256[8] memory chainIds = [uint256(1), 10, 8453, 42_161, 11_155_111, 11_155_420, 84_532, 421_614];
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < chainIds.length; i++) {
+            // forge-lint: disable-next-line(calls-loop)
             vm.chainId(chainIds[i]);
+            // forge-lint: disable-next-line(calls-loop)
             assertEq(keccak256(abi.encode(_deployment.predict(_core))), expected);
         }
     }
 
     function test_verifiedManifestRecordsAllRuntimeHashes() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.chainId(11_155_111);
         JBStickyDeploymentAddresses memory deployed = _deployment.deployFor(_core);
         _deployment.writeManifest(_core, deployed);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile("deployments/sepolia/test.json");
         assertEq(vm.parseJsonAddress(json, ".deployer"), deployed.deployer);
         assertEq(vm.parseJsonBytes32(json, ".hookCodehash"), deployed.hook.codehash);
         assertEq(vm.parseJsonBytes32(json, ".autoStickCodehash"), deployed.autoStick.codehash);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(vm.parseJsonUint(json, ".chainId"), 11_155_111);
         assertEq(vm.parseJsonString(json, ".kind"), "test");
     }
@@ -333,6 +396,7 @@ contract JBStickyDeploymentTest is TestBaseWorkflow {
     /// @param chainId The chain ID recorded in the artifact.
     function _writeArtifact(string memory root, string memory name, address target, uint256 chainId) internal {
         string memory key = string.concat("artifact-", name);
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeAddress(key, "address", target);
         string memory json = vm.serializeString(key, "chainId", vm.toString(bytes32(chainId)));
         vm.writeJson(json, string.concat(root, "/sepolia/", name, ".json"));

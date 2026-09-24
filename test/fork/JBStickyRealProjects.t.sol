@@ -22,6 +22,7 @@ import {JBStickyRealProjectContext, JBStickyRealProjectFork} from "./helpers/JBS
 
 /// @notice Exercises the same holder lifecycle against real V6 projects on Ethereum and Base.
 /// @dev The concrete suites select pinned mainnet state; only Sticky is deployed locally, with its production settings.
+// forge-lint: disable-next-line(multi-contract-file)
 abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
@@ -106,7 +107,9 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             }).length,
             0
         );
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.ROUND_DURATION(), 7 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.VESTING_ROUNDS(), 4);
         assertEq(_distributor.CLAIM_DURATION(), 2 * 365 days);
     }
@@ -150,10 +153,12 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         vm.prank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: address(_autoStick), trusted: false});
         vm.expectPartialRevert(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector);
+        // forge-lint: disable-next-line(unused-return)
         _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_distributor.collectableFor(address(_token), uint256(uint160(_alice)), _rewardToken()), reward);
         vm.prank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: address(_autoStick), trusted: true});
+        // forge-lint: disable-next-line(unused-return)
         _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_token.balanceOf(_alice), reward);
         assertEq(_hook.streakStartOf(_projectId, _alice), vm.getBlockTimestamp());
@@ -170,6 +175,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         vm.prank(_alice);
         _context.underlying.approve({spender: address(_autoStick), value: 0});
         vm.expectPartialRevert(JBStickyAutoStick.JBStickyAutoStick_InsufficientAllowance.selector);
+        // forge-lint: disable-next-line(unused-return)
         _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_distributor.collectableFor(address(_token), uint256(uint160(_alice)), _rewardToken()), reward);
         assertEq(_context.underlying.balanceOf(_alice), walletBefore);
@@ -177,6 +183,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
 
         vm.prank(_alice);
         _context.underlying.approve({spender: address(_autoStick), value: reward});
+        // forge-lint: disable-next-line(unused-return)
         (JBAutoStickStatus status,,,) = _autoStick.statusOf(_projectId, _alice, _defaultGroup());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
         (uint256 compounded, uint256 minted) =
@@ -203,6 +210,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         });
         assertEq(_context.underlying.balanceOf(_alice), walletBefore + reward);
         vm.expectPartialRevert(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector);
+        // forge-lint: disable-next-line(unused-return)
         _autoStick.compoundFor({projectId: _projectId, holder: _alice, groupIds: _defaultGroup()});
         assertEq(_context.underlying.balanceOf(_alice), walletBefore + reward);
         _assertPosition(_alice);
@@ -210,6 +218,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
 
     /// @notice Donations raise the share price; an outdated minimum rejects the entire payment without donating it.
     function test_donationRepricesNewStakeAndReviewedMinimumProtectsWallet() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = _context.underlying.balanceOf(_alice) / 10;
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
         vm.prank(_bob);
@@ -238,11 +247,13 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             });
         vm.stopPrank();
         assertEq(_context.underlying.balanceOf(_bob), walletBefore);
+        // forge-lint: disable-next-line(divide-before-multiply)
         assertEq(_backing(), 2 * amount);
         assertEq(_token.balanceOf(_bob), 0);
         uint256 minted =
             _stake({context: _context, projectId: _projectId, payer: _bob, beneficiary: _bob, amount: amount});
         assertEq(minted, amount / 2);
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         assertEq(_backing(), 3 * amount);
         _assertPosition(_alice);
         _assertPosition(_bob);
@@ -250,23 +261,28 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
 
     /// @notice Burning the entire supply leaves orphaned backing that a later first depositor cannot extract.
     function test_fullVoluntaryBurnAndEmptyDonationCannotBeCapturedOnRestart() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = _context.underlying.balanceOf(_alice) / 10;
         uint256 shares =
             _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 3 days);
         _burn({holder: _alice, count: shares});
         assertEq(_token.totalSupply(), 0);
         assertEq(_hook.streakStartOf(_projectId, _alice), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.longestStreakOf(_projectId, _alice), 3 days);
         _donate(amount);
         uint256 bobShares =
             _stake({context: _context, projectId: _projectId, payer: _bob, beneficiary: _bob, amount: amount});
         assertEq(bobShares, amount);
+        // forge-lint: disable-next-line(divide-before-multiply)
         assertEq(_hook.orphanedBalanceOf(_projectId), 2 * amount);
         assertEq(
             _cashOut({context: _context, projectId: _projectId, holder: _bob, count: bobShares, minimum: amount}),
             amount
         );
+        // forge-lint: disable-next-line(divide-before-multiply)
         assertEq(_backing(), 2 * amount);
         assertEq(_token.totalSupply(), 0);
         _assertPosition(_alice);
@@ -275,9 +291,11 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
 
     /// @notice Global grants and holder-specific trust add fresh tranches without resetting an active streak.
     function test_grantsTrustRevocationAndSoulboundTransfersPreserveHolderConsent() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = _context.underlying.balanceOf(_alice) / 20;
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
         uint256 start = _hook.streakStartOf(_projectId, _alice);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 1 weeks);
         _stake({context: _context, projectId: _projectId, payer: _granter, beneficiary: _alice, amount: amount});
         vm.expectPartialRevert(JBStickyHook.JBStickyHook_SenderNotTrusted.selector);
@@ -292,13 +310,16 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             });
         vm.prank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: _bob, trusted: true});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 1 weeks);
         _stake({context: _context, projectId: _projectId, payer: _bob, beneficiary: _alice, amount: amount});
         assertEq(_hook.streakStartOf(_projectId, _alice), start);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.trancheCountOf(_projectId, _alice), 3);
         vm.startPrank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: _bob, trusted: false});
         vm.expectRevert(abi.encodeWithSelector(JBStickyToken.JBStickyToken_Soulbound.selector, _alice, _bob));
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         _token.transfer({to: _bob, value: amount});
         vm.stopPrank();
         assertFalse(_hook.isTrustedSenderOf(_projectId, _alice, _bob));
@@ -318,6 +339,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             });
         vm.stopPrank();
         assertEq(_context.underlying.balanceOf(_bob), walletBefore);
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         assertEq(_token.balanceOf(_alice), 3 * amount);
         _assertPosition(_alice);
     }
@@ -336,23 +358,29 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     /// @notice Historical rewards follow unequal snapshot balances after transfers, burns, and a late deposit.
     function test_rewardSnapshotSurvivesTransferBurnAndLateDeposit() public {
         (_projectId, _token) = _launchSticky({context: _context, soulbound: false, cashOutTaxRate: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 unit = _context.underlying.balanceOf(_alice) / 20;
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: 3 * unit});
         _stake({context: _context, projectId: _projectId, payer: _bob, beneficiary: _bob, amount: unit});
         vm.roll(vm.getBlockNumber() + 1);
         vm.startPrank(_granter);
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         _context.underlying.approve({spender: address(_distributor), value: 4 * unit});
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         _distributor.fund({hook: address(_token), token: _rewardToken(), amount: 4 * unit});
         vm.stopPrank();
 
         // Later ownership does not rewrite the distributor's completed balance checkpoint.
         vm.roll(vm.getBlockNumber() + 1);
         vm.prank(_alice);
+        // forge-lint: disable-next-line(divide-before-multiply,erc20-unchecked-transfer,literal-instead-of-constant)
         _token.transfer({to: _granter, value: 3 * unit});
         _burn({holder: _bob, count: unit});
         _stake({context: _context, projectId: _projectId, payer: _granter, beneficiary: _granter, amount: unit});
         vm.warp(vm.getBlockTimestamp() + _distributor.ROUND_DURATION() + 1);
         vm.roll(vm.getBlockNumber() + 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256[] memory ids = new uint256[](3);
         ids[0] = uint256(uint160(_alice));
         ids[1] = uint256(uint160(_bob));
@@ -368,6 +396,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         _distributor.collectVestedRewards({
             hook: address(_token), tokenIds: _ids(_bob), tokens: _rewardTokens(), beneficiary: _bob
         });
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         assertEq(_context.underlying.balanceOf(_alice) - aliceBefore, 3 * unit);
         assertEq(_context.underlying.balanceOf(_bob) - bobBefore, unit);
         assertEq(_distributor.collectableFor(address(_token), uint256(uint160(_granter)), _rewardToken()), 0);
@@ -379,7 +408,9 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
 
     /// @notice Partial and complete exits match the live store's curve preview and the terminal's protocol fee.
     function test_taxedPartialAndFullCashOutMatchGrossPreviewAndNetWalletReceipt() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         (_projectId, _token) = _launchSticky({context: _context, soulbound: true, cashOutTaxRate: 5000});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = _context.underlying.balanceOf(_alice) / 10;
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
         _stake({context: _context, projectId: _projectId, payer: _bob, beneficiary: _bob, amount: amount});
@@ -398,14 +429,18 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     /// @notice Transferable shares move votes and tranches; voluntary burns retain backing for remaining shares.
     function test_transferBurnAndCashOutKeepCheckpointsTranchesAndBackingConsistent() public {
         (_projectId, _token) = _launchSticky({context: _context, soulbound: false, cashOutTaxRate: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = _context.underlying.balanceOf(_alice) / 10;
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
         uint256 initialBlock = vm.getBlockNumber();
         uint256 aliceStart = _hook.streakStartOf(_projectId, _alice);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.roll(vm.getBlockNumber() + 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 moved = amount / 4;
         vm.prank(_alice);
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         _token.transfer({to: _bob, value: moved});
         assertEq(_token.getPastVotes(_alice, initialBlock), amount);
         assertEq(_token.getPastVotes(_bob, initialBlock), 0);
@@ -430,11 +465,14 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     /// @notice A real-token round trip consumes the newest tranche first and preserves the remaining deposit's age.
     function test_twoDepositsPartialExitAndFullExitReturnUnderlyingAndPreserveTrancheAge() public {
         uint256 walletBefore = _context.underlying.balanceOf(_alice);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = walletBefore / 10;
         uint256 start = vm.getBlockTimestamp();
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 1 weeks);
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 1 days);
         _cashOut({
             context: _context,
@@ -459,6 +497,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         assertEq(_backing(), 0);
         assertEq(_token.totalSupply(), 0);
         assertEq(_hook.streakStartOf(_projectId, _alice), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.longestStreakOf(_projectId, _alice), 1 weeks + 1 days);
         _assertPosition(_alice);
     }
@@ -481,6 +520,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             beneficiaryIsFeeless: false,
             metadata: bytes("")
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(tax, 5000);
         uint256 expectedNet = gross - JBFees.standardFeeAmountFrom(gross);
         net = _cashOut({context: _context, projectId: _projectId, holder: holder, count: count, minimum: expectedNet});
@@ -516,6 +556,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     function _exerciseDustExit() internal {
         uint256 amount = 1e12;
         // Use an exact integer price while sizing the donation from tokens obtained through real payments.
+        // forge-lint: disable-next-line(divide-before-multiply,literal-instead-of-constant)
         uint256 backing = _context.underlying.balanceOf(_granter) / 4 / amount * amount;
         uint256 perShareAtom = backing / amount;
         assertGt(backing, amount);
@@ -544,6 +585,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     /// @notice Funds real underlying rewards after a share checkpoint and advances the production vesting schedule.
     /// @return reward The fully vested amount belonging to the single snapshot holder.
     function _prepareVestedRewards() internal returns (uint256 reward) {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 amount = _context.underlying.balanceOf(_alice) / 10;
         reward = amount / 2;
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
@@ -555,6 +597,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         vm.startPrank(_alice);
         _context.underlying.approve({spender: address(_autoStick), value: type(uint256).max});
         _hook.setTrustedSenderFor({projectId: _projectId, sender: address(_autoStick), trusted: true});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _autoStick.setConfigFor({projectId: _projectId, enabled: true, minimumAmount: 1, cooldown: 1 days});
         vm.stopPrank();
         vm.warp(vm.getBlockTimestamp() + _distributor.ROUND_DURATION() + 1);
@@ -575,8 +618,11 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         _distributor = JBStickyDistributor(payable(_context.suite.distributor));
         _autoStick = JBStickyAutoStick(_context.suite.autoStick);
         (_projectId, _token) = _launchSticky({context: _context, soulbound: true, cashOutTaxRate: 0});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _buyUnderlying({context: _context, holder: _alice, nativeAmount: 0.1 ether});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _buyUnderlying({context: _context, holder: _bob, nativeAmount: 0.1 ether});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _buyUnderlying({context: _context, holder: _granter, nativeAmount: 0.1 ether});
     }
 
@@ -607,7 +653,9 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
     function _assertPosition(address holder) internal view {
         JBStickyTranche[] memory tranches = _hook.tranchesOf(_projectId, holder);
         uint256 sum;
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < tranches.length; i++) {
+            // forge-lint: disable-next-line(uninitialized-local)
             sum += tranches[i].amount;
         }
         assertEq(sum, _token.balanceOf(holder));
@@ -638,6 +686,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
 }
 
 /// @notice Runs every Sticky lifecycle against the existing Base project 6 and its real project token.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyBase6ForkTest is JBStickyRealProjectLifecycle {
     /// @notice Selects pinned Base mainnet state and prepares the real-project lifecycle.
     function setUp() public {
@@ -647,6 +696,7 @@ contract JBStickyBase6ForkTest is JBStickyRealProjectLifecycle {
 }
 
 /// @notice Runs every Sticky lifecycle against the existing Ethereum project 3 and its real project token.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyEthereum3ForkTest is JBStickyRealProjectLifecycle {
     /// @notice Selects pinned Ethereum mainnet state and prepares the real-project lifecycle.
     function setUp() public {

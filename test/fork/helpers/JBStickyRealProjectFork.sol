@@ -66,6 +66,7 @@ abstract contract JBStickyRealProjectFork is Test {
         uint256 beforeBalance = context.underlying.balanceOf(holder);
         vm.deal(holder, holder.balance + nativeAmount);
         vm.prank(holder);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         uint256 issued = context.nativeTerminal.pay{value: nativeAmount}({
             projectId: context.underlyingProjectId,
             token: JBConstants.NATIVE_TOKEN,
@@ -166,6 +167,7 @@ abstract contract JBStickyRealProjectFork is Test {
         granters[0] = makeAddr("granter");
         uint256 fee = context.core.controller.PROJECTS().creationFee();
         vm.deal(address(this), address(this).balance + fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         projectId = JBStickyDeployer(context.suite.deployer).deployStickyFor{value: fee}({
             stakedToken: context.underlying,
             name: string.concat("Sticky ", context.underlying.name()),

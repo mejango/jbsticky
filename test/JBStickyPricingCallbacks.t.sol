@@ -19,6 +19,7 @@ import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
 import {JBStickyCallbackToken} from "./helpers/JBStickyCallbackToken.sol";
 
 /// @notice Records what the hook reports about a payment in progress at the moment it is called.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyPayingProbe {
     /// @notice Whether the hook reported a payment in progress during the last probe.
     bool public wasPaying;
@@ -33,6 +34,7 @@ contract JBStickyPayingProbe {
 
 /// @notice Real terminal callbacks cannot change supply or backing between Sticky pricing and stake accounting, and
 /// cannot record a tenure denominator while the minted shares have no tranche.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
@@ -42,6 +44,7 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
     JBStickyDistributor internal _distributor;
 
     /// @notice The account whose outer payment is targeted by the token callback.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("outer payer");
 
     /// @notice The deployed Sticky accounting hook.
@@ -74,6 +77,7 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         _hook = deployer.HOOK();
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         _projectId = deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(_underlying)),
             name: "Sticky Callback",
@@ -88,20 +92,28 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
             controller: jbController(),
             directory: jbDirectory(),
             stickyHook: _hook,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             initialRoundDuration: 1 days,
             initialVestingRounds: 1,
             initialClaimDuration: 30 days
         });
         _receiverFactory = new JBStickyRewardReceiverFactory(_distributor);
         _reward = new JBStickyCallbackToken();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({beneficiary: address(_underlying), amount: 100e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({beneficiary: _holder, amount: 100e18});
         _underlying.approveFromSelf({spender: address(jbMultiTerminal()), amount: type(uint256).max});
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve({spender: address(jbMultiTerminal()), value: 100e18});
         _underlying.execute({
-            target: address(jbMultiTerminal()), data: _paymentData({beneficiary: address(_underlying), amount: 10e18})
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            target: address(jbMultiTerminal()),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            data: _paymentData({beneficiary: address(_underlying), amount: 10e18})
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.roll(vm.getBlockNumber() + 1);
     }
@@ -109,19 +121,27 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
     /// @notice A callback donation changes backing alone and reverts both the donation and outer stake.
     function test_callbackDonationRevertsAtomically() public {
         bytes memory data =
-            abi.encodeCall(IJBTerminal.addToBalanceOf, (_projectId, address(_underlying), 3e18, false, "", bytes("")));
+        // forge-lint: disable-next-line(boolean-cst)
+        abi.encodeCall(IJBTerminal.addToBalanceOf, (_projectId, address(_underlying), 3e18, false, "", bytes("")));
         _assertCallbackReverts({
-            target: address(jbMultiTerminal()), data: data, actualSupply: 15e18, actualBacking: 18e18
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            target: address(jbMultiTerminal()),
+            data: data,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            actualSupply: 15e18,
+            actualBacking: 18e18
         });
     }
 
     /// @notice Group 0 weighs a past block, so funding it from the mint gap records nothing unrecorded and succeeds.
     function test_callbackGroupZeroFundingSucceedsWhilePaying() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _prepareCallbackFunding(1e18);
         _underlying.configureCallback({
             terminal: address(jbMultiTerminal()),
             hook: address(_hook),
             target: address(_distributor),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             data: abi.encodeCall(IJBStickyDistributor.fund, (address(_stickyToken), IERC20(address(_reward)), 1e18, 0))
         });
 
@@ -129,16 +149,21 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         uint256 minted = jbMultiTerminal().pay({
             projectId: _projectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 5e18,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minReturnedTokens: 5e18,
             memo: "",
             metadata: bytes("")
         });
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(minted, 5e18);
         assertEq(_underlying.callbackCount(), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.balanceOf(address(_stickyToken), IERC20(address(_reward))), 1e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.stakedBalanceOf(_projectId, _holder), 5e18);
         assertFalse(_hook.isPayingFor(_projectId));
     }
@@ -148,7 +173,9 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         _assertCallbackReverts({
             target: address(jbMultiTerminal()),
             data: _paymentData({beneficiary: address(_underlying), amount: 2e18}),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             actualSupply: 17e18,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             actualBacking: 17e18
         });
     }
@@ -168,8 +195,10 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         jbMultiTerminal().pay({
             projectId: _projectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 5e18,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minReturnedTokens: 5e18,
             memo: "",
             metadata: bytes("")
@@ -178,38 +207,52 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         assertTrue(probe.wasPaying(), "the mint gap is flagged");
         assertFalse(_hook.isPayingFor(_projectId), "the after-pay callback clears the flag");
         assertEq(_underlying.callbackCount(), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.stakedBalanceOf(_projectId, _holder), 5e18);
     }
 
     /// @notice Settling a prefunded tenure receiver from the mint gap reverts instead of recording a denominator.
     function test_callbackReceiverSettlementRevertsWhilePaying() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         address receiver = _receiverFactory.predictReceiverOf({stickyToken: address(_stickyToken), groupId: 1000});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _reward.mint({beneficiary: receiver, amount: 1e18});
         _assertFundingCallbackReverts({
             target: address(_receiverFactory),
             data: abi.encodeCall(
-                JBStickyRewardReceiverFactory.settleFor, (address(_stickyToken), 1000, IERC20(address(_reward)))
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                JBStickyRewardReceiverFactory.settleFor,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                (address(_stickyToken), 1000, IERC20(address(_reward)))
             )
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_reward.balanceOf(receiver), 1e18);
     }
 
     /// @notice Funding a tenure group from the mint gap reverts instead of recording a denominator that counts the
     /// unrecorded mint.
     function test_callbackTenureFundingRevertsWhilePaying() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _prepareCallbackFunding(1e18);
         _assertFundingCallbackReverts({
             target: address(_distributor),
             data: abi.encodeCall(
-                IJBStickyDistributor.fund, (address(_stickyToken), IERC20(address(_reward)), 1e18, 1000)
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                IJBStickyDistributor.fund,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                (address(_stickyToken), IERC20(address(_reward)), 1e18, 1000)
             )
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_reward.balanceOf(address(_underlying)), 1e18);
     }
 
     /// @notice A holder's callback burn changes supply alone and cannot invalidate the outer payment's pricing.
     function test_callbackVoluntaryBurnRevertsAtomically() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         bytes memory data = abi.encodeCall(IJBController.burnTokensOf, (address(_underlying), _projectId, 1e18, ""));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _assertCallbackReverts({target: address(jbController()), data: data, actualSupply: 14e18, actualBacking: 15e18});
     }
 
@@ -219,21 +262,31 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         uint256 minted = jbMultiTerminal().pay({
             projectId: _projectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 5e18,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minReturnedTokens: 5e18,
             memo: "",
             metadata: bytes("")
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(minted, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stickyToken.totalSupply(), 15e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_stickyToken.balanceOf(_holder), 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.stakedBalanceOf(_projectId, _holder), 5e18);
         assertEq(_hook.trancheCountOf(_projectId, _holder), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.stakedBalanceOf(_projectId, address(_underlying)), 10e18);
         assertEq(_hook.trancheCountOf(_projectId, address(_underlying)), 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(jbTerminalStore().balanceOf(address(jbMultiTerminal()), _projectId, address(_underlying)), 15e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(_holder), 95e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.allowance(_holder, address(jbMultiTerminal())), 95e18);
         assertEq(_underlying.callbackCount(), 0);
     }
@@ -264,8 +317,10 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
             abi.encodeWithSelector(
                 JBStickyHook.JBStickyHook_PricingStateChanged.selector,
                 _projectId,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 15e18,
                 actualSupply,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 15e18,
                 actualBacking
             )
@@ -274,8 +329,10 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         jbMultiTerminal().pay({
             projectId: _projectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 5e18,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minReturnedTokens: 5e18,
             memo: "",
             metadata: bytes("")
@@ -308,8 +365,10 @@ contract JBStickyPricingCallbacksTest is TestBaseWorkflow {
         jbMultiTerminal().pay({
             projectId: _projectId,
             token: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: 5e18,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minReturnedTokens: 5e18,
             memo: "",
             metadata: bytes("")

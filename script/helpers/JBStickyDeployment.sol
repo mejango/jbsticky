@@ -106,11 +106,13 @@ abstract contract JBStickyDeployment is Script {
     /// @return predicted The expected deployment address.
     function _deployIfNeeded(string memory name, bytes32 salt, bytes memory args) internal returns (address predicted) {
         // Include constructor arguments in the address prediction so immutable dependencies bind the deployment.
+        // forge-lint: disable-next-line(encode-packed-collision)
         bytes memory initCode = abi.encodePacked(vm.getCode(string.concat(name, ".sol:", name)), args);
         predicted =
             vm.computeCreate2Address({salt: salt, initCodeHash: keccak256(initCode), deployer: DETERMINISTIC_FACTORY});
         if (predicted.code.length == 0) {
             // The canonical proxy accepts the salt followed directly by the complete creation code.
+            // forge-lint: disable-next-line(low-level-calls)
             (bool success,) = DETERMINISTIC_FACTORY.call(abi.encodePacked(salt, initCode));
             if (!success || predicted.code.length == 0) revert JBStickyDeployment_DeploymentFailed(predicted);
         }
@@ -133,23 +135,31 @@ abstract contract JBStickyDeployment is Script {
         // A manifest certifies the inspected state only after runtime and dependency checks succeed.
         _verify({core: core, deployed: deployed});
         string memory key = string.concat("sticky-", vm.toString(block.chainid), "-", kind);
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeString({objectKey: key, valueKey: "kind", value: kind});
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeUint({objectKey: key, valueKey: "chainId", value: block.chainid});
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeUint({objectKey: key, valueKey: "evmBlockNumber", value: block.number});
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeUint({objectKey: key, valueKey: "timestamp", value: block.timestamp});
         // The grouped runner pins the fork to this RPC block, which can differ from the EVM height on Arbitrum.
         uint256 rpcBlockNumber = vm.envOr({name: "STICKY_RPC_BLOCK_NUMBER", defaultValue: uint256(0)});
         if (rpcBlockNumber != 0) {
+            // forge-lint: disable-next-line(unused-return)
             vm.serializeUint({objectKey: key, valueKey: "rpcBlockNumber", value: rpcBlockNumber});
+            // forge-lint: disable-next-item(unused-return)
             vm.serializeBytes32({
                 objectKey: key, valueKey: "rpcBlockHash", value: vm.envBytes32("STICKY_RPC_BLOCK_HASH")
             });
         }
+        // forge-lint: disable-next-item(unused-return)
         vm.serializeBytes32({
             objectKey: key,
             valueKey: "evmParentBlockHash",
             value: block.number == 0 ? bytes32(0) : blockhash(block.number - 1)
         });
+        // forge-lint: disable-next-item(unused-return)
         vm.serializeString({
             objectKey: key,
             valueKey: "revision",
@@ -164,6 +174,7 @@ abstract contract JBStickyDeployment is Script {
         _serializeContract({key: key, name: "distributor", target: deployed.distributor});
         _serializeContract({key: key, name: "rewardReceiverFactory", target: deployed.rewardReceiverFactory});
         _serializeContract({key: key, name: "autoStick", target: deployed.autoStick});
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeBytes32({objectKey: key, valueKey: "stickySalt", value: STICKY_SALT});
         string memory json = vm.serializeBytes32({objectKey: key, valueKey: "autoStickSalt", value: AUTO_STICK_SALT});
         string memory directory = string.concat("deployments/", _network(block.chainid));
@@ -303,10 +314,12 @@ abstract contract JBStickyDeployment is Script {
     /// @dev Callers separately check every immutable value; runtime equality alone is insufficient.
     /// @param name The compiled artifact name.
     /// @param target The deployed contract to inspect.
+    // forge-lint: disable-next-line(cyclomatic-complexity)
     function _verifyRuntime(string memory name, address target) internal view {
         // Compare compiled executable bytes while accounting for constructor-patched immutable values.
         _requireCode(target);
         string memory artifact = string.concat("out/", name, ".sol/", name, ".json");
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile(artifact);
         bytes memory expected = vm.getDeployedCode(artifact);
         bytes memory actual = target.code;
@@ -319,21 +332,30 @@ abstract contract JBStickyDeployment is Script {
         // Replace its leading tuple offset with the array length, then prepend the outer array offset. Child
         // offsets remain relative to the same group-offset block. Parse the large artifact only once.
         bytes memory groups = vm.parseJson({json: json, key: root});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         if (groups.length < 32 || _immutableWord({code: groups, start: 0}) != bytes32(uint256(32))) {
             revert JBStickyDeployment_InvalidArtifact(name);
         }
         uint256 count = keys.length;
+        // forge-lint: disable-next-line(inline-assembly)
         assembly ("memory-safe") {
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             mstore(add(groups, 0x20), count)
         }
         JBStickyImmutableReference[][] memory references =
-            abi.decode(abi.encodePacked(uint256(32), groups), (JBStickyImmutableReference[][]));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
+        abi.decode(abi.encodePacked(uint256(32), groups), (JBStickyImmutableReference[][]));
+        // forge-lint: disable-next-line(uninitialized-local)
         for (uint256 i; i < references.length; i++) {
             JBStickyImmutableReference[] memory refs = references[i];
+            // forge-lint: disable-next-line(require-revert-in-loop)
             if (refs.length == 0) revert JBStickyDeployment_InvalidArtifact(name);
             bytes32 immutableWord;
+            // forge-lint: disable-next-line(uninitialized-local)
             for (uint256 j; j < refs.length; j++) {
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 if (refs[j].length != 32 || refs[j].start + refs[j].length > actual.length) {
+                    // forge-lint: disable-next-line(require-revert-in-loop)
                     revert JBStickyDeployment_InvalidArtifact(name);
                 }
                 // Every occurrence of one immutable must agree, including uses outside its public getter.
@@ -341,10 +363,13 @@ abstract contract JBStickyDeployment is Script {
                 // Every current binding is an address or a bounded timing setting. Reject upper-bit pollution
                 // before an address getter can normalize it while other code still consumes the original word.
                 if (uint256(word) > type(uint160).max) {
+                    // forge-lint: disable-next-line(require-revert-in-loop)
                     revert JBStickyDeployment_RuntimeMismatch({target: target, name: name});
                 }
                 if (j == 0) immutableWord = word;
+                // forge-lint: disable-next-line(require-revert-in-loop,uninitialized-local)
                 else if (word != immutableWord) revert JBStickyDeployment_RuntimeMismatch({target: target, name: name});
+                // forge-lint: disable-next-line(uninitialized-local)
                 for (uint256 k; k < refs[j].length; k++) {
                     expected[refs[j].start + k] = 0;
                     actual[refs[j].start + k] = 0;
@@ -372,6 +397,7 @@ abstract contract JBStickyDeployment is Script {
         pure
         returns (bytes memory args)
     {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         return abi.encode(core.controller, core.directory, hook, uint256(7 days), uint256(4), uint48(2 * 365 days));
     }
 
@@ -380,6 +406,7 @@ abstract contract JBStickyDeployment is Script {
     /// @return count The expected number of distinct compiler immutable groups.
     function _immutableCount(string memory name) private pure returns (uint256 count) {
         bytes32 nameHash = keccak256(bytes(name));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         if (nameHash == keccak256("JBStickyDeployer")) return 4;
         if (nameHash == keccak256("JBStickyHook")) return 2;
         if (nameHash == keccak256("JBStickyDistributor")) return 9;
@@ -393,7 +420,9 @@ abstract contract JBStickyDeployment is Script {
     /// @param start The word's offset.
     /// @return word The immutable value.
     function _immutableWord(bytes memory code, uint256 start) private pure returns (bytes32 word) {
+        // forge-lint: disable-next-line(inline-assembly)
         assembly ("memory-safe") {
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             word := mload(add(add(code, 0x20), start))
         }
     }
@@ -414,6 +443,7 @@ abstract contract JBStickyDeployment is Script {
     {
         return vm.computeCreate2Address({
             salt: salt,
+            // forge-lint: disable-next-line(encode-packed-collision)
             initCodeHash: keccak256(abi.encodePacked(vm.getCode(string.concat(name, ".sol:", name)), args)),
             deployer: DETERMINISTIC_FACTORY
         });
@@ -423,6 +453,7 @@ abstract contract JBStickyDeployment is Script {
     /// @param path The artifact path.
     /// @return target The recorded deployed address.
     function _readAddress(string memory path) private view returns (address target) {
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory json = vm.readFile(path);
         uint256 chainId = vm.parseJsonUint({json: json, key: ".chainId"});
         if (chainId != block.chainid) {
@@ -443,7 +474,9 @@ abstract contract JBStickyDeployment is Script {
     /// @param name The manifest field prefix.
     /// @param target The contract to record.
     function _serializeContract(string memory key, string memory name, address target) private {
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeAddress({objectKey: key, valueKey: name, value: target});
+        // forge-lint: disable-next-line(unused-return)
         vm.serializeBytes32({objectKey: key, valueKey: string.concat(name, "Codehash"), value: target.codehash});
     }
 
@@ -492,8 +525,11 @@ abstract contract JBStickyDeployment is Script {
                 || address(distributor.STICKY_HOOK()) != deployed.hook
                 || distributor.EPOCH_DURATION() != JBStickyHook(deployed.hook).EPOCH_DURATION()
                 || address(distributor.REV_LOANS()) != address(0) || address(distributor.REV_OWNER()) != address(0)
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 || distributor.ROUND_DURATION() != 7 days || distributor.VESTING_ROUNDS() != 4
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 || distributor.CLAIM_DURATION() != 2 * 365 days || distributor.STARTING_TIMESTAMP() == 0
+                // forge-lint: disable-next-line(block-timestamp)
                 || distributor.STARTING_TIMESTAMP() > block.timestamp
         ) {
             revert JBStickyDeployment_BindingMismatch({

@@ -32,27 +32,33 @@ contract JBStickyHookUnitTest is Test {
     //*********************************************************************//
 
     /// @notice The deployer allowed to register tokens and granters.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _deployer = makeAddr("deployer");
 
     /// @notice The mocked directory that decides which addresses are terminals.
+    // forge-lint: disable-next-line(function-init-state)
     IJBDirectory internal _directory = IJBDirectory(makeAddr("directory"));
 
     /// @notice The holder whose position the tests track.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("holder");
 
     /// @notice The hook under test.
     JBStickyHook internal _hook;
 
     /// @notice A third-party payer.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _payer = makeAddr("payer");
 
     /// @notice The total supply the mocked token reports.
     uint256 internal _reportedSupply;
 
     /// @notice The mocked terminal address the directory recognizes.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _terminal = makeAddr("terminal");
 
     /// @notice The mocked project token address.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _token = makeAddr("token");
 
     //*********************************************************************//
@@ -82,20 +88,26 @@ contract JBStickyHookUnitTest is Test {
 
     function test_afterCashOut_endsStreakAtZeroAndTracksLongest() public {
         uint256 start = vm.getBlockTimestamp();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant,reentrancy-no-eth)
         vm.warp(start + 40 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _cashOut(_holder, 10e18);
 
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _holder), 0);
         assertEq(_hook.trancheCountOf(_PROJECT_ID, _holder), 0);
         assertEq(_hook.streakStartOf(_PROJECT_ID, _holder), 0);
         assertEq(_hook.currentStreakOf(_PROJECT_ID, _holder), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.longestStreakOf(_PROJECT_ID, _holder), 40 days);
 
         // Restaking starts a fresh streak; the longest completed streak is retained until beaten.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 1e18);
         vm.warp(start + 50 days);
         assertEq(_hook.currentStreakOf(_PROJECT_ID, _holder), 10 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.longestStreakOf(_PROJECT_ID, _holder), 40 days);
 
         // Once the active streak outlasts the longest completed one, it becomes the longest.
@@ -105,9 +117,13 @@ contract JBStickyHookUnitTest is Test {
 
     function test_afterCashOut_lifoSplitsNewestTrancheAndKeepsTimestamp() public {
         uint256 start = vm.getBlockTimestamp();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 10e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant,reentrancy-no-eth)
         vm.warp(start + 30 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant,reentrancy-no-eth)
         vm.warp(start + 40 days);
 
         // Unstaking 7 consumes the newest tranche (5) fully and splits 2 out of the oldest.
@@ -115,12 +131,15 @@ contract JBStickyHookUnitTest is Test {
 
         JBStickyTranche[] memory tranches = _hook.tranchesOf(_PROJECT_ID, _holder);
         assertEq(tranches.length, 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(tranches[0].amount, 8e18);
         assertEq(tranches[0].timestamp, start);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _holder), 8e18);
 
         // A partial unstake doesn't touch the streak.
         assertEq(_hook.streakStartOf(_PROJECT_ID, _holder), start);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.currentStreakOf(_PROJECT_ID, _holder), 40 days);
     }
 
@@ -137,7 +156,9 @@ contract JBStickyHookUnitTest is Test {
                 projectId: _PROJECT_ID,
                 rulesetId: 1,
                 cashOutCount: 1,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 reclaimedAmount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 1}),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 forwardedAmount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 0}),
                 cashOutTaxRate: 0,
                 beneficiary: payable(_holder),
@@ -150,8 +171,11 @@ contract JBStickyHookUnitTest is Test {
     function test_afterCashOut_spansMultipleTranches() public {
         uint256 start = vm.getBlockTimestamp();
         _pay(_holder, 4e18);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         vm.warp(start + 1 weeks);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 3e18);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         vm.warp(start + 2 weeks);
         _pay(_holder, 2e18);
 
@@ -160,29 +184,38 @@ contract JBStickyHookUnitTest is Test {
 
         JBStickyTranche[] memory tranches = _hook.tranchesOf(_PROJECT_ID, _holder);
         assertEq(tranches.length, 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(tranches[0].amount, 3e18);
         assertEq(tranches[0].timestamp, start);
     }
 
     function test_afterPay_recordsTranchesAndStartsStreakOnce() public {
         uint256 start = vm.getBlockTimestamp();
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 10e18);
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _holder), 10e18);
         assertEq(_hook.streakStartOf(_PROJECT_ID, _holder), start);
 
         // A second stake adds a tranche with its own timestamp without moving the streak's start.
+        // forge-lint: disable-next-line(literal-instead-of-constant,reentrancy-no-eth)
         vm.warp(start + 30 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _pay(_holder, 5e18);
 
         JBStickyTranche[] memory tranches = _hook.tranchesOf(_PROJECT_ID, _holder);
         assertEq(tranches.length, 2);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(tranches[0].amount, 10e18);
         assertEq(tranches[0].timestamp, start);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(tranches[1].amount, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(tranches[1].timestamp, start + 30 days);
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _holder), 15e18);
         assertEq(_hook.streakStartOf(_PROJECT_ID, _holder), start);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_hook.currentStreakOf(_PROJECT_ID, _holder), 30 days);
     }
 
@@ -198,8 +231,11 @@ contract JBStickyHookUnitTest is Test {
                 payer: _payer,
                 projectId: _PROJECT_ID,
                 rulesetId: 1,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 amount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 1}),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 forwardedAmount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 0}),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 weight: 1e18,
                 newlyIssuedTokenCount: 1,
                 beneficiary: _holder,
@@ -211,9 +247,11 @@ contract JBStickyHookUnitTest is Test {
 
     function test_beforePay_gatesThirdPartyStakes() public {
         // A stranger can't stake to someone else's position.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         JBBeforePayRecordedContext memory context = _beforePayContext(1e18);
         context.payer = _payer;
         vm.expectRevert(abi.encodeWithSelector(JBStickyHook.JBStickyHook_SenderNotTrusted.selector, _payer, _holder));
+        // forge-lint: disable-next-line(unused-return)
         _hook.beforePayRecordedWith(context);
 
         // A project granter can.
@@ -221,6 +259,7 @@ contract JBStickyHookUnitTest is Test {
         granters[0] = _payer;
         vm.prank(_deployer);
         _hook.setGrantersFor({projectId: _PROJECT_ID, granters: granters});
+        // forge-lint: disable-next-line(unused-return)
         _hook.beforePayRecordedWith(context);
 
         // A holder-trusted sender can, until untrusted.
@@ -228,10 +267,12 @@ contract JBStickyHookUnitTest is Test {
         context.payer = friend;
         vm.prank(_holder);
         _hook.setTrustedSenderFor({projectId: _PROJECT_ID, sender: friend, trusted: true});
+        // forge-lint: disable-next-line(unused-return)
         _hook.beforePayRecordedWith(context);
         vm.prank(_holder);
         _hook.setTrustedSenderFor({projectId: _PROJECT_ID, sender: friend, trusted: false});
         vm.expectRevert(abi.encodeWithSelector(JBStickyHook.JBStickyHook_SenderNotTrusted.selector, friend, _holder));
+        // forge-lint: disable-next-line(unused-return)
         _hook.beforePayRecordedWith(context);
     }
 
@@ -261,8 +302,11 @@ contract JBStickyHookUnitTest is Test {
                 holder: _holder,
                 projectId: _PROJECT_ID,
                 rulesetId: 1,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 cashOutCount: 5e18,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 totalSupply: 100e18,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 surplus: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 100e18}),
                 scopeCashOutsToLocalBalances: false,
                 cashOutTaxRate: 0,
@@ -272,15 +316,22 @@ contract JBStickyHookUnitTest is Test {
         );
 
         assertEq(cashOutTaxRate, 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(effectiveCashOutCount, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(effectiveTotalSupply, 100e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(effectiveSurplusValue, 100e18);
         assertEq(specifications.length, 0);
     }
 
     function test_beforePay_passesWeightThroughAndRequestsCallback() public view {
-        (uint256 weight, JBPayHookSpecification[] memory specifications) =
-            _hook.beforePayRecordedWith(_beforePayContext(1e18));
+        (
+            uint256 weight,
+            JBPayHookSpecification[] memory specifications
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+        ) = _hook.beforePayRecordedWith(_beforePayContext(1e18));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(weight, 1e18);
         assertEq(specifications.length, 1);
         assertEq(address(specifications[0].hook), address(_hook));
@@ -302,15 +353,20 @@ contract JBStickyHookUnitTest is Test {
     /// @param count The number of shares burned.
     function _cashOut(address account, uint256 count) internal {
         // The token reports a burn before reducing its supply, so the hook reads the pre-burn total.
+        // forge-lint: disable-next-item(reentrancy-no-eth)
         vm.mockCall({
             callee: _token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(_reportedSupply)
         });
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         vm.prank(_token);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         _hook.recordBurn({projectId: _PROJECT_ID, holder: account, amount: count});
         _reportedSupply -= count;
+        // forge-lint: disable-next-item(reentrancy-no-eth)
         vm.mockCall({
             callee: _token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(_reportedSupply)
         });
+        // forge-lint: disable-next-item(reentrancy-no-eth)
         vm.mockCall({
             callee: _terminal,
             data: abi.encodePacked(IJBTerminal.currentSurplusOf.selector),
@@ -325,22 +381,29 @@ contract JBStickyHookUnitTest is Test {
     function _pay(address beneficiary, uint256 count) internal {
         uint256 supplyBefore = _reportedSupply;
         _reportedSupply += count;
+        // forge-lint: disable-next-item(reentrancy-no-eth)
         vm.mockCall({
             callee: _token, data: abi.encodeCall(IJBToken.totalSupply, ()), returnData: abi.encode(_reportedSupply)
         });
+        // forge-lint: disable-next-item(reentrancy-no-eth)
         vm.mockCall({
             callee: _terminal,
             data: abi.encodePacked(IJBTerminal.currentSurplusOf.selector),
             returnData: abi.encode(_reportedSupply)
         });
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         vm.prank(_terminal);
+        // forge-lint: disable-next-item(reentrancy-no-eth)
         _hook.afterPayRecordedWith(
             JBAfterPayRecordedContext({
                 payer: _payer,
                 projectId: _PROJECT_ID,
                 rulesetId: 1,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 amount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: count}),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 forwardedAmount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: 0}),
+                // forge-lint: disable-next-line(literal-instead-of-constant)
                 weight: 1e18,
                 newlyIssuedTokenCount: count,
                 beneficiary: beneficiary,
@@ -361,10 +424,12 @@ contract JBStickyHookUnitTest is Test {
         return JBBeforePayRecordedContext({
             terminal: _terminal,
             payer: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             amount: JBTokenAmount({token: address(0), decimals: 18, currency: 0, value: value}),
             projectId: _PROJECT_ID,
             rulesetId: 1,
             beneficiary: _holder,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             weight: 1e18,
             reservedPercent: 0,
             metadata: bytes("")

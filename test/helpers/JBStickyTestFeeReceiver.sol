@@ -39,6 +39,7 @@ contract JBStickyTestFeeReceiver {
     receive() external payable {
         payers.push(IJBPayerTracker(msg.sender).originalPayer());
         if (address(_deployer) != address(0) && payers.length == 1) {
+            // forge-lint: disable-next-item(arbitrary-send-eth)
             nestedProjectId = _deployer.deployStickyFor{value: msg.value}({
                 stakedToken: _underlying,
                 name: "Nested Sticky",

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// forge-lint: disable-next-line(pragma-inconsistent)
 pragma solidity 0.8.28;
 
 import {Sphinx} from "@sphinx-labs/contracts/contracts/foundry/SphinxPlugin.sol";

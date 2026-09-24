@@ -27,6 +27,7 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
     JBStickyDeployer internal _deployer;
 
     /// @notice The account funding each launch.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _launcher = makeAddr("launcher");
 
     /// @notice The observer at the fee-receiver boundary.
@@ -59,7 +60,8 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
         JBStickyTestLauncher forwarder = new JBStickyTestLauncher();
         vm.prank(_launcher);
         uint256 projectId =
-            forwarder.launch{value: _FEE}({deployer: _deployer, underlying: IERC20Metadata(address(usdcToken()))});
+        // forge-lint: disable-next-line(arbitrary-send-eth)
+        forwarder.launch{value: _FEE}({deployer: _deployer, underlying: IERC20Metadata(address(usdcToken()))});
         assertEq(_receiver.payers(0), _launcher);
         assertEq(jbProjects().ownerOf(projectId), address(_deployer));
         assertEq(forwarder.originalPayer(), address(0));
@@ -88,6 +90,7 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
                 JBStickyDeployer.JBStickyDeployer_UnexpectedNft.selector, address(jbProjects()), address(0), expectedId
             )
         );
+        // forge-lint: disable-next-line(arbitrary-send-eth)
         jbProjects().createFor{value: _FEE}(address(_deployer));
     }
 
@@ -103,6 +106,7 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
             )
         );
         vm.prank(_launcher);
+        // forge-lint: disable-next-item(arbitrary-send-eth,unused-return)
         _deployer.deployStickyFor{value: _FEE}({
             stakedToken: IERC20Metadata(address(shares)),
             name: "Sticky Sticky",
@@ -119,6 +123,7 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
         address holder = makeAddr("holder");
         vm.deal(holder, _FEE);
         vm.prank(holder);
+        // forge-lint: disable-next-line(arbitrary-send-eth)
         uint256 projectId = jbProjects().createFor{value: _FEE}(holder);
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -137,6 +142,7 @@ contract JBStickyDeployerRegressionTest is TestBaseWorkflow {
     /// @return projectId The new project ID.
     function _launch() internal returns (uint256 projectId) {
         vm.prank(_launcher);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         return _deployer.deployStickyFor{value: _FEE}({
             stakedToken: IERC20Metadata(address(usdcToken())),
             name: "Sticky Audit",

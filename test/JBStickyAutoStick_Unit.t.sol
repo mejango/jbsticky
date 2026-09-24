@@ -20,6 +20,7 @@ import {IJBStickyDistributor} from "../src/interfaces/IJBStickyDistributor.sol";
 import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
 
 /// @notice A mintable test token with configurable decimals and an optional transfer fee.
+// forge-lint: disable-next-line(multi-contract-file)
 contract MockToken is ERC20 {
     //*********************************************************************//
     // -------------- internal immutable stored properties -------------- //
@@ -91,6 +92,7 @@ contract MockToken is ERC20 {
 }
 
 /// @notice Delivers a configured per-group collectable amount to the beneficiary on collection.
+// forge-lint: disable-next-line(multi-contract-file)
 contract StubDistributor {
     //*********************************************************************//
     // --------------------- public stored properties -------------------- //
@@ -145,6 +147,7 @@ contract StubDistributor {
     /// @param hook The sticky token whose rewards vest.
     /// @param groupId The ID of the reward group.
     /// @param tokenIds The IDs of the positions to vest.
+    // forge-lint: disable-next-line(missing-zero-check)
     function beginVesting(address hook, uint256 groupId, uint256[] calldata tokenIds, IERC20[] calldata) external {
         beginVestingCalls++;
         lastBeginVestingHook = hook;
@@ -160,6 +163,7 @@ contract StubDistributor {
         uint256 groupId,
         uint256[] calldata,
         IERC20[] calldata,
+        // forge-lint: disable-next-line(missing-zero-check)
         address beneficiary
     )
         external
@@ -167,6 +171,7 @@ contract StubDistributor {
         collectionCalls++;
         lastBeneficiary = beneficiary;
         collectedGroupIds.push(groupId);
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         token.mint(beneficiary, hasDeliveryOverride ? deliveryOverride : collectableOf[groupId]);
         collectableOf[groupId] = 0;
         hasDeliveryOverride = false;
@@ -214,13 +219,17 @@ contract StubDistributor {
     /// @return isValid Whether the group ID is valid.
     function isValidGroupId(uint256 groupId) external pure returns (bool isValid) {
         if (groupId == 0) return true;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 minWeeks = groupId / 1000;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 maxWeeks = groupId % 1000;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         return minWeeks != 0 && minWeeks <= 520 && maxWeeks <= 520 && (maxWeeks == 0 || maxWeeks >= minWeeks);
     }
 }
 
 /// @notice Models canonical terminal previews and payments, with configurable share pricing and short mints.
+// forge-lint: disable-next-line(locked-ether,multi-contract-file)
 contract StubTerminal {
     // A library that safely pulls the payment token.
     using SafeERC20 for IERC20;
@@ -278,6 +287,7 @@ contract StubTerminal {
         uint256 projectId,
         address paymentToken,
         uint256 amount,
+        // forge-lint: disable-next-line(missing-zero-check)
         address beneficiary,
         uint256 minReturnedTokens,
         string calldata,
@@ -359,6 +369,7 @@ contract StubTerminal {
 }
 
 /// @notice The auto-stick adapter against a stub distributor, a stub terminal, and mocked deployer and hook reads.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyAutoStickUnitTest is Test {
     //*********************************************************************//
     // ----------------------- internal constants ------------------------ //
@@ -375,27 +386,33 @@ contract JBStickyAutoStickUnitTest is Test {
     JBStickyAutoStick internal _adapter;
 
     /// @notice The mocked Sticky factory address.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _deployer = makeAddr("deployer");
 
     /// @notice The stub distributor delivering rewards.
     StubDistributor internal _distributor;
 
     /// @notice The holder whose rewards are compounded.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("holder");
 
     /// @notice The mocked sticky hook address.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _hook = makeAddr("hook");
 
     /// @notice A third-party keeper who triggers compounds.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _keeper = makeAddr("keeper");
 
     /// @notice The mocked sticky token address.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _stickyToken = makeAddr("stickyToken");
 
     /// @notice The stub terminal receiving payments.
     StubTerminal internal _terminal;
 
     /// @notice The mocked tokens registry address.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _tokens = makeAddr("tokens");
 
     /// @notice The underlying token staked into the project.
@@ -406,19 +423,30 @@ contract JBStickyAutoStickUnitTest is Test {
     //*********************************************************************//
 
     function setUp() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(6);
     }
 
     function test_beginVestingCoversEveryRequestedGroup() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         vm.expectEmit();
+        // forge-lint: disable-next-item(reentrancy-events)
         emit IJBStickyAutoStick.BeganAutoStickVesting(
-            _PROJECT_ID, _holder, address(_underlying), _groups(0, 4000), _keeper
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            _PROJECT_ID,
+            _holder,
+            address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            _groups(0, 4000),
+            _keeper
         );
         vm.prank(_keeper);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.beginVestingFor(_PROJECT_ID, _holder, _groups(0, 4000));
         assertEq(_distributor.beginVestingCalls(), 2);
         assertEq(_distributor.collectedGroupIds(0), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.collectedGroupIds(1), 4000);
     }
 
@@ -428,6 +456,7 @@ contract JBStickyAutoStickUnitTest is Test {
         );
         _adapter.beginVestingFor(_PROJECT_ID, _holder, _group0());
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         _adapter.beginVestingFor(_PROJECT_ID, _holder, _group0());
         assertEq(_distributor.beginVestingCalls(), 1);
@@ -436,10 +465,14 @@ contract JBStickyAutoStickUnitTest is Test {
     }
 
     function test_compoundAcceptsSmallestPositive24DecimalIssuance() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(24);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(1e6);
         (uint256 amount, uint256 count) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(amount, 1e6);
         assertEq(count, 1);
         assertEq(_terminal.lastMinimum(), 1);
@@ -447,29 +480,42 @@ contract JBStickyAutoStickUnitTest is Test {
     }
 
     function test_compoundNormalizes18DecimalMint() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e18, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(7e18);
         (uint256 underlyingAmount, uint256 stickyTokenCount) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 7e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(stickyTokenCount, 7e18);
     }
 
     function test_compoundPullsExactlyTheCollectedAmount() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         // The pre-existing balance stays untouched.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint(_holder, 100e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
 
         vm.expectEmit();
+        // forge-lint: disable-next-line(literal-instead-of-constant,reentrancy-events)
         emit IJBStickyAutoStick.AutoStuck(_PROJECT_ID, _holder, address(_underlying), _group0(), 5e6, 5e18, _keeper);
         vm.prank(_keeper);
         (uint256 underlyingAmount, uint256 stickyTokenCount) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(stickyTokenCount, 5e18);
         // The holder keeps their pre-existing balance; the collected reward moved through to the terminal.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(_holder), 100e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(address(_terminal)), 5e6);
         // No custody or allowance left behind.
         assertEq(_underlying.balanceOf(address(_adapter)), 0);
@@ -477,72 +523,107 @@ contract JBStickyAutoStickUnitTest is Test {
     }
 
     function test_compoundQuotesAndPullsOnlyTheActualDelivery() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint(_holder, 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setDeliveryOverride(3e6);
         (uint256 amount, uint256 count) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(amount, 3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(count, 3e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_terminal.lastMinimum(), 3e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(_holder), 10e6);
         assertEq(_underlying.balanceOf(address(_adapter)), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(address(_terminal)), 3e6);
     }
 
     function test_compoundRechecksActualDeliveredIssuanceBeforePull() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(24);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(1e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setDeliveryOverride(999_999);
         vm.mockCallRevert(
             address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeCall(IERC20.transferFrom, (_holder, address(_adapter), 999_999)),
             "pull must not be reached"
         );
 
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, _PROJECT_ID, 999_999)
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.collectable(), 1e6);
         assertEq(_underlying.balanceOf(_holder), 0);
         assertEq(_underlying.balanceOf(address(_terminal)), 0);
     }
 
     function test_compoundRejectsPriceRoundingToZeroWith18Decimals() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
         _distributor.setCollectable(1);
         _terminal.setSharePrice(2);
+        // forge-lint: disable-next-line(unused-return)
         (JBAutoStickStatus status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(uint256(status), 7);
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, _PROJECT_ID, 1)
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundRejectsShortMintEvenIfTerminalIgnoresMinimum() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         _terminal.setShortfall(1);
         _terminal.setIgnoreMinimum(true);
         vm.expectRevert(
             abi.encodeWithSelector(
-                JBStickyAutoStick.JBStickyAutoStick_InsufficientStickyTokens.selector, 5e18 - 1, 5e18
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                JBStickyAutoStick.JBStickyAutoStick_InsufficientStickyTokens.selector,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                5e18 - 1,
+                // forge-lint: disable-next-line(literal-instead-of-constant)
+                5e18
             )
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.collectable(), 5e6);
         assertEq(_underlying.balanceOf(address(_terminal)), 0);
         assertEq(_underlying.allowance(address(_adapter), address(_terminal)), 0);
     }
 
     function test_compoundRejectsZeroIssuanceBeforeCollection() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(24);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint(_holder, 123);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(999_999);
         vm.mockCallRevert(
             address(_distributor),
@@ -551,89 +632,123 @@ contract JBStickyAutoStickUnitTest is Test {
         );
 
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, _PROJECT_ID, 999_999)
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.collectable(), 999_999);
         assertEq(_distributor.collectionCalls(), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(_holder), 123);
         assertEq(_underlying.balanceOf(address(_adapter)), 0);
         assertEq(_underlying.balanceOf(address(_terminal)), 0);
         assertEq(_underlying.allowance(address(_adapter), address(_terminal)), 0);
+        // forge-lint: disable-next-line(unused-return)
         (,, uint48 lastCompoundedAt,) = _adapter.configOf(_PROJECT_ID, _holder);
         assertEq(lastCompoundedAt, 0);
     }
 
     function test_compoundRevertsBelowMinimum() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(10e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(9e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 9e6, 10e6));
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundRevertsOnFeeOnTransferToken() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         _underlying.setFeeBps(100);
         // The adapter receives less than it pulled, so it reverts with an unexpected token delta.
         vm.expectRevert();
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundRevertsOnShortMint() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         _terminal.setShortfall(1);
         // The terminal's own min-returned-tokens floor trips first; the adapter's expected count is the floor.
         vm.expectRevert("UnderMinReturnedTokens");
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundRevertsOnUnknownProject() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(_deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (99)), abi.encode(address(0)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(_tokens, abi.encodeCall(IJBTokens.tokenOf, (99)), abi.encode(address(0)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidProject.selector, 99));
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _adapter.compoundFor(99, _holder, _group0());
     }
 
     function test_compoundRevertsWhenDisabled() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Disabled.selector, _PROJECT_ID, _holder)
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundRevertsWithoutAllowance() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve(address(_adapter), 3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InsufficientAllowance.selector, 3e6, 5e6)
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundRevertsWithoutTrust() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         _mockTrust(false);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector, _PROJECT_ID, _holder)
         );
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
     }
 
     function test_compoundUsesCurrentSharePriceAndCanonicalBeneficiary() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(10e6);
         _terminal.setSharePrice(2);
         vm.prank(_keeper);
         (uint256 amount, uint256 count) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(amount, 10e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(count, 5e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_terminal.lastMinimum(), 5e18);
         assertEq(_terminal.lastProjectId(), _PROJECT_ID);
         assertEq(_terminal.lastPayer(), address(_adapter));
@@ -643,277 +758,406 @@ contract JBStickyAutoStickUnitTest is Test {
     }
 
     function test_cooldownBlocksAndBoundarySucceeds() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256 availableAt = block.timestamp + 1 days;
         vm.warp(availableAt - 1);
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_Cooldown.selector, availableAt));
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
 
         vm.warp(availableAt);
+        // forge-lint: disable-next-line(unused-return)
         (uint256 underlyingAmount,) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 5e6);
     }
 
     function test_disablePreservesLastCompoundedAt() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(unused-return)
         (,, uint48 lastCompoundedAt,) = _adapter.configOf(_PROJECT_ID, _holder);
         assertEq(lastCompoundedAt, block.timestamp);
 
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: false, minimumAmount: 1e6, cooldown: 1 days});
+        // forge-lint: disable-next-line(unused-return)
         (,, uint48 kept, bool enabled) = _adapter.configOf(_PROJECT_ID, _holder);
         assertEq(kept, lastCompoundedAt);
         assertFalse(enabled);
     }
 
     function test_emptyGroupIdsRevertOnEveryEntryPoint() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
         uint256[] memory none = new uint256[](0);
         bytes memory expected = abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_EmptyGroupIds.selector, 0);
 
         vm.expectRevert(expected);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, none);
         vm.expectRevert(expected);
         _adapter.beginVestingFor(_PROJECT_ID, _holder, none);
         vm.expectRevert(expected);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.statusOf(_PROJECT_ID, _holder, none);
         vm.expectRevert(expected);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.stickRewardsFor(_PROJECT_ID, none);
     }
 
     function test_finiteAllowanceCompoundsUntilExhausted() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve(address(_adapter), 5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.warp(block.timestamp + 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(unused-return)
         (JBAutoStickStatus status,, uint256 allowance,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(allowance, 0);
         assertEq(uint256(status), uint256(JBAutoStickStatus.InsufficientAllowance));
     }
 
     function test_groupIdsMustBeStrictlyAscendingOnEveryEntryPoint() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256[] memory duplicated = _groups(1000, 1000);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         uint256[] memory descending = _groups(1000, 0);
         bytes memory duplicatedError = abi.encodeWithSelector(
-            JBStickyAutoStick.JBStickyAutoStick_GroupIdsNotAscending.selector, uint256(1000), uint256(1000)
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            JBStickyAutoStick.JBStickyAutoStick_GroupIdsNotAscending.selector,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            uint256(1000),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            uint256(1000)
         );
         bytes memory descendingError = abi.encodeWithSelector(
-            JBStickyAutoStick.JBStickyAutoStick_GroupIdsNotAscending.selector, uint256(1000), uint256(0)
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            JBStickyAutoStick.JBStickyAutoStick_GroupIdsNotAscending.selector,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            uint256(1000),
+            uint256(0)
         );
 
         vm.expectRevert(duplicatedError);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, duplicated);
         vm.expectRevert(descendingError);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, descending);
         vm.expectRevert(duplicatedError);
         _adapter.beginVestingFor(_PROJECT_ID, _holder, duplicated);
         vm.expectRevert(descendingError);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.statusOf(_PROJECT_ID, _holder, descending);
         vm.expectRevert(duplicatedError);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.stickRewardsFor(_PROJECT_ID, duplicated);
 
         // The same groups in ascending order are accepted.
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         (JBAutoStickStatus status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _groups(0, 1000));
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
     }
 
     function test_minimumAppliesToTheCombinedTotal() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(5e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectableFor(2000, 2e6);
 
+        // forge-lint: disable-next-line(unused-return)
         (JBAutoStickStatus status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 3e6, 5e6));
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
 
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         (uint256 underlyingAmount,) = _adapter.compoundFor(_PROJECT_ID, _holder, _groups(0, 2000));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 5e6);
     }
 
     function test_multiGroupCompoundSumsEveryGroupAndCollectsEach() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectableFor(2000, 2e6);
 
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         (JBAutoStickStatus status, uint256 collectable,,) = _adapter.statusOf(_PROJECT_ID, _holder, _groups(0, 2000));
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(collectable, 5e6);
 
         vm.expectEmit();
+        // forge-lint: disable-next-item(reentrancy-events)
         emit IJBStickyAutoStick.AutoStuck(
-            _PROJECT_ID, _holder, address(_underlying), _groups(0, 2000), 5e6, 5e18, _keeper
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            _PROJECT_ID,
+            _holder,
+            address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            _groups(0, 2000),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            5e6,
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+            5e18,
+            _keeper
         );
         vm.prank(_keeper);
-        (uint256 underlyingAmount, uint256 stickyTokenCount) =
-            _adapter.compoundFor(_PROJECT_ID, _holder, _groups(0, 2000));
+        (
+            uint256 underlyingAmount,
+            uint256 stickyTokenCount
+            // forge-lint: disable-next-line(literal-instead-of-constant)
+        ) = _adapter.compoundFor(_PROJECT_ID, _holder, _groups(0, 2000));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(stickyTokenCount, 5e18);
         assertEq(_distributor.collectionCalls(), 2);
         assertEq(_distributor.collectedGroupIds(0), 0);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.collectedGroupIds(1), 2000);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(address(_terminal)), 5e6);
         assertEq(_underlying.balanceOf(_holder), 0);
     }
 
     function test_projectGranterStatusStandsInForTrust() public {
         // A project whose creator pre-approved the adapter as a granter needs no per-holder trust tx.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         _mockTrust(false);
         _mockGranter(true);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(unused-return)
         (JBAutoStickStatus status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
+        // forge-lint: disable-next-line(unused-return)
         (uint256 underlyingAmount,) = _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 5e6);
     }
 
     function test_setConfigOnlyAffectsCaller() public {
         vm.prank(_keeper);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: true, minimumAmount: 1e6, cooldown: 1 days});
+        // forge-lint: disable-next-line(unused-return)
         (,,, bool enabled) = _adapter.configOf(_PROJECT_ID, _holder);
         assertFalse(enabled);
     }
 
     function test_setConfigRevertsOnCooldownOutOfRange() public {
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidCooldown.selector, 1 days - 1)
         );
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: true, minimumAmount: 1e6, cooldown: 1 days - 1});
 
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidCooldown.selector, 30 days + 1)
         );
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: true, minimumAmount: 1e6, cooldown: 30 days + 1});
     }
 
     function test_setConfigRevertsOnUnknownProject() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(_deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (99)), abi.encode(address(0)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(_tokens, abi.encodeCall(IJBTokens.tokenOf, (99)), abi.encode(address(0)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidProject.selector, 99));
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: 99, enabled: true, minimumAmount: 1e6, cooldown: 1 days});
     }
 
     function test_setConfigRevertsOnZeroMinimum() public {
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidMinimum.selector, 0));
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: true, minimumAmount: 0, cooldown: 1 days});
     }
 
     function test_setConfigStoresAndEmits() public {
         vm.expectEmit();
+        // forge-lint: disable-next-line(literal-instead-of-constant,reentrancy-events)
         emit IJBStickyAutoStick.SetAutoStick(_PROJECT_ID, _holder, true, 5e6, 2 days, _holder);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: true, minimumAmount: 5e6, cooldown: 2 days});
 
         (uint128 minimumAmount, uint48 cooldown, uint48 lastCompoundedAt, bool enabled) =
             _adapter.configOf(_PROJECT_ID, _holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(minimumAmount, 5e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(cooldown, 2 days);
         assertEq(lastCompoundedAt, 0);
         assertTrue(enabled);
     }
 
     function test_statusOfRejectsGroupsTheDistributorCannotServe() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
 
         // Group 7 has no `minWeeks`, so the distributor would reject its collection while quoting nothing for it.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidGroupId.selector, 7));
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _adapter.statusOf(_PROJECT_ID, _holder, _groups(0, 7));
 
         // Every valid group encoding passes the check.
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         (JBAutoStickStatus status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _groups(1000, 520_520));
         assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
     }
 
     function test_statusOfWalksTheLadder() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(_deployer, abi.encodeCall(IJBStickyDeployer.stakedTokenOf, (99)), abi.encode(address(0)));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.mockCall(_tokens, abi.encodeCall(IJBTokens.tokenOf, (99)), abi.encode(address(0)));
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         (JBAutoStickStatus status,,,) = _adapter.statusOf(99, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.InvalidProject));
 
+        // forge-lint: disable-next-line(unused-return)
         (status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Disabled));
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(10e6, 1 days);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(5e6);
+        // forge-lint: disable-next-line(unused-return)
         (status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(20e6);
         _mockTrust(false);
+        // forge-lint: disable-next-line(unused-return)
         (status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.NotTrusted));
 
         _mockTrust(true);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve(address(_adapter), 1e6);
+        // forge-lint: disable-next-line(unused-return)
         (status,,,) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.InsufficientAllowance));
 
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
         (JBAutoStickStatus ready, uint256 collectable, uint256 allowance, uint256 nextCompoundAt) =
             _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(ready), uint256(JBAutoStickStatus.Ready));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(collectable, 20e6);
         assertEq(allowance, type(uint256).max);
         assertEq(nextCompoundAt, 0);
 
+        // forge-lint: disable-next-line(unused-return)
         _adapter.compoundFor(_PROJECT_ID, _holder, _group0());
+        // forge-lint: disable-next-line(unused-return)
         (status,,, nextCompoundAt) = _adapter.statusOf(_PROJECT_ID, _holder, _group0());
         assertEq(uint256(status), uint256(JBAutoStickStatus.Cooldown));
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(nextCompoundAt, block.timestamp + 1 days);
     }
 
     function test_stickRewardsNeedsNoConfig() public {
         // No setConfigFor, no cooldown, no minimum — the holder's own call is the consent.
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(3e6);
         vm.prank(_holder);
         (uint256 underlyingAmount, uint256 stickyTokenCount) = _adapter.stickRewardsFor(_PROJECT_ID, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 3e6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(stickyTokenCount, 3e18);
         assertEq(_underlying.balanceOf(address(_adapter)), 0);
 
         // Immediately again — no cooldown for holder-initiated claims.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(2e6);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         (underlyingAmount,) = _adapter.stickRewardsFor(_PROJECT_ID, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 2e6);
     }
 
     function test_stickRewardsRejectsZeroIssuanceBeforeCollection() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _setUpWithDecimals(24);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(999_999);
 
         vm.expectRevert(
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_ZeroIssuance.selector, _PROJECT_ID, 999_999)
         );
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.stickRewardsFor(_PROJECT_ID, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_distributor.collectable(), 999_999);
         assertEq(_underlying.balanceOf(_holder), 0);
         assertEq(_underlying.balanceOf(address(_terminal)), 0);
@@ -921,28 +1165,35 @@ contract JBStickyAutoStickUnitTest is Test {
 
     function test_stickRewardsRevertsWithNothingClaimable() public {
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_BelowMinimum.selector, 0, 1));
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.stickRewardsFor(_PROJECT_ID, _group0());
     }
 
     function test_stickRewardsRevertsWithoutTrustOrGranter() public {
         _mockTrust(false);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(3e6);
         vm.expectRevert(
             abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_NotTrusted.selector, _PROJECT_ID, _holder)
         );
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _adapter.stickRewardsFor(_PROJECT_ID, _group0());
     }
 
     function test_stickRewardsUsesCallerAsHolder() public {
         // A third party calling sticks THEIR OWN (empty) rewards — they cannot touch the holder's.
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(3e6);
         vm.mockCall(
             _hook,
@@ -952,6 +1203,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.prank(_keeper);
         // The keeper has no allowance set; their claim path is their own, not the holder's.
         vm.expectRevert();
+        // forge-lint: disable-next-line(unused-return)
         _adapter.stickRewardsFor(_PROJECT_ID, _group0());
         assertEq(_underlying.balanceOf(_holder), 0);
     }
@@ -960,16 +1212,23 @@ contract JBStickyAutoStickUnitTest is Test {
         _mockTrust(false);
         _mockGranter(true);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _distributor.setCollectable(3e6);
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         (uint256 underlyingAmount,) = _adapter.stickRewardsFor(_PROJECT_ID, _group0());
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(underlyingAmount, 3e6);
     }
 
     function testFuzz_compoundNormalizesAcrossAmounts(uint256 amount, uint256 preExisting) public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         amount = bound(amount, 1e6, 1e32);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         preExisting = bound(preExisting, 0, 1e32);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _enable(1e6, 1 days);
         _underlying.mint(_holder, preExisting);
         _distributor.setCollectable(amount);
@@ -991,7 +1250,9 @@ contract JBStickyAutoStickUnitTest is Test {
         assertEq(uint256(JBAutoStickStatus.Cooldown), 3);
         assertEq(uint256(JBAutoStickStatus.BelowMinimum), 4);
         assertEq(uint256(JBAutoStickStatus.NotTrusted), 5);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(uint256(JBAutoStickStatus.InsufficientAllowance), 6);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(uint256(JBAutoStickStatus.ZeroIssuance), 7);
     }
 
@@ -1007,6 +1268,7 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.prank(_holder);
         _adapter.setConfigFor({projectId: _PROJECT_ID, enabled: true, minimumAmount: minimumAmount, cooldown: cooldown});
         vm.prank(_holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve(address(_adapter), type(uint256).max);
     }
 

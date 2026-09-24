@@ -11,6 +11,7 @@ import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
 import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
 
 /// @notice An 18-decimal ERC-20 that serves as both the staked and the reward token of the snapshot tests.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickySnapshotTestToken is ERC20 {
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
@@ -31,12 +32,14 @@ contract JBStickySnapshotTestToken is ERC20 {
 }
 
 /// @notice Characterizes the pinned distributor's snapshot timing against real V6 contracts.
+// forge-lint: disable-next-line(multi-contract-file)
 contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
     //*********************************************************************//
 
     /// @notice The account that stakes for one block to capture the reward snapshots.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _attacker = makeAddr("snapshot attacker");
 
     /// @notice The deployer that launches the Sticky project.
@@ -46,6 +49,7 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
     JBStickyDistributor internal _distributor;
 
     /// @notice The account that stakes before every test.
+    // forge-lint: disable-next-line(function-init-state)
     address internal _holder = makeAddr("established holder");
 
     /// @notice The Sticky project's ID.
@@ -75,6 +79,7 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
         });
         uint256 fee = jbProjects().creationFee();
         vm.deal(address(this), fee);
+        // forge-lint: disable-next-item(arbitrary-send-eth)
         _projectId = _deployer.deployStickyFor{value: fee}({
             stakedToken: IERC20Metadata(address(_underlying)),
             name: "Sticky reward audit",
@@ -85,15 +90,21 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
             soulbound: true
         });
         _stickyToken = jbTokens().tokenOf(_projectId);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({holder: _holder, amount: 100e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({holder: _attacker, amount: 900e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _underlying.mint({holder: address(this), amount: 200e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant,unused-return)
         _underlying.approve({spender: address(_distributor), value: 200e18});
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake({holder: _holder, amount: 100e18});
         vm.roll(vm.getBlockNumber() + 1);
     }
 
     function test_fundingPinsOnlyCurrentRoundWhilePokeAlsoPinsNextRound() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _fund(100e18);
         assertEq(_distributor.roundSnapshotBlock(0), vm.getBlockNumber() - 1);
         assertEq(_distributor.roundSnapshotBlock(1), 0);
@@ -105,6 +116,7 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
 
     function test_oneBlockStakeCapturesTwoWeeklyRoundsWithAllPrincipalRecovered() public {
         // Hold ninety percent of shares for one block, then permissionlessly fix both reward snapshots.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _stake({holder: _attacker, amount: 900e18});
         uint256 attackerBlock = vm.getBlockNumber();
         vm.roll(vm.getBlockNumber() + 1);
@@ -121,18 +133,23 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
             projectId: _projectId,
             cashOutCount: cashOutCount,
             tokenToReclaim: address(_underlying),
+            // forge-lint: disable-next-line(literal-instead-of-constant)
             minTokensReclaimed: 900e18,
             beneficiary: payable(_attacker),
             metadata: bytes("")
         });
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(reclaimed, 900e18);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         assertEq(_underlying.balanceOf(_attacker), 900e18);
         assertEq(_stickyToken.balanceOf(_attacker), 0);
         assertEq(_deployer.HOOK().stakedBalanceOf(_projectId, _attacker), 0);
 
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _fund(100e18);
         vm.warp(_distributor.roundStartTimestamp(1));
         vm.roll(vm.getBlockNumber() + 1);
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         _fund(100e18);
 
         vm.warp(_distributor.roundStartTimestamp(2));
@@ -168,6 +185,7 @@ contract JBStickyRewardSnapshotTest is TestBaseWorkflow {
     /// @param amount The amount of the underlying token to stake.
     function _stake(address holder, uint256 amount) internal {
         vm.startPrank(holder);
+        // forge-lint: disable-next-line(unused-return)
         _underlying.approve({spender: address(jbMultiTerminal()), value: amount});
         jbMultiTerminal().pay({
             projectId: _projectId,
