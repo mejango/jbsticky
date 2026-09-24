@@ -817,7 +817,8 @@ contract JBStickyHook is ERC165, IJBStickyHook {
 
         // Tokens joining in the epoch of the newest tranche share its age, so they extend it instead of a new entry.
         // Whole-epoch comparison; a validator moving the timestamp within a block cannot change entitlements.
-        // forge-lint: disable-next-line(block-timestamp)
+        // forge-lint: disable-next-item(block-timestamp)
+        // slither-disable-next-line incorrect-equality
         if (index != 0 && uint256(_tranchesOf[projectId][holder][index - 1].timestamp) / EPOCH_DURATION == epoch) {
             // Edit the newest tranche in place; its index becomes the cumulative endpoint written below.
             index -= 1;

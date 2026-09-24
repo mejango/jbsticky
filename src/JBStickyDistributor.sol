@@ -429,6 +429,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     {
         // Round 0 has no completed reward rounds behind it, so nothing can be claimed yet.
         uint256 round = currentRound();
+        // slither-disable-next-line incorrect-equality
         if (round == 0) return;
 
         // The current round's funding becomes claimable only once a later round starts. Sticky holders have no tier
@@ -506,6 +507,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         nextClaimRoundOf[ctx.hook][ctx.groupId][tokenId][token] = newNextClaimRound;
 
         // Avoid an empty vesting entry when no past round allocates rewards to this holder.
+        // slither-disable-next-line incorrect-equality
         if (tokenAmount == 0) return 0;
 
         // All accumulated past rewards start a single fresh vesting schedule at the claim round.
@@ -550,6 +552,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
 
         // The default group weighs delegated votes at the round's snapshot block. Tenure groups weigh the stake still
         // held in the round's window, read live: exits only shrink it, and nothing newer can enter.
+        // slither-disable-next-line incorrect-equality
         uint256 tokenStakeAmount = groupId == 0
             ? _tokenStakeAt({hook: hook, tokenId: tokenId, blockNumber: rewardRound.snapshotBlock})
             : _windowStakeOf({
@@ -560,6 +563,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
             });
 
         // Zero-weight holders advance their cursor without consuming inventory.
+        // slither-disable-next-line incorrect-equality
         if (tokenStakeAmount == 0) return 0;
 
         // Split the pot pro-rata across the recorded denominator.
@@ -602,7 +606,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
 
         // Tenure groups resolve the hook's project once for the whole walk; the default group never needs it.
         // One read per claimed holder and reward token, not per round.
-        // forge-lint: disable-next-line(calls-loop)
+        // forge-lint: disable-next-item(calls-loop)
+        // slither-disable-next-line incorrect-equality
         uint256 projectId = groupId == 0 ? 0 : IJBStickyToken(hook).PROJECT_ID();
 
         // Walk every unclaimed round; the caller bounds the range to completed rounds.
@@ -694,6 +699,7 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @param amount The accepted amount.
     function _recordFunding(address hook, uint256 groupId, IERC20 token, uint256 amount) internal {
         // Zero-value funding creates no reward round and changes no balance.
+        // slither-disable-next-line incorrect-equality
         if (amount == 0) return;
 
         _recordRewardFunding({hook: hook, groupId: groupId, token: token, amount: amount});
@@ -833,6 +839,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         override
         returns (uint256 totalStakedAmount)
     {
+        // Group 0 is the default vote-weighted pot; every other ID encodes a tenure window.
+        // slither-disable-next-line incorrect-equality
         if (groupId == 0) return IJBActiveVotes(hook).getPastTotalActiveVotes(blockNumber);
 
         // Funding always lands in the current round, whose start pins the window.
@@ -864,6 +872,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     function _windowOf(uint256 groupId, uint256 round) internal view returns (uint256 lo, uint256 hi, bool isEmpty) {
         uint256 snapshotEpoch = snapshotEpochOf(round);
         uint256 minWeeks = groupId / CRITERIA_BASE;
+        // Decodes the group ID's low digits; nothing here is random.
+        // slither-disable-next-line weak-prng
         uint256 maxWeeks = groupId % CRITERIA_BASE;
 
         // The window's top would sit before the first epoch, so nothing can be old enough.
@@ -871,6 +881,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         if (isEmpty) return (lo, hi, isEmpty);
 
         hi = snapshotEpoch - minWeeks;
+        // A zero `maxWeeks` encodes an unbounded window, not a computed amount.
+        // slither-disable-next-line incorrect-equality
         lo = (maxWeeks == 0 || snapshotEpoch < maxWeeks) ? 0 : snapshotEpoch - maxWeeks;
     }
 
@@ -927,7 +939,8 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
         (uint256 lo, uint256 hi, bool isEmpty) = _windowOf({groupId: groupId, round: round});
         if (isEmpty) return 0;
 
-        // Bounded windows sum exactly their buckets.
+        // Bounded windows sum exactly their buckets. The modulo decodes the group ID's `maxWeeks` digits.
+        // slither-disable-next-line weak-prng
         if (groupId % CRITERIA_BASE != 0) {
             return STICKY_HOOK.netStakedWithin({projectId: projectId, fromEpoch: lo, toEpoch: hi});
         }
