@@ -157,11 +157,16 @@ test('mainnet and testnet routes are never mixed', async () => {
   await assert.rejects(api.validateRoute(route), /same environment/);
 });
 
-test('receiver factory is verified against the intended distributor before creating a beneficiary', async () => {
-  assert.equal(SEL.predictReceiverOf, keccak256('0x' + Buffer.from('predictReceiverOf(address)').toString('hex')).slice(0, 10));
-  const { api, route, receiver } = fixture();
+test('receiver factory is verified against the intended distributor before creating a per-group beneficiary', async () => {
+  assert.equal(SEL.predictReceiverOf, keccak256('0x' + Buffer.from('predictReceiverOf(address,uint256)').toString('hex')).slice(0, 10));
+  const { api, route, receiver, calls } = fixture();
+  assert.equal(await api.receiverFor(route.destination, A(80), A(81), A(51), 4008n), receiver);
+  const predicted = calls.find(call => call.method === 'eth_call' && call.params[0].data.startsWith(SEL.predictReceiverOf));
+  assert.equal(predicted.url, route.destination.rpcUrl);
+  assert.equal(predicted.params[0].data, SEL.predictReceiverOf + addressWord(A(80)) + word(4008));
   assert.equal(await api.receiverFor(route.destination, A(80), A(81), A(51)), receiver);
-  await assert.rejects(api.receiverFor(route.destination, A(80), A(81), A(52)), /distributor/);
+  assert.ok(calls.some(call => call.method === 'eth_call' && call.params[0].data === SEL.predictReceiverOf + addressWord(A(80)) + word(0)));
+  await assert.rejects(api.receiverFor(route.destination, A(80), A(81), A(52), 4008n), /distributor/);
 });
 
 test('prepare returns exact, chain-pinned approval and protected queue requests with a recovery tag', async () => {

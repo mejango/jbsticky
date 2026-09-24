@@ -34,7 +34,9 @@ comes from direct JSON-RPC reads the browser makes against the project's chain.
   depends on the portion of supply redeemed; zero tax does not waive other applicable terminal fees.
 - **Unowned backing** — funds present when no shares exist are permanently excluded when a new
   deposit establishes supply. New entrants cannot redeem these funds.
-- **Rewards** — the configured distributor uses share-vote snapshots, not streak age. Auto-stick
+- **Rewards** — each funding names its group: everyone at the round's snapshot (group 0), or only
+  stake held for a minimum number of weeks when the round started (`minWeeks * 1000 + maxWeeks`).
+  Stake-age rewards pay only stake still held at claim time; exiting first forfeits them. Auto-stick
   quotes during execution and rejects zero issuance; earlier collection to the holder's wallet can
   leave a keeper with nothing to compound.
 

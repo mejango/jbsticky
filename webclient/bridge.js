@@ -28,7 +28,7 @@
     outboxOf: "0x802c8fa0", inboxOf: "0x6d9e384b", executedLeafHashOf: "0x4035d3b1",
     CCIP_ROUTER: "0xfe5f42ca", OPMESSENGER: "0xfc8fa43d", ARBINBOX: "0xb1012368", LAYER: "0xc86719b7", GATEWAYROUTER: "0xdefbb697",
     toRemoteFee: "0x42115915", toRemote: "0xb71c1179", prepare: "0xaf629bbb", claim: "0xcbb2adce",
-    DISTRIBUTOR: "0x9c26149f", predictReceiverOf: "0x0a88000f", decimals: "0x313ce567",
+    DISTRIBUTOR: "0x9c26149f", predictReceiverOf: "0x330b5eea", decimals: "0x313ce567",
     symbol: "0x95d89b41", balanceOf: "0x70a08231", allowance: "0xdd62ed3e", approve: "0x095ea7b3",
   });
   function address(value) {
@@ -141,11 +141,12 @@
       const symbol = await call(runtime, token, "symbol").then(text).catch(() => token.slice(0, 8));
       return { symbol: symbol || token.slice(0, 8), decimals };
     }
-    async function receiverFor(destination, stickyToken, rewardReceiverFactory, distributor) {
+    // One receiver per (sticky token, reward group); the factory rejects a group the distributor cannot fund.
+    async function receiverFor(destination, stickyToken, rewardReceiverFactory, distributor, groupId = 0n) {
       await chain(destination);
       await code(destination, rewardReceiverFactory);
       if (addr(await call(destination, rewardReceiverFactory, "DISTRIBUTOR")) !== address(distributor)) throw new Error("The destination reward receiver factory does not use this project's distributor.");
-      return addr(await call(destination, rewardReceiverFactory, "predictReceiverOf", aw(stickyToken)));
+      return addr(await call(destination, rewardReceiverFactory, "predictReceiverOf", aw(stickyToken) + word(groupId)));
     }
     async function validateRoute(route, { sending = false, preparing = false } = {}) {
       const { source, destination, sourceSucker, destinationSucker, sourceToken, rewardToken, sourceProjectId, destinationProjectId, backingToken, remoteBackingToken } = route;

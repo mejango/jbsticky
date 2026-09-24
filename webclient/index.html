@@ -691,17 +691,26 @@
         <div id="tab-rewards" class="hide">
           <section>
             <h2>Send airdrop rewards</h2>
-            <p class="mut">Rewards are proportional to Sticky balances at the round's snapshot. Streak age does not increase your share.</p>
+            <p class="mut">Each reward names who it goes to: everyone holding at the round's snapshot, or only stake
+              that had been held for a minimum number of weeks when the round started. Shares are pro-rata within
+              that group.</p>
             <button id="open-fund">Send</button>
             <details class="token-contracts" style="margin-top:14px">
               <summary>Recurring rewards from a Juicebox project's splits</summary>
               <p class="mut" style="margin:10px 0 6px">In any Juicebox project's reserved token splits (or payout
-                splits), add a split with the reward distributor as its hook and this sticky token as its
-                beneficiary. Every distribution then funds that round's rewards for stickers directly — no manual
-                sends, nothing to settle. The routed project's token must be deployed as an ERC-20.</p>
+                splits), add a split with the reward distributor as its hook, this sticky token as its
+                beneficiary, and the reward group as its project ID. Every distribution then funds that round's
+                rewards for stickers directly — no manual sends, nothing to settle. The routed project's token must
+                be deployed as an ERC-20. A project ID that is not a valid group funds everyone.</p>
+              <div class="row">
+                <div><label for="rr-min-weeks">MINIMUM STAKE AGE (WEEKS)</label><input id="rr-min-weeks" placeholder="0" inputmode="numeric"></div>
+                <div><label for="rr-max-weeks">MAXIMUM STAKE AGE (WEEKS)</label><input id="rr-max-weeks" placeholder="no limit" inputmode="numeric"></div>
+              </div>
+              <p class="mut" id="rr-group-note" style="margin:6px 0"></p>
               <table><tbody>
                 <tr><th style="width:140px">SPLIT HOOK</th><td style="word-break:break-all" id="rr-hook">–</td></tr>
                 <tr><th>BENEFICIARY</th><td style="word-break:break-all" id="rr-beneficiary">–</td></tr>
+                <tr><th>PROJECT ID</th><td id="rr-group">–</td></tr>
               </tbody></table>
               <div class="row" style="gap:8px">
                 <button id="rr-copy-hook" class="ghost" style="flex:0 1 auto">Copy hook address</button>
@@ -712,9 +721,11 @@
           <section>
             <h2>Your rewards</h2>
             <table>
-              <thead><tr><th>TOKEN</th><th>AMOUNT</th><th>AVAILABLE</th><th></th></tr></thead>
+              <thead><tr><th>WHO</th><th>TOKEN</th><th>FUNDED</th><th>AVAILABLE</th><th></th></tr></thead>
               <tbody id="rewards-list"></tbody>
             </table>
+            <p class="mut hide" id="rewards-tenure-note">Stake-age rewards pay only stake you still hold. Claim them
+              before unsticking; an allocation you exit before claiming stays in the pot.</p>
             <div class="row">
               <div><label for="r-check">CHECK ANOTHER REWARD TOKEN</label><input id="r-check" placeholder="0x…"></div>
             </div>
@@ -893,12 +904,17 @@
     </div>
     <div id="r-token-wrap" style="flex:1;min-width:140px"><label for="r-token">AIRDROPPED TOKEN</label><input id="r-token" placeholder="0x… or ETH"></div>
   </div>
+  <div class="row">
+    <div><label for="r-min-weeks">MINIMUM STAKE AGE (WEEKS)</label><input id="r-min-weeks" placeholder="0 — everyone" inputmode="numeric"></div>
+    <div><label for="r-max-weeks">MAXIMUM STAKE AGE (WEEKS)</label><input id="r-max-weeks" placeholder="no limit" inputmode="numeric"></div>
+  </div>
+  <p class="mut" id="r-group-note" style="margin:4px 0 0"></p>
   <div id="fund-direct" class="fund-direct">
     <div id="r-amount-wrap"><label for="r-amount">AMOUNT</label><input id="r-amount" placeholder="100"></div>
     <button id="fund">Send</button>
   </div>
   <div id="fund-bridge" class="hide">
-    <p class="mut" id="bridge-recipe">Bridge a supported Juicebox project token to this project's reward receiver. Once it arrives, claim and settle it into rewards here.</p>
+    <p class="mut" id="bridge-recipe">Bridge a supported Juicebox project token to this project's reward receiver for the chosen group. Once it arrives, claim and settle it into rewards here.</p>
     <label for="bridge-source-token">Token address on origin chain</label>
     <input id="bridge-source-token" placeholder="0x…" autocomplete="off">
     <label for="bridge-amount">Amount to bridge</label>
@@ -913,6 +929,7 @@
     <input id="bridge-reward-token" placeholder="0x…" autocomplete="off">
     <table><tbody>
       <tr><th style="width:150px">RECEIVER ADDRESS</th><td style="word-break:break-all" id="receiver-addr">–</td></tr>
+      <tr><th>REWARDS</th><td id="receiver-group">–</td></tr>
       <tr><th>UNSETTLED</th><td id="receiver-pending">–</td></tr>
     </tbody></table>
     <button id="settle" class="ghost">Settle arrivals into rewards</button>
