@@ -89,6 +89,14 @@ contract StubDistributor {
         return collectableOf[groupId];
     }
 
+    /// @notice Mirrors the Sticky distributor's group rule: 0, or `minWeeks * 1000 + maxWeeks` within bounds.
+    function isValidGroupId(uint256 groupId) external pure returns (bool) {
+        if (groupId == 0) return true;
+        uint256 minWeeks = groupId / 1000;
+        uint256 maxWeeks = groupId % 1000;
+        return minWeeks != 0 && minWeeks <= 520 && maxWeeks <= 520 && (maxWeeks == 0 || maxWeeks >= minWeeks);
+    }
+
     function beginVesting(address hook, uint256 groupId, uint256[] calldata tokenIds, IERC20[] calldata) external {
         beginVestingCalls++;
         lastBeginVestingHook = hook;
@@ -684,6 +692,48 @@ contract JBStickyAutoStickUnitTest is Test {
         vm.expectRevert(expected);
         vm.prank(holder);
         adapter.stickRewardsFor(PROJECT_ID, none);
+    }
+
+    function test_groupIdsMustBeStrictlyAscendingOnEveryEntryPoint() public {
+        _enable(1e6, 1 days);
+        distributor.setCollectable(5e6);
+        uint256[] memory duplicated = _groups(1000, 1000);
+        uint256[] memory descending = _groups(1000, 0);
+        bytes memory duplicatedError = abi.encodeWithSelector(
+            JBStickyAutoStick.JBStickyAutoStick_GroupIdsNotAscending.selector, uint256(1000), uint256(1000)
+        );
+        bytes memory descendingError = abi.encodeWithSelector(
+            JBStickyAutoStick.JBStickyAutoStick_GroupIdsNotAscending.selector, uint256(1000), uint256(0)
+        );
+
+        vm.expectRevert(duplicatedError);
+        adapter.compoundFor(PROJECT_ID, holder, duplicated);
+        vm.expectRevert(descendingError);
+        adapter.compoundFor(PROJECT_ID, holder, descending);
+        vm.expectRevert(duplicatedError);
+        adapter.beginVestingFor(PROJECT_ID, holder, duplicated);
+        vm.expectRevert(descendingError);
+        adapter.statusOf(PROJECT_ID, holder, descending);
+        vm.expectRevert(duplicatedError);
+        vm.prank(holder);
+        adapter.stickRewardsFor(PROJECT_ID, duplicated);
+
+        // The same groups in ascending order are accepted.
+        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder, _groups(0, 1000));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
+    }
+
+    function test_statusOfRejectsGroupsTheDistributorCannotServe() public {
+        _enable(1e6, 1 days);
+        distributor.setCollectable(5e6);
+
+        // Group 7 has no `minWeeks`, so the distributor would reject its collection while quoting nothing for it.
+        vm.expectRevert(abi.encodeWithSelector(JBStickyAutoStick.JBStickyAutoStick_InvalidGroupId.selector, 7));
+        adapter.statusOf(PROJECT_ID, holder, _groups(0, 7));
+
+        // Every valid group encoding passes the check.
+        (JBAutoStickStatus status,,,) = adapter.statusOf(PROJECT_ID, holder, _groups(1000, 520_520));
+        assertEq(uint256(status), uint256(JBAutoStickStatus.BelowMinimum));
     }
 
     function test_multiGroupCompoundSumsEveryGroupAndCollectsEach() public {

@@ -53,6 +53,12 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @param count The number of reward groups requested.
     error JBStickyAutoStick_EmptyGroupIds(uint256 count);
 
+    /// @notice Thrown when the requested reward groups are not strictly ascending, so a repeated group cannot count
+    /// its collectable amount twice toward the holder's minimum.
+    /// @param previous The group ID before the offending entry.
+    /// @param next The offending group ID.
+    error JBStickyAutoStick_GroupIdsNotAscending(uint256 previous, uint256 next);
+
     /// @notice Thrown when the holder's allowance cannot cover the collectable reward, which is collected to their
     /// wallet before being staked.
     /// @param allowance The current allowance to this adapter.
@@ -68,6 +74,11 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// growth.
     /// @param cooldown The requested cooldown in seconds.
     error JBStickyAutoStick_InvalidCooldown(uint256 cooldown);
+
+    /// @notice Thrown when a status check names a reward group the distributor cannot fund or collect from, which
+    /// execution would reject.
+    /// @param groupId The rejected group ID.
+    error JBStickyAutoStick_InvalidGroupId(uint256 groupId);
 
     /// @notice Thrown when the requested minimum reward amount is zero, so every saved configuration stays usable.
     /// @param minimumAmount The requested minimum in underlying-token decimals.
@@ -165,7 +176,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @dev Permissionless, but only for holders with auto-stick enabled. Moves no reward tokens.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose rewards should begin vesting.
-    /// @param groupIds The reward groups to begin vesting.
+    /// @param groupIds The reward groups to begin vesting, strictly ascending.
     function beginVestingFor(uint256 projectId, address holder, uint256[] calldata groupIds) external override {
         // Vesting nothing would only spend the keeper's gas.
         _requireGroupIds(groupIds);
@@ -213,7 +224,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// amount, terminal, or beneficiary. The whole flow is atomic — if any step fails, the collection reverts too.
     /// @param projectId The ID of the sticky project to compound into.
     /// @param holder The holder whose rewards are compounded.
-    /// @param groupIds The reward groups to collect from.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
     function compoundFor(
@@ -321,7 +332,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// The rewards route through the holder's wallet, so their allowance must cover the claim. The hook must accept
     /// this adapter as a payer through per-holder trust or launch-time project pre-approval.
     /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
-    /// @param groupIds The reward groups to collect from.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount claimed and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
     function stickRewardsFor(
@@ -363,7 +374,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// @dev A ready status is a preview; balances, approvals, backing and configuration can change before execution.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder to check.
-    /// @param groupIds The reward groups to collect from.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return status The current auto-stick status.
     /// @return collectableAmount The underlying-token amount currently collectable across the groups.
     /// @return allowance The holder's current underlying-token allowance to this adapter.
@@ -378,8 +389,12 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         override
         returns (JBAutoStickStatus status, uint256 collectableAmount, uint256 allowance, uint256 nextCompoundAt)
     {
-        // Mirror execution, which rejects an empty group list before reading anything.
+        // Mirror execution, which rejects an empty or unordered group list before reading anything.
         _requireGroupIds(groupIds);
+
+        // The distributor rejects an invalid group on collection but reports nothing collectable for it, so a status
+        // for one would otherwise read as ready.
+        _requireValidGroupIds(groupIds);
 
         // Resolve the exact assets that execution would use before querying rewards or approvals.
         (IERC20Metadata underlying, IJBToken stickyToken) = _resolveProject(projectId);
@@ -448,7 +463,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     /// this requires an underlying token whose balances do not rebase during collection or payment.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose rewards are collected and stuck.
-    /// @param groupIds The reward groups to collect from.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @param underlying The project's underlying token, already resolved and validated.
     /// @param stickyToken The project's sticky token, already resolved and validated.
     /// @param minimumAmount The smallest combined amount worth sticking.
@@ -697,11 +712,32 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
         });
     }
 
-    /// @notice Reverts when no reward groups are requested.
+    /// @notice Reverts when no reward groups are requested or the groups are not strictly ascending.
     /// @param groupIds The reward groups requested.
     function _requireGroupIds(uint256[] calldata groupIds) internal pure {
         // Every entry point needs at least one group to read or collect from.
         if (groupIds.length == 0) revert JBStickyAutoStick_EmptyGroupIds(groupIds.length);
+
+        // A repeated group would count its collectable amount once per entry toward the holder's minimum.
+        for (uint256 i = 1; i < groupIds.length; i++) {
+            // Fail on the first entry out of order; the rest are never read.
+            // forge-lint: disable-next-item(require-revert-in-loop)
+            if (groupIds[i] <= groupIds[i - 1]) {
+                revert JBStickyAutoStick_GroupIdsNotAscending({previous: groupIds[i - 1], next: groupIds[i]});
+            }
+        }
+    }
+
+    /// @notice Reverts when any requested reward group is one the distributor cannot fund or collect from.
+    /// @param groupIds The reward groups requested.
+    function _requireValidGroupIds(uint256[] calldata groupIds) internal view {
+        // Solidity initializes the index to zero, covering every requested group.
+        // forge-lint: disable-next-line(uninitialized-local)
+        for (uint256 i; i < groupIds.length; i++) {
+            // The caller pays for the group list it chose; fail on the first group the distributor rejects.
+            // forge-lint: disable-next-item(calls-loop,require-revert-in-loop)
+            if (!DISTRIBUTOR.isValidGroupId(groupIds[i])) revert JBStickyAutoStick_InvalidGroupId(groupIds[i]);
+        }
     }
 
     /// @notice Resolves a project's underlying and sticky tokens through the configured deployer.
