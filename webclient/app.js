@@ -152,7 +152,7 @@ function decString(hex) {
   if (!Number.isSafeInteger(len) || len < 0 || len > 1048576 || offset + 64 + len * 2 > h.length) throw new Error("Contract returned an invalid string length.");
   return new TextDecoder().decode(hexToBytes(h.slice(offset + 64, offset + 64 + len * 2)));
 }
-// JBStickyTranche[]: offset word, length word, then (amount, timestamp) per tranche.
+// StickyTranche[]: offset word, length word, then (amount, timestamp) per tranche.
 function decTranches(hex) {
   const h = strip(hex);
   const offset = Number(decUint(h, 0)) / 32;
@@ -471,7 +471,7 @@ async function projectChainIds(projectId) {
   try {
     const uri = decString(await view(ctx.controller, SEL.uriOf, word(projectId)));
     const metadata = parseStickyProjectUri(uri);
-    const chains = metadata?.protocol === "JBSticky" ? metadata.chains : null;
+    const chains = metadata?.protocol === "Sticky" ? metadata.chains : null;
     if (Array.isArray(chains) && chains.length) return chains.map(Number).filter(chainById);
   } catch {}
   return ctx.chainId ? [ctx.chainId] : [];
@@ -1648,11 +1648,11 @@ async function readTranchePage(projectId, holder, requestedPage = 0n) {
 function contractNameOf(addr) {
   const lower = addr.toLowerCase();
   if (lower === ctx.terminal?.toLowerCase()) return "JBMultiTerminal";
-  if (lower === $("deployer").value.toLowerCase()) return "JBStickyDeployer";
-  if (lower === ctx.hook?.toLowerCase()) return "JBStickyHook";
-  if (lower === distributor()?.toLowerCase()) return "JBStickyDistributor";
-  if (lower === autoStickAdapter()?.toLowerCase()) return "JBStickyAutoStick";
-  if (lower === window.STICKY_CONFIG?.rewardReceiverFactory?.toLowerCase()) return "JBStickyRewardReceiverFactory";
+  if (lower === $("deployer").value.toLowerCase()) return "StickyDeployer";
+  if (lower === ctx.hook?.toLowerCase()) return "StickyHook";
+  if (lower === distributor()?.toLowerCase()) return "StickyDistributor";
+  if (lower === autoStickAdapter()?.toLowerCase()) return "StickyAutoStick";
+  if (lower === window.STICKY_CONFIG?.rewardReceiverFactory?.toLowerCase()) return "StickyRewardReceiverFactory";
   for (const info of Object.values(ctx.projects)) {
     if (lower === info.stakedToken.toLowerCase()) return `the ${info.symbol} token`;
     if (lower === info.stToken.toLowerCase()) return `the ${info.stSymbol} token`;
@@ -1993,7 +1993,7 @@ async function loadStickyRuntime(chainId) {
   const chain = chainById(chainId);
   if (!chain || !deployment.rpcUrl) throw new Error(`no RPC is configured for chain ${chainId}`);
   if (!/^0x[0-9a-fA-F]{40}$/.test(deployment.deployer || "")) {
-    throw new Error(`no JBSticky deployer is configured for ${chain.name}`);
+    throw new Error(`no Sticky deployer is configured for ${chain.name}`);
   }
   const actualChainId = Number(BigInt(await rpcAt(deployment.rpcUrl, "eth_chainId", [])));
   if (actualChainId !== Number(chainId)) {
@@ -2001,7 +2001,7 @@ async function loadStickyRuntime(chainId) {
   }
   const deployerCode = await rpcAt(deployment.rpcUrl, "eth_getCode", [deployment.deployer, "latest"]);
   if (!deployerCode || deployerCode === "0x") {
-    throw new Error(`JBSticky is not deployed at ${deployment.deployer} on ${chain.name}`);
+    throw new Error(`Sticky is not deployed at ${deployment.deployer} on ${chain.name}`);
   }
   const controller = decAddress(await viewAt(deployment, deployment.deployer, SEL.CONTROLLER));
   const projects = decAddress(await viewAt(deployment, controller, SEL.PROJECTS));
@@ -2835,7 +2835,7 @@ async function claimReward(tokenAddr, groupId = 0n) {
 
 // ---------------------------------------------------------------- auto-stick
 // Opt-in compounding: unlocked underlying-token rewards are collected and restuck for the same holder by the
-// immutable JBStickyAutoStick adapter. Permission truth always comes from chain reads, never from events.
+// immutable StickyAutoStick adapter. Permission truth always comes from chain reads, never from events.
 const AS_STATUS = {
   READY: 0, DISABLED: 1, INVALID_PROJECT: 2, COOLDOWN: 3, BELOW_MINIMUM: 4, NOT_TRUSTED: 5,
   INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7,
@@ -3017,7 +3017,7 @@ function asApproveTx(info, amount) {
     to: info.stakedToken,
     fn: "approve(address spender, uint256 amount)",
     args: [
-      ["SPENDER", `${autoStickAdapter()} — JBStickyAutoStick`],
+      ["SPENDER", `${autoStickAdapter()} — StickyAutoStick`],
       ["ALLOWANCE", pretty],
       ["SCOPE", "only rewards it just delivered to you, only to stick them for you"],
     ],
@@ -3034,7 +3034,7 @@ function asTrustTx(info, trusted) {
     fn: "setTrustedSenderFor(uint256 projectId, address sender, bool trusted)",
     args: [
       ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["SENDER", `${autoStickAdapter()} — JBStickyAutoStick`],
+      ["SENDER", `${autoStickAdapter()} — StickyAutoStick`],
       ["TRUSTED", trusted ? "yes — it can add stakes to your position" : "no"],
     ],
     data: SEL.setTrustedSenderFor + word(ctx.currentId) + encAddress(autoStickAdapter()) + word(trusted ? 1 : 0),
@@ -3607,7 +3607,7 @@ async function prepareStickyLaunch() {
   const chainIds = targets.map((target) => target.chainId);
   const launchId = crypto.randomUUID();
   const projectUri = `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({
-    protocol: "JBSticky",
+    protocol: "Sticky",
     version: 1,
     launchId,
     environment: createEnvironment,
@@ -3623,7 +3623,7 @@ async function prepareStickyLaunch() {
       label: `Deploy ${symbol} on ${target.name}`,
       chainId: target.chainId,
       chainLabel: target.label,
-      contractName: "JBStickyDeployer",
+      contractName: "StickyDeployer",
       to: target.deployer,
       fn: "deployStickyFor(address stakedToken, string name, string symbol, string projectUri, uint256 cashOutTaxRate, address[] granters, bool soulbound)",
       args: [

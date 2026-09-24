@@ -15,9 +15,9 @@ through `.env`, exported variables, or the existing deployment environment:
 
 ```sh
 STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork
-STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract JBStickyBase6ForkTest
-STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract JBStickyEthereum3ForkTest
-STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract JBStickyCrossChainRewardsForkTest
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyBase6ForkTest
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyEthereum3ForkTest
+STICKY_ENV_FILE=../../deploy-all-v6/.env npm run test:fork -- --match-contract StickyCrossChainRewardsForkTest
 ```
 
 The wrapper selects the `fork` profile, using the same non-isolated production
@@ -39,7 +39,7 @@ wallet credentials are unnecessary for these tests.
 | Base | `51218441` | `0x8a01ed27f4d292f665be2eb0901e0224f7d1cd0129e103de0f04d792dfc41a97` | Project `6`: `0x44c4516768e47cd97cfF2561B81a74699F23f8Ec` |
 | Ethereum | `25962175` | `0x79b726290770722b62d4bad4a0cdff6d412fc2230fc7dbec73ca55d0921982ba` | Project `3`: `0x3dD82a891C80Db068e95708E83583d626E2c1Fac` |
 
-The block constants live in [the shared fixture](helpers/JBStickyRealProjectFork.sol).
+The block constants live in [the shared fixture](helpers/StickyRealProjectFork.sol).
 Update the constants and this evidence together after reviewing project and
 bridge configuration changes. Passing these historical forks does not establish
 the state at a later deployment block.
@@ -49,7 +49,7 @@ the state at a later deployment block.
 Validation on 2026-09-12 passed all 34 tests with `--deny notes`: 14 on each
 underlying project and six cross-chain cases, with zero failures or skips.
 
-[JBStickyRealProjects.t.sol](JBStickyRealProjects.t.sol) runs the same scenarios
+[StickyRealProjects.t.sol](StickyRealProjects.t.sol) runs the same scenarios
 against both projects:
 
 - Real token acquisition, production Sticky launch, permanent project rules,
@@ -67,7 +67,7 @@ against both projects:
 
 ## Cross-chain coverage and boundary
 
-[JBStickyCrossChainRewards.t.sol](JBStickyCrossChainRewards.t.sol) resolves
+[StickyCrossChainRewards.t.sol](StickyCrossChainRewards.t.sol) resolves
 Ethereum `3`'s deployed native-token sucker route to Base `3` (Revnet Network,
 `REV`), a separate project from Artizen. Both sides use sucker
 `0xA2b081638dC179Dbb7e63f338357cEA2487bb933` and project token

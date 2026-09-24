@@ -9,7 +9,7 @@ Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. CI reproduces 
 ```text
 nana-core-v6/                 # feff600654aee6fb1747dded692f18068b2230a6
 nana-distributor-v6/          # 79af754e642b648347aba0c7df8a3398215e74a5
-extensions/JBSticky/
+extensions/Sticky/
 ```
 
 The core and distributor are intentionally linked `file:` dependencies. Install all dependencies, including the pinned Sphinx CLI, before compiling scripts:
@@ -121,9 +121,9 @@ a separate step.
 `deploy:post:*` runs `deploy:verify:*`, which verifies the group on live RPCs,
 requires the same agreement, and writes `deployments/<network>/verified.json`; it
 then runs `deploy:artifacts:*` (`script/artifacts.mjs`), which verifies the five
-sources on Etherscan and writes `deployments/<network>/JBStickyDeployer.json`,
-`JBStickyHook.json`, `JBStickyDistributor.json`, `JBStickyRewardReceiverFactory.json`
-and `JBStickyAutoStick.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
+sources on Etherscan and writes `deployments/<network>/StickyDeployer.json`,
+`StickyHook.json`, `StickyDistributor.json`, `StickyRewardReceiverFactory.json`
+and `StickyAutoStick.json` in the `sphinx-sol-ct-artifact-1` layout the other V6
 repositories keep: address, ABI, constructor arguments, creation receipt, bytecode,
 metadata and source revision. The constructor arguments come from the bindings the
 verified manifest recorded, and for every factory-deployed contract the explorer's
@@ -154,12 +154,12 @@ for diagnosis and accept normal Forge options; source your environment and set
 
 ## Proposal and execution
 
-The script keeps the original `JBStickyDeployerV6` and `JBStickyAutoStickV6` salts and explicitly uses the canonical factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`. It validates that factory's exact runtime. The suite is:
+The script keeps the original `StickyDeployerV6` and `StickyAutoStickV6` salts and explicitly uses the canonical factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`. It validates that factory's exact runtime. The suite is:
 
-1. `JBStickyDeployer`, which creates its accounting hook in its constructor.
-2. `JBStickyDistributor`, bound to that deployer's hook, with 7-day rounds, 4-round vesting, a 2-year claim window, and loans disabled.
-3. `JBStickyRewardReceiverFactory`, bound to that distributor.
-4. `JBStickyAutoStick`, bound to that deployer and distributor.
+1. `StickyDeployer`, which creates its accounting hook in its constructor.
+2. `StickyDistributor`, bound to that deployer's hook, with 7-day rounds, 4-round vesting, a 2-year claim window, and loans disabled.
+3. `StickyRewardReceiverFactory`, bound to that distributor.
+4. `StickyAutoStick`, bound to that deployer and distributor.
 
 ```sh
 npm run deploy:testnets

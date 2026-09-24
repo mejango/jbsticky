@@ -7,9 +7,9 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
-import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
-import {JBStickyDistributor} from "../../src/JBStickyDistributor.sol";
-import {JBStickyRewardReceiverFactory} from "../../src/JBStickyRewardReceiverFactory.sol";
+import {StickyDeployer} from "../../src/StickyDeployer.sol";
+import {StickyDistributor} from "../../src/StickyDistributor.sol";
+import {StickyRewardReceiverFactory} from "../../src/StickyRewardReceiverFactory.sol";
 
 /// @notice A freely mintable ERC-20 standing in for a reward or staked asset.
 // forge-lint: disable-next-line(multi-contract-file)
@@ -41,16 +41,16 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     address internal _attacker = makeAddr("counterfactual token attacker");
 
     /// @notice The Sticky factory under test.
-    JBStickyDeployer internal _deployer;
+    StickyDeployer internal _deployer;
 
     /// @notice The distributor that receives settled rewards.
-    JBStickyDistributor internal _distributor;
+    StickyDistributor internal _distributor;
 
     /// @notice The project creation fee.
     uint256 internal _fee;
 
     /// @notice The factory that predicts and deploys counterfactual reward receivers.
-    JBStickyRewardReceiverFactory internal _receiverFactory;
+    StickyRewardReceiverFactory internal _receiverFactory;
 
     /// @notice The token sent to the prefunded receiver.
     DaybreakMintableToken internal _rewardToken;
@@ -69,8 +69,8 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
     function setUp() public override {
         super.setUp();
 
-        _deployer = new JBStickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
-        _distributor = new JBStickyDistributor({
+        _deployer = new StickyDeployer({controller: jbController(), terminal: jbMultiTerminal()});
+        _distributor = new StickyDistributor({
             controller: jbController(),
             directory: jbDirectory(),
             stickyHook: _deployer.HOOK(),
@@ -78,7 +78,7 @@ contract DaybreakCounterfactualTokenCaptureTest is TestBaseWorkflow {
             initialVestingRounds: 1,
             initialClaimDuration: 30 days
         });
-        _receiverFactory = new JBStickyRewardReceiverFactory(_distributor);
+        _receiverFactory = new StickyRewardReceiverFactory(_distributor);
         _rewardToken = new DaybreakMintableToken("Victim reward", "RWD");
         _underlying = new DaybreakMintableToken("Shared asset", "AST");
         _fee = jbProjects().creationFee();

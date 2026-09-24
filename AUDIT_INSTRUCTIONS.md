@@ -6,18 +6,18 @@ Find a concrete sequence that loses backing, corrupts share or tranche accountin
 
 ## Scope
 
-- Solidity in `src/`, including interfaces, structs, and `JBStickyPricing`.
+- Solidity in `src/`, including interfaces, structs, and `StickyPricing`.
 - Deployment and verification under `script/`, environment handling, and Sphinx network groups.
-- The core pay/mint/burn/cash-out flows and the inherited `JBDistributor` snapshot, vesting, and recycling logic actually used by `JBStickyDistributor`.
+- The core pay/mint/burn/cash-out flows and the inherited `JBDistributor` snapshot, vesting, and recycling logic actually used by `StickyDistributor`.
 - `webclient/` configuration, project identity, quote units, transaction preparation, receipt recovery, rewards, and cross-chain flows.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md), [INVARIANTS.md](./INVARIANTS.md), [RISKS.md](./RISKS.md), and [USER_JOURNEYS.md](./USER_JOURNEYS.md), then trace source in this order:
 
-1. `JBStickyDeployer`: permanent project metadata, ownership, accepted token, and core bindings.
-2. `JBStickyPricing`, `JBStickyPriceFeed`, and `JBStickyHook`: exact issuance, orphaned backing, callback authentication, and position accounting.
-3. `JBStickyToken`: every mint, transfer, burn, delegation, and checkpoint transition.
-4. `JBStickyDistributor`: group encoding, the window pinned at round start, the denominator read from the hook's buckets at first funding, live-tranche numerators, the pot-remainder cap, split fallback to group 0, and the unregistered-token check.
-5. `JBStickyAutoStick`, `JBStickyRewardReceiverFactory`, and `JBStickyRewardReceiver`: collection consent across groups, balance deltas, settlement timing, group validation, and destination identity.
+1. `StickyDeployer`: permanent project metadata, ownership, accepted token, and core bindings.
+2. `StickyPricing`, `StickyPriceFeed`, and `StickyHook`: exact issuance, orphaned backing, callback authentication, and position accounting.
+3. `StickyToken`: every mint, transfer, burn, delegation, and checkpoint transition.
+4. `StickyDistributor`: group encoding, the window pinned at round start, the denominator read from the hook's buckets at first funding, live-tranche numerators, the pot-remainder cap, split fallback to group 0, and the unregistered-token check.
+5. `StickyAutoStick`, `StickyRewardReceiverFactory`, and `StickyRewardReceiver`: collection consent across groups, balance deltas, settlement timing, group validation, and destination identity.
 6. Core `JBMultiTerminal`, `JBTerminalStore`, `JBController`, `JBTokens`, and `JBPrices`, paired with distributor `JBDistributor`.
 7. Deployment helpers and the client transaction path for the same operation.
 

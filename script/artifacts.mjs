@@ -11,14 +11,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { networks } from './deploy.mjs';
 
 // Each contract's constructor arguments in declaration order: a manifest field, or a policy constant. The
-// distributor's words match `_distributorArgs` in script/helpers/JBStickyDeployment.sol.
+// distributor's words match `_distributorArgs` in script/helpers/StickyDeployment.sol.
 export const contracts = [
-  { name: 'JBStickyDeployer', field: 'deployer', args: ['controller', 'terminal'] },
+  { name: 'StickyDeployer', field: 'deployer', args: ['controller', 'terminal'] },
   // The deployer's constructor creates the hook, so the explorer attributes it to the deployer's creation transaction.
-  { name: 'JBStickyHook', field: 'hook', args: ['directory', 'deployer'], child: true },
-  { name: 'JBStickyDistributor', field: 'distributor', args: ['controller', 'directory', 'hook', 7n * 86_400n, 4n, 2n * 365n * 86_400n] },
-  { name: 'JBStickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['distributor'] },
-  { name: 'JBStickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
+  { name: 'StickyHook', field: 'hook', args: ['directory', 'deployer'], child: true },
+  { name: 'StickyDistributor', field: 'distributor', args: ['controller', 'directory', 'hook', 7n * 86_400n, 4n, 2n * 365n * 86_400n] },
+  { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['distributor'] },
+  { name: 'StickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
 ];
 
 // One Etherscan v2 key serves every chain.

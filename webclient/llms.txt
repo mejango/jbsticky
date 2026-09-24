@@ -48,5 +48,5 @@ the client uses 50), rather than the unbounded whole-array getter.
 
 ## Source
 
-- Hook and distributor contracts: https://github.com/mejango/jbsticky
+- Hook and distributor contracts: https://github.com/mejango/sticky
 - Protocol contracts: https://github.com/Bananapus/version-6

@@ -1,4 +1,4 @@
-# JBSticky
+# Sticky
 
 Sticky wraps an ERC-20 token in a permanently configured Juicebox V6 staking project. Deposits issue 18-decimal Sticky shares of the project's backing. Holders accumulate a streak while their share balance remains positive; each deposit also retains its own timestamp. Projects choose a permanent cash out tax and whether shares are soulbound or transferable.
 
@@ -21,7 +21,7 @@ Sticky shares are not a promise to redeem one underlying token each. Their issua
 
 ## Issuance and backing
 
-For an existing supply, a deposit of `A` underlying atoms issues `floor(A × S / E)` Sticky share atoms, where `S` is the outstanding share supply and `E` is the backing belonging to those shares. `JBStickyHook` supplies the numerator and the project's immutable `JBStickyPriceFeed` supplies the exact backing denominator through the core price registry. The feed reads project accounting; it is not an external market oracle. Core performs a full-precision division without first rounding an exchange rate.
+For an existing supply, a deposit of `A` underlying atoms issues `floor(A × S / E)` Sticky share atoms, where `S` is the outstanding share supply and `E` is the backing belonging to those shares. `StickyHook` supplies the numerator and the project's immutable `StickyPriceFeed` supplies the exact backing denominator through the core price registry. The feed reads project accounting; it is not an external market oracle. Core performs a full-precision division without first rounding an exchange rate.
 
 When no shares exist, issuance starts at one share per whole underlying token, normalized to 18 decimals. No virtual shares or virtual backing are created. The supported underlying accounting precision is 0–36 decimals. The terminal's accounting precision is fixed at launch and the feed caches it.
 
@@ -49,7 +49,7 @@ Balance and streak views include `stakedBalanceOf`, `streakStartOf`, `currentStr
 
 ## Rewards and auto-stick
 
-The configured reward path is `JBStickyDistributor`, a subclass of [`JBDistributor`](https://github.com/Bananapus/nana-distributor-v6) bound to the Sticky hook. Anyone can fund rewards for a Sticky token and chooses, per funding, who the pot rewards:
+The configured reward path is `StickyDistributor`, a subclass of [`JBDistributor`](https://github.com/Bananapus/nana-distributor-v6) bound to the Sticky hook. Anyone can fund rewards for a Sticky token and chooses, per funding, who the pot rewards:
 
 - **Group 0** allocates by holders' share-vote checkpoints at the round's snapshot block, exactly like `JBTokenDistributor`. Sticky tokens automatically self-delegate and prohibit delegation changes, keeping reward voting units with the holder.
 - **Tenure groups**, encoded as `groupId = minWeeks * 1000 + maxWeeks` (both at most 520, `minWeeks` at least 1, `maxWeeks` 0 for no upper bound), allocate by the stake each holder still holds in tranches created between `maxWeeks` and `minWeeks` weeks before the round started. `4000` rewards stake at least four weeks old; `1004` rewards the last four completed weeks; `4008` rewards stake between four and eight weeks old. `isValidGroupId(groupId)` reports whether an encoding is accepted.
@@ -62,30 +62,30 @@ Payout and reserved-token splits fund the distributor with `hook = distributor`,
 
 Rewards vest over rounds. `collectVestedRewards(...)` collects unlocked rewards and starts vesting eligible earlier allocations; `beginVesting(...)` is available when only starting the schedule is needed; both take an optional `groupId`. A Sticky token funded as a reward gives the distributor itself weight in that token's rounds; collecting that allocation to the distributor recycles it into the current round of the same pot instead of transferring, and holders cannot collect their own rewards to the distributor. The production deployment script configures weekly rounds, four vesting rounds, a two-year claim window, and no distributor loan integration. The design record is [`docs/specs/2026-09-24-tenure-rewards.md`](docs/specs/2026-09-24-tenure-rewards.md).
 
-`JBStickyAutoStick` can collect a holder's unlocked underlying-token rewards from the reward groups the caller names, listed once each in ascending order, pull only the newly delivered amount, and stake them back for that holder. `statusOf` rejects a group the distributor cannot serve instead of reporting it ready. The holder's minimum applies to the combined amount across those groups. Automatic execution requires the holder's enabled configuration, cooldown, minimum reward threshold, allowance, and hook permission. A holder can also call `stickRewardsFor(...)` without enabling automatic execution. Both paths quote the terminal during execution, reject zero issuance, require the exact quoted token minimum, and reject unexpected underlying transfer deltas. They cannot redirect rewards to a keeper or arbitrary beneficiary.
+`StickyAutoStick` can collect a holder's unlocked underlying-token rewards from the reward groups the caller names, listed once each in ascending order, pull only the newly delivered amount, and stake them back for that holder. `statusOf` rejects a group the distributor cannot serve instead of reporting it ready. The holder's minimum applies to the combined amount across those groups. Automatic execution requires the holder's enabled configuration, cooldown, minimum reward threshold, allowance, and hook permission. A holder can also call `stickRewardsFor(...)` without enabling automatic execution. Both paths quote the terminal during execution, reject zero issuance, require the exact quoted token minimum, and reject unexpected underlying transfer deltas. They cannot redirect rewards to a keeper or arbitrary beneficiary.
 
 Auto-stick is best effort. The distributor permits anyone to collect to the holder's canonical beneficiary first. Those tokens arrive safely in the holder's wallet, but a later keeper may find nothing to compound. The holder can stake those funds manually. UI estimates can change before execution; the adapter's quote is taken during the actual transaction.
 
-For cross-chain rewards, `JBStickyRewardReceiverFactory` predicts and deploys a `JBStickyRewardReceiver` for each destination Sticky token and reward group. Separate receiving addresses keep arrivals attributed to the intended reward pool and weighting. Rewards may arrive before that receiver is deployed; anyone can call `settleFor(...)` to fund the distributor with its ERC-20 balance. Transport requires a supported bridge route for the reward token, independently of the Sticky project. Identical receiver addresses across chains require identical factory/distributor addresses, creation code, the same destination Sticky-token address, and the same group; using common salts alone does not establish parity. Share tokens are deployed with CREATE2 under a salt bound to the launcher and the launch arguments, and `predictStickyTokenOf(launcher, projectId, ...)` returns the address a launch produces; the project ID is part of the token's creation code, so predict against the ID the launch will receive, or route rewards after the launch confirms. See [the architecture rationale](ARCHITECTURE.md#why-a-receiver-and-a-factory) for the receiver/factory split and the per-project price feed.
+For cross-chain rewards, `StickyRewardReceiverFactory` predicts and deploys a `StickyRewardReceiver` for each destination Sticky token and reward group. Separate receiving addresses keep arrivals attributed to the intended reward pool and weighting. Rewards may arrive before that receiver is deployed; anyone can call `settleFor(...)` to fund the distributor with its ERC-20 balance. Transport requires a supported bridge route for the reward token, independently of the Sticky project. Identical receiver addresses across chains require identical factory/distributor addresses, creation code, the same destination Sticky-token address, and the same group; using common salts alone does not establish parity. Share tokens are deployed with CREATE2 under a salt bound to the launcher and the launch arguments, and `predictStickyTokenOf(launcher, projectId, ...)` returns the address a launch produces; the project ID is part of the token's creation code, so predict against the ID the launch will receive, or route rewards after the launch confirms. See [the architecture rationale](ARCHITECTURE.md#why-a-receiver-and-a-factory) for the receiver/factory split and the per-project price feed.
 
 ## Contracts
 
 | Contract | Role |
 | --- | --- |
-| `JBStickyDeployer` | Launches projects and their share tokens/price feeds; holds each project NFT without exposing project mutation or withdrawal operations. |
-| `JBStickyHook` | Prices issuance, excludes orphaned backing, and tracks exact balances, LIFO tranches, and streaks. |
-| `JBStickyPriceFeed` | Immutable per-project accounting denominator for exact backing-priced issuance. |
-| `JBStickyToken` | Configurably soulbound ERC-20 shares with locked self-delegation and authoritative burn/transfer reporting. |
-| `JBStickyDistributor` | Round-based reward distributor: vote-checkpoint allocation for group 0 and tenure-window allocation for funder-chosen groups. |
-| `JBStickyAutoStick` | Opt-in reward collection and compounding for the same holder and project across chosen reward groups. |
-| `JBStickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
-| `JBStickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
+| `StickyDeployer` | Launches projects and their share tokens/price feeds; holds each project NFT without exposing project mutation or withdrawal operations. |
+| `StickyHook` | Prices issuance, excludes orphaned backing, and tracks exact balances, LIFO tranches, and streaks. |
+| `StickyPriceFeed` | Immutable per-project accounting denominator for exact backing-priced issuance. |
+| `StickyToken` | Configurably soulbound ERC-20 shares with locked self-delegation and authoritative burn/transfer reporting. |
+| `StickyDistributor` | Round-based reward distributor: vote-checkpoint allocation for group 0 and tenure-window allocation for funder-chosen groups. |
+| `StickyAutoStick` | Opt-in reward collection and compounding for the same holder and project across chosen reward groups. |
+| `StickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
+| `StickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
 
 Project rules do not expire. Reserved issuance and fund access limits are zero. The factory retains no callable path to change project rules, metadata, token, controller, terminals, price feed, or ownership after launch. Core flags needed to attach the custom token and feed are enabled during construction; immutability follows from the factory's exposed operations, not a claim that every metadata flag is disabled. These contracts still depend on the configured core release and the underlying token's behavior.
 
 ## Develop and check
 
-Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. Contract development uses the V6 workspace layout: this repository at `extensions/JBSticky`, with `nana-core-v6` and `nana-distributor-v6` at the workspace root. Their `file:` dependencies are intentional. [Contract CI](.github/workflows/test.yml) records the tested dependency commits and reconstructs that layout.
+Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. Contract development uses the V6 workspace layout: this repository at `extensions/Sticky`, with `nana-core-v6` and `nana-distributor-v6` at the workspace root. Their `file:` dependencies are intentional. [Contract CI](.github/workflows/test.yml) records the tested dependency commits and reconstructs that layout.
 
 ```sh
 npm ci

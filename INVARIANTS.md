@@ -1,6 +1,6 @@
 # Invariants
 
-These guarantees apply to projects launched by `JBStickyDeployer`, using the configured V6 core and supported underlying tokens. [RISKS.md](./RISKS.md) describes assumptions and behaviors they do not guarantee.
+These guarantees apply to projects launched by `StickyDeployer`, using the configured V6 core and supported underlying tokens. [RISKS.md](./RISKS.md) describes assumptions and behaviors they do not guarantee.
 
 ## Issuance and backing
 
@@ -48,10 +48,10 @@ These guarantees apply to projects launched by `JBStickyDeployer`, using the con
 
 | Surface | Tests |
 | --- | --- |
-| Tranche accounting, exits, epoch buckets, and streaks | `test/JBStickyAccounting.t.sol`, `test/JBStickyHook_Unit.t.sol`, `test/JBStickyBurn_Integration.t.sol` |
-| Reward groups, windows, splits, and pot solvency | `test/JBStickyDistributor_Unit.t.sol`, `test/JBStickyDistributor_Invariant.t.sol` |
-| Issuance, rounding, and orphaned backing | `test/JBStickyPricing_Regression.t.sol`, `test/JBStickyPriceFeed_Regression.t.sol` |
-| Callback ordering | `test/JBStickyPricingCallbacks.t.sol` |
-| Core and reward integration | `test/JBSticky_Integration.t.sol`, `test/JBStickyRewards_Regression.t.sol`, `test/JBStickyAutoStick_Unit.t.sol` |
+| Tranche accounting, exits, epoch buckets, and streaks | `test/StickyAccounting.t.sol`, `test/StickyHook_Unit.t.sol`, `test/StickyBurn_Integration.t.sol` |
+| Reward groups, windows, splits, and pot solvency | `test/StickyDistributor_Unit.t.sol`, `test/StickyDistributor_Invariant.t.sol` |
+| Issuance, rounding, and orphaned backing | `test/StickyPricing_Regression.t.sol`, `test/StickyPriceFeed_Regression.t.sol` |
+| Callback ordering | `test/StickyPricingCallbacks.t.sol` |
+| Core and reward integration | `test/Sticky_Integration.t.sol`, `test/StickyRewards_Regression.t.sol`, `test/StickyAutoStick_Unit.t.sol` |
 | Deployment identity and restart | `test/deployment/` |
 | Quotes, configuration, and transaction recovery | `webclient/test/` |

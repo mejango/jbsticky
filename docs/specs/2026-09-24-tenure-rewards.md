@@ -1,7 +1,7 @@
 # Tenure rewards — funder-chosen reward groups on the Sticky distributor
 
 **Date:** 2026-09-24
-**Status:** Implemented on `fix/audit-hardening-and-review-docs` (mejango/jbsticky#2)
+**Status:** Implemented on `fix/audit-hardening-and-review-docs` (mejango/sticky#2)
 **Supersedes:** `2026-08-12-sticky-distributor-design.md`, `2026-08-13-criteria-window-generalization.md`, and
 `2026-08-14-criteria-carrier-projectid.md` (the PR #1 design). The encoding and the split carrier survive; the
 contract shape, the snapshot epoch, the denominator, tranche merging, and the receiver and adapter surfaces are
@@ -11,20 +11,20 @@ decided here.
 
 | Axis | Decision |
 | --- | --- |
-| Contract shape | `JBStickyDistributor` subclasses the stock `JBDistributor` and replaces `JBTokenDistributor` in the deployment. Group 0 is byte-for-byte the token distributor's behaviour (`getPastVotes` / `getPastTotalActiveVotes`). Loans are disabled (`REV_LOANS`, `REV_OWNER` = 0). Runtime is 20,515 bytes, 4,061 under EIP-170, so no loan-free fork was needed. |
+| Contract shape | `StickyDistributor` subclasses the stock `JBDistributor` and replaces `JBTokenDistributor` in the deployment. Group 0 is byte-for-byte the token distributor's behaviour (`getPastVotes` / `getPastTotalActiveVotes`). Loans are disabled (`REV_LOANS`, `REV_OWNER` = 0). Runtime is 20,515 bytes, 4,061 under EIP-170, so no loan-free fork was needed. |
 | Group encoding | `groupId = minWeeks * 1000 + maxWeeks`; `maxWeeks == 0` means no upper bound; both at most 520; `minWeeks` at least 1 for non-zero groups. `isValidGroupId` is a public pure view. Same encoding as PR #1's final head. |
 | Snapshot epoch | Pinned at **round start**: `snapshotEpochOf(round) = roundStartTimestamp(round) / 1 weeks`. Window top `hi = E − minWeeks`, bottom `lo = E − maxWeeks` (bounded windows only). No new round-struct fields; the stock `JBRewardRoundData` is reused. |
 | Same-week merge | `_addTo` extends the newest active tranche when it was created in the current week and moves its timestamp to `block.timestamp`; otherwise it appends. Applies to pays, incoming transfers, and granter stakes. A merged tranche never overstates the age of its newest tokens. |
-| Split fallback | An invalid `split.projectId`, or a beneficiary the hook does not track, funds group 0 without reverting. Direct `fund(hook, token, amount, groupId)` reverts on an invalid group (`JBStickyDistributor_InvalidGroupId`) or, for tenure groups, an unregistered token (`JBStickyDistributor_UnregisteredStickyToken`, checked as `STICKY_HOOK.tokenOf(IJBStickyToken(hook).PROJECT_ID()) == hook` through a low-level staticcall so a non-Sticky beneficiary cannot revert a split). |
+| Split fallback | An invalid `split.projectId`, or a beneficiary the hook does not track, funds group 0 without reverting. Direct `fund(hook, token, amount, groupId)` reverts on an invalid group (`StickyDistributor_InvalidGroupId`) or, for tenure groups, an unregistered token (`StickyDistributor_UnregisteredStickyToken`, checked as `STICKY_HOOK.tokenOf(IStickyToken(hook).PROJECT_ID()) == hook` through a low-level staticcall so a non-Sticky beneficiary cannot revert a split). |
 | Claim window | `CLAIM_DURATION` is two years (was three) in the production deployment. |
 | Denominator | No `totalStakedOf` storage. Tenure (`maxWeeks == 0`): the registered token's `totalSupply()` minus `netStakedWithin(p, hi + 1, currentEpoch)`. Bounded window: `netStakedWithin(p, lo, hi)`. Both walks are capped by `MAX_CRITERIA_WEEKS` plus the weeks elapsed since the round started. |
-| AutoStick | `beginVestingFor`, `compoundFor`, `stickRewardsFor`, and `statusOf` take `uint256[] calldata groupIds`; the holder's minimum applies to the combined total; one balance delta is measured around the whole collect loop; an empty list reverts `JBStickyAutoStick_EmptyGroupIds(count)`. `AutoStuck` and `BeganAutoStickVesting` carry `groupIds`. |
-| Receivers | One receiver per `(stickyToken, groupId)` with immutables `DISTRIBUTOR`, `GROUP_ID`, `STICKY_TOKEN`. Factory salt `keccak256(abi.encode(stickyToken, groupId))`; `deployReceiverFor`, `predictReceiverOf`, `receiverOf`, and `settleFor` take `groupId`; invalid groups revert `JBStickyRewardReceiverFactory_InvalidGroupId(groupId)` via `DISTRIBUTOR.isValidGroupId`; events carry `groupId`. |
-| Deployment | `JBStickyDistributor(controller, directory, hook, 7 days, 4, uint48(2 * 365 days))`; nine compiler immutables; `_verifyDistributor` checks `STICKY_HOOK == hook` and `EPOCH_DURATION == hook.EPOCH_DURATION()`. |
+| AutoStick | `beginVestingFor`, `compoundFor`, `stickRewardsFor`, and `statusOf` take `uint256[] calldata groupIds`; the holder's minimum applies to the combined total; one balance delta is measured around the whole collect loop; an empty list reverts `StickyAutoStick_EmptyGroupIds(count)`. `AutoStuck` and `BeganAutoStickVesting` carry `groupIds`. |
+| Receivers | One receiver per `(stickyToken, groupId)` with immutables `DISTRIBUTOR`, `GROUP_ID`, `STICKY_TOKEN`. Factory salt `keccak256(abi.encode(stickyToken, groupId))`; `deployReceiverFor`, `predictReceiverOf`, `receiverOf`, and `settleFor` take `groupId`; invalid groups revert `StickyRewardReceiverFactory_InvalidGroupId(groupId)` via `DISTRIBUTOR.isValidGroupId`; events carry `groupId`. |
+| Deployment | `StickyDistributor(controller, directory, hook, 7 days, 4, uint48(2 * 365 days))`; nine compiler immutables; `_verifyDistributor` checks `STICKY_HOOK == hook` and `EPOCH_DURATION == hook.EPOCH_DURATION()`. |
 
 ## Hook mechanism
 
-`JBStickyHook.EPOCH_DURATION = 1 weeks`. `netStakedIn[projectId][epoch]` is credited in `_addTo` and debited in
+`StickyHook.EPOCH_DURATION = 1 weeks`. `netStakedIn[projectId][epoch]` is credited in `_addTo` and debited in
 `_consumeFrom` at each removed tranche's original epoch: a partial exit subtracts the trimmed part from the retained
 tranche's epoch and the full amount of every newer tranche from its own epoch; a full exit loops over every active
 tranche. Because active tranches sit in distinct weeks, the loop runs once per week the exit consumes. Measured
@@ -33,7 +33,7 @@ for a full exit across 520 weekly tranches, roughly 6,300 gas per distinct week.
 (unbounded dust exits) in a weaker form: dust cannot multiply the work, but distinct weeks do.
 
 Views: `netStakedWithin(projectId, fromEpoch, toEpoch)` sums a bucket range and reverts
-`JBStickyHook_InvalidEpochRange(fromEpoch, toEpoch)` when inverted; `stakedBalanceThroughEpochOf(projectId, holder,
+`StickyHook_InvalidEpochRange(fromEpoch, toEpoch)` when inverted; `stakedBalanceThroughEpochOf(projectId, holder,
 epoch)` binary-searches the holder's active tranches (timestamps never decrease with index) and returns the
 cumulative endpoint of the newest tranche created through that epoch. Pricing, orphaned-backing, and streak logic
 are untouched.
@@ -67,9 +67,9 @@ overpayment.
 
 ## Deviations from the brief
 
-- `IJBStickyDistributor` extends `IJBTokenDistributor` rather than redeclaring `DIRECTORY` and `IJBSplitHook`; the
+- `IStickyDistributor` extends `IJBTokenDistributor` rather than redeclaring `DIRECTORY` and `IJBSplitHook`; the
   contract also reports the token-distributor interface ID because group 0 is that distributor.
-- `IJBStickyToken` declares `HOOK`, `PROJECT_ID`, `SOULBOUND`, and `TOKENS` so the price feed, which also exposes
+- `IStickyToken` declares `HOOK`, `PROJECT_ID`, `SOULBOUND`, and `TOKENS` so the price feed, which also exposes
   `PROJECT_ID`, does not accidentally match it.
 - The registration check on direct funding applies to tenure groups only; `fund(hook, token, amount, 0)` behaves
   exactly like the three-argument overload so group 0 stays the stock path.

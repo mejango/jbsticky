@@ -147,7 +147,7 @@ test('proposal rejects a missing lock, wrong organization, or unregistered proje
 
 test('every compiled source root is pinned: linked checkouts by revision, packages by the lockfile', () => {
   const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-  for (const name of ['JBStickyDeployer', 'JBStickyHook', 'JBStickyDistributor', 'JBStickyRewardReceiverFactory', 'JBStickyAutoStick']) {
+  for (const name of ['StickyDeployer', 'StickyHook', 'StickyDistributor', 'StickyRewardReceiverFactory', 'StickyAutoStick']) {
     const artifact = JSON.parse(readFileSync(`out/${name}.sol/${name}.json`, 'utf8'));
     for (const source of Object.keys(artifact.metadata.sources)) {
       if (/^(src|script)\//.test(source)) continue;
@@ -181,7 +181,7 @@ test('an artifacts run executes the explorer script only after the pin and check
 });
 
 test('an uncommitted checkout can rehearse but neither propose, verify nor emit artifacts', () => {
-  const dirtyGit = (command, args) => command === 'git' && args[0] === 'status' ? { status: 0, stdout: ' M src/JBStickyHook.sol' } : readOnlyTool(command, args);
+  const dirtyGit = (command, args) => command === 'git' && args[0] === 'status' ? { status: 0, stdout: ' M src/StickyHook.sol' } : readOnlyTool(command, args);
   for (const action of ['propose', 'verify', 'artifacts']) {
     assert.throws(() => run(action, 'testnets', { ...fixture('testnets'), spawn(command, args) {
       const tool = dirtyGit(command, args);

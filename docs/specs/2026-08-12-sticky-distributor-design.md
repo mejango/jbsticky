@@ -1,6 +1,6 @@
 > **Superseded** by [`2026-09-24-tenure-rewards.md`](2026-09-24-tenure-rewards.md), which records the design as shipped: a `JBDistributor` subclass instead of a fork, the snapshot epoch pinned at round start, no `totalStakedOf` or `firstStakeEpochPlusOneOf` storage, same-week tranche merging, per-group receivers, and multi-group auto-stick. Kept as the design history of the epoch-bucket mechanism and the group encoding.
 
-# JBStickyDistributor — stick-time-gated reward distribution
+# StickyDistributor — stick-time-gated reward distribution
 
 **Date:** 2026-08-12
 **Status:** Approved design, pre-implementation
@@ -21,9 +21,9 @@ accounting.
 |---|---|
 | Weighting | Hard threshold now; weight function structured for curves later |
 | Criteria source | Airdropper picks criteria per funding (not fixed per project) |
-| Age basis | **Tranche age** — only tokens themselves stuck ≥ D count. Each tranche carries its own clock (`JBStickyTranche.timestamp`, preserved across partial LIFO consumes). Fresh capital cannot ride an old holder streak. `streakStartOf` is not used for weighting. |
+| Age basis | **Tranche age** — only tokens themselves stuck ≥ D count. Each tranche carries its own clock (`StickyTranche.timestamp`, preserved across partial LIFO consumes). Fresh capital cannot ride an old holder streak. `streakStartOf` is not used for weighting. |
 | Cadence | Full JBDistributor cadence: rounds, linear vesting over `VESTING_ROUNDS`, claim windows, expiry-recycle |
-| Code shape | **Clean fork** of `JBDistributor` + `JBTokenDistributor` into `extensions/JBSticky/src/JBStickyDistributor.sol` (REVLoans wiring dropped) |
+| Code shape | **Clean fork** of `JBDistributor` + `JBTokenDistributor` into `extensions/Sticky/src/StickyDistributor.sol` (REVLoans wiring dropped) |
 | Claim model | **Lazy one-phase claims are non-negotiable.** No registration window. The time base is restricted instead. |
 | Time base | Criteria quantized to **fixed 1-week epochs**, minimum 1 epoch (`k ≥ 1`) |
 
@@ -39,7 +39,7 @@ buckets at least k epochs old, read at **current** values. Record that sum at
 fund time and it *is* the snapshot denominator — no history, no checkpoints, no
 pokes, no registration.
 
-### Hook bookkeeping (JBStickyHook)
+### Hook bookkeeping (StickyHook)
 
 - `epochOf(t) = t / 1 weeks` (global anchor, unix time; no coupling to any
   distributor's round schedule).
@@ -59,10 +59,10 @@ Hook is not deployed to production; this is a pre-deploy change, not a migration
 
 All storage stays keyed by `hook` = the sticky token address, exactly like the
 base (the splits path already names the sticky token as beneficiary). The
-distributor derives `projectId = IJBStickyToken(hook).PROJECT_ID()` wherever it
+distributor derives `projectId = IStickyToken(hook).PROJECT_ID()` wherever it
 reads the tranche book or buckets from `STICKY_HOOK`.
 
-`JBStickyDistributor.fund(stickyToken, token, amount, criteria)`:
+`StickyDistributor.fund(stickyToken, token, amount, criteria)`:
 
 1. Resolve the pot's group from `criteria` (encoding below); the pot is keyed
    (stickyToken, group, token, round).
@@ -113,7 +113,7 @@ therefore enforce `k ≥ 1` (revert otherwise).
 
 Group 0 (no criteria) keeps the base's exact ERC20Votes snapshot mechanics —
 `getPastVotes` numerator, `getPastTotalActiveVotes` denominator at
-`roundSnapshotBlock` — which `JBStickyToken` already supports (`IJBActiveVotes`,
+`roundSnapshotBlock` — which `StickyToken` already supports (`IJBActiveVotes`,
 auto-self-delegated, delegation locked). Split-funded rewards without criteria
 behave byte-for-byte like the deployed `JBTokenDistributor`.
 
@@ -166,11 +166,11 @@ re-running distribution with more gas.
 
 | File | Change |
 |---|---|
-| `src/JBStickyDistributor.sol` | New. Fork of `JBDistributor` + `JBTokenDistributor` collapsed into one contract: rounds/vesting/claim-window/expiry-recycle/split-hook intake kept; REVLoans + REVOwner wiring dropped; adds `STICKY_HOOK` immutable, criteria-aware `fund`, snapshotEpoch in round data, bucket-walk denominator, tranche-book numerator, curveId dispatch. |
-| `src/JBStickyHook.sol` | `netStakedIn` bucket updates in `_addTo`/`_consumeFrom`, `firstStakeEpochOf`, `netStakedInEpochs` view. |
-| `src/interfaces/IJBStickyDistributor.sol` | New. |
-| `src/interfaces/IJBStickyHook.sol` | Add the new view/storage getters. |
-| `script/Deploy*.s.sol` | Deploy `JBStickyDistributor` (7d rounds, 4 vesting rounds, 3-year claim duration, matching the shipped sticky-tuned `JBTokenDistributor` params; 600s rounds in DeployLocal — note: bucket epochs stay 1 week even on local fork; local demos use warp). |
+| `src/StickyDistributor.sol` | New. Fork of `JBDistributor` + `JBTokenDistributor` collapsed into one contract: rounds/vesting/claim-window/expiry-recycle/split-hook intake kept; REVLoans + REVOwner wiring dropped; adds `STICKY_HOOK` immutable, criteria-aware `fund`, snapshotEpoch in round data, bucket-walk denominator, tranche-book numerator, curveId dispatch. |
+| `src/StickyHook.sol` | `netStakedIn` bucket updates in `_addTo`/`_consumeFrom`, `firstStakeEpochOf`, `netStakedInEpochs` view. |
+| `src/interfaces/IStickyDistributor.sol` | New. |
+| `src/interfaces/IStickyHook.sol` | Add the new view/storage getters. |
+| `script/Deploy*.s.sol` | Deploy `StickyDistributor` (7d rounds, 4 vesting rounds, 3-year claim duration, matching the shipped sticky-tuned `JBTokenDistributor` params; 600s rounds in DeployLocal — note: bucket epochs stay 1 week even on local fork; local demos use warp). |
 
 Distributor package (`@bananapus/distributor-v6`) is untouched. The deployed
 `JBTokenDistributor` keeps working for anything already wired to it.
@@ -206,7 +206,7 @@ Distributor package (`@bananapus/distributor-v6`) is untouched. The deployed
 
 ## Testing
 
-- Foundry unit + fuzz in `extensions/JBSticky/test`, following the repo's
+- Foundry unit + fuzz in `extensions/Sticky/test`, following the repo's
   existing patterns (via_ir + `vm.getBlockTimestamp()` per the
   warp-rematerialization gotcha).
 - Invariant suite: pot solvency and bucket conservation under a handler doing

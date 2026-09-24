@@ -12,7 +12,7 @@
 **Supersedes:** the "Criteria encoding" section of `2026-08-12-sticky-distributor-design.md`. Everything
 else in that spec — epoch buckets, fund-time denominator, lazy one-phase claims, the downward-only
 argument, group 0, the `lockedUntil` channel — stands unchanged.
-**Lands on:** the open PR (`sticky-distributor`, mejango/jbsticky#1), before merge. Nothing is deployed,
+**Lands on:** the open PR (`sticky-distributor`, mejango/sticky#1), before merge. Nothing is deployed,
 so the one-parameter encoding is replaced outright rather than carried alongside.
 
 ## Why
@@ -74,10 +74,10 @@ change is about which tranches are *in* the set, not how they are *weighted* wit
 
 ## Contract changes
 
-All in `src/JBStickyDistributor.sol` unless noted.
+All in `src/StickyDistributor.sol` unless noted.
 
 **New constant.** `uint256 public constant override CRITERIA_BASE = 1000;` — also declared on
-`IJBStickyDistributor`. `MAX_CRITERIA_WEEKS` keeps its value and becomes the per-parameter cap.
+`IStickyDistributor`. `MAX_CRITERIA_WEEKS` keeps its value and becomes the per-parameter cap.
 
 **New shared decode** (internal view, replaces the duplicated guard logic the prior review flagged):
 
@@ -100,7 +100,7 @@ the predicate without the revert:
 
 ```
 function _isValidGroup(uint256 groupId) internal pure returns (bool)
-function _requireValidGroup(uint256 groupId) internal pure   // reverts JBStickyDistributor_InvalidCriteria
+function _requireValidGroup(uint256 groupId) internal pure   // reverts StickyDistributor_InvalidCriteria
 ```
 
 `_isValidGroup` returns true for `0`; otherwise decodes and enforces the three parameter rules above.
@@ -112,7 +112,7 @@ groupId)`. Resolves the window, clamps `lo` **up** to `firstStakeEpochPlusOneOf 
 unclamped `lo = 0` would walk from 1970), returns 0 when the project never staked or the window is
 empty, then sums `netStakedInEpochs(projectId, lo, hi)`.
 
-**Numerator.** `_agedStakeOf` → `_windowStakeOf(JBStickyTranche[] memory tranches, uint256
+**Numerator.** `_agedStakeOf` → `_windowStakeOf(StickyTranche[] memory tranches, uint256
 snapshotEpoch, uint256 groupId)`. Resolves the window, then one forward pass over the oldest-first
 array with three phases:
 
