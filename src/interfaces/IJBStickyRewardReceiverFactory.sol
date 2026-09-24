@@ -30,17 +30,17 @@ interface IJBStickyRewardReceiverFactory {
     /// @return distributor The distributor receivers settle rewards into.
     function DISTRIBUTOR() external view returns (IJBDistributor distributor);
 
-    /// @notice The receiver deployed for a sticky token, or the zero address if it hasn't been deployed yet.
-    /// @param stickyToken The sticky token to get the receiver of.
-    /// @return receiver The deployed receiver, or the zero address if it has not been deployed.
-    function receiverOf(address stickyToken) external view returns (address receiver);
-
     /// @notice The deterministic receiver address for a sticky token, whether or not it has been deployed.
     /// @dev Matches across chains only when the factory address, distributor address, receiver creation code, and
     /// sticky token address all match.
     /// @param stickyToken The sticky token to predict the receiver of.
     /// @return receiver The predicted receiver address.
     function predictReceiverOf(address stickyToken) external view returns (address receiver);
+
+    /// @notice The receiver deployed for a sticky token, or the zero address if it hasn't been deployed yet.
+    /// @param stickyToken The sticky token to get the receiver of.
+    /// @return receiver The deployed receiver, or the zero address if it has not been deployed.
+    function receiverOf(address stickyToken) external view returns (address receiver);
 
     /// @notice Deploys the receiver for a sticky token at its deterministic address.
     /// @param stickyToken The sticky token the receiver collects rewards for.

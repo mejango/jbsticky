@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Test} from "forge-std/Test.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {Test} from "forge-std/Test.sol";
 
-import {JBStickyDeployer} from "../../../src/JBStickyDeployer.sol";
-import {JBStickyToken} from "../../../src/JBStickyToken.sol";
 import {JBStickyCoreDeployment} from "../../../script/structs/JBStickyCoreDeployment.sol";
 import {JBStickyDeploymentAddresses} from "../../../script/structs/JBStickyDeploymentAddresses.sol";
+import {JBStickyDeployer} from "../../../src/JBStickyDeployer.sol";
+import {JBStickyToken} from "../../../src/JBStickyToken.sol";
 import {JBStickyDeploymentHarness} from "../../deployment/JBStickyDeploymentHarness.sol";
 
 /// @notice A live underlying project and the Sticky suite deployed locally on its pinned fork.

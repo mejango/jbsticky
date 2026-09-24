@@ -4,15 +4,14 @@ pragma solidity 0.8.28;
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 
-import {JBStickyPriceFeed} from "../../src/JBStickyPriceFeed.sol";
-import {JBStickyToken} from "../../src/JBStickyToken.sol";
-import {MockArt} from "../../script/mocks/MockArt.sol";
-
-import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
 import {JBStickyDeployment} from "../../script/helpers/JBStickyDeployment.sol";
+import {MockArt} from "../../script/mocks/MockArt.sol";
 import {JBStickyCoreDeployment} from "../../script/structs/JBStickyCoreDeployment.sol";
 import {JBStickyDeploymentAddresses} from "../../script/structs/JBStickyDeploymentAddresses.sol";
 import {JBStickyImmutableReference} from "../../script/structs/JBStickyImmutableReference.sol";
+import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
+import {JBStickyPriceFeed} from "../../src/JBStickyPriceFeed.sol";
+import {JBStickyToken} from "../../src/JBStickyToken.sol";
 import {JBStickyDeploymentHarness} from "./JBStickyDeploymentHarness.sol";
 
 /// @notice Tests the production deployment helper against real core contracts, without live network writes.

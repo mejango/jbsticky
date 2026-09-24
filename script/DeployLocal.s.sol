@@ -26,7 +26,7 @@ contract DeployLocal is JBStickyDeployment {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice The disposable local demo was not explicitly enabled.
+    /// @notice Thrown when the disposable local demo is not explicitly enabled, so it cannot run by accident.
     error DeployLocal_LocalDemoNotEnabled();
 
     //*********************************************************************//

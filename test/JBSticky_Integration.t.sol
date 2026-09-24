@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-
+import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
-import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
 import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
-import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
 import {JBStickyHook} from "../src/JBStickyHook.sol";
+import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
 import {JBStickyToken} from "../src/JBStickyToken.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
 import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
@@ -695,7 +694,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         // Stakes mint the soulbound ERC-20 directly, and it can't be transferred.
         assertEq(token.balanceOf(user), 10e18);
         vm.prank(user);
-        vm.expectRevert(JBStickyToken.JBStickyToken_Soulbound.selector);
+        vm.expectRevert(abi.encodeWithSelector(JBStickyToken.JBStickyToken_Soulbound.selector, user, granter));
         IERC20(address(token)).transfer({to: granter, value: 1e18});
 
         // The soulbound tokens can still be unstaked.

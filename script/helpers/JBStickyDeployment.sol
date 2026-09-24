@@ -24,39 +24,39 @@ abstract contract JBStickyDeployment is Script {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice A deployed contract has unexpected immutable dependencies or configuration.
+    /// @notice Thrown when a deployed contract has unexpected immutable dependencies or configuration.
     error JBStickyDeployment_BindingMismatch(address target, string binding);
 
-    /// @notice A core deployment artifact belongs to a different chain than the connected RPC.
+    /// @notice Thrown when a core deployment artifact belongs to a different chain than the connected RPC.
     error JBStickyDeployment_ChainMismatch(string path, uint256 expected, uint256 actual);
 
-    /// @notice The deterministic factory did not deploy code at the predicted address.
+    /// @notice Thrown when the deterministic factory does not deploy code at the predicted address.
     error JBStickyDeployment_DeploymentFailed(address predicted);
 
-    /// @notice The compiler artifact has unsupported or inconsistent immutable reference data.
+    /// @notice Thrown when the compiler artifact has unsupported or inconsistent immutable reference data.
     error JBStickyDeployment_InvalidArtifact(string name);
 
-    /// @notice A required deployed contract has no runtime code.
+    /// @notice Thrown when a required deployed contract has no runtime code.
     error JBStickyDeployment_MissingCode(address target);
 
-    /// @notice Deployed executable bytecode differs from the expected compiled artifact.
+    /// @notice Thrown when deployed executable bytecode differs from the expected compiled artifact.
     error JBStickyDeployment_RuntimeMismatch(address target, string name);
 
-    /// @notice The connected chain has no supported core deployment folder.
+    /// @notice Thrown when the connected chain has no supported core deployment folder.
     error JBStickyDeployment_UnsupportedChain(uint256 chainId);
 
     //*********************************************************************//
     // ------------------------- public constants ------------------------ //
     //*********************************************************************//
 
+    /// @notice The CREATE2 salt used for the auto-stick adapter.
+    bytes32 public constant AUTO_STICK_SALT = "JBStickyAutoStickV6";
+
     /// @notice The canonical deterministic deployment proxy used throughout Juicebox V6.
     address public constant DETERMINISTIC_FACTORY = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
     /// @notice The CREATE2 salt used for the Sticky deployer, distributor and reward receiver factory.
     bytes32 public constant STICKY_SALT = "JBStickyDeployerV6";
-
-    /// @notice The CREATE2 salt used for the auto-stick adapter.
-    bytes32 public constant AUTO_STICK_SALT = "JBStickyAutoStickV6";
 
     //*********************************************************************//
     // ------------------------ private constants ------------------------ //

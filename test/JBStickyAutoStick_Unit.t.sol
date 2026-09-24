@@ -1,26 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Test} from "forge-std/Test.sol";
-
+import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
+import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
+import {JBFixedPointNumber} from "@bananapus/core-v6/src/libraries/JBFixedPointNumber.sol";
+import {JBPayHookSpecification} from "@bananapus/core-v6/src/structs/JBPayHookSpecification.sol";
+import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
+import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-import {JBFixedPointNumber} from "@bananapus/core-v6/src/libraries/JBFixedPointNumber.sol";
-import {JBPayHookSpecification} from "@bananapus/core-v6/src/structs/JBPayHookSpecification.sol";
-import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
-
-import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
-import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
-import {IJBStickyDeployer} from "../src/interfaces/IJBStickyDeployer.sol";
-import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
+import {Test} from "forge-std/Test.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
-import {IJBStickyAutoStick} from "../src/interfaces/IJBStickyAutoStick.sol";
 import {JBAutoStickStatus} from "../src/enums/JBAutoStickStatus.sol";
+import {IJBStickyAutoStick} from "../src/interfaces/IJBStickyAutoStick.sol";
+import {IJBStickyDeployer} from "../src/interfaces/IJBStickyDeployer.sol";
+import {IJBStickyHook} from "../src/interfaces/IJBStickyHook.sol";
 
 /// @notice A mintable test token with configurable decimals and an optional transfer fee.
 contract MockToken is ERC20 {

@@ -78,37 +78,37 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
 
     /// @notice The address allowed to set a project's granters, once, at launch.
     /// @return deployer The immutable deployer.
-    function DEPLOYER() external view returns (address);
+    function DEPLOYER() external view returns (address deployer);
 
     /// @notice The directory of terminals and controllers for projects.
     /// @return directory The directory used to validate terminal callbacks.
-    function DIRECTORY() external view returns (IJBDirectory);
+    function DIRECTORY() external view returns (IJBDirectory directory);
 
     /// @notice The duration of a holder's active streak, in seconds.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
     /// @return duration The number of seconds since the holder's staked balance last became non-zero, or 0 if nothing
     /// is staked.
-    function currentStreakOf(uint256 projectId, address holder) external view returns (uint256);
+    function currentStreakOf(uint256 projectId, address holder) external view returns (uint256 duration);
 
     /// @notice Whether an address can airdrop stakes to any holder of a sticky project.
     /// @param projectId The ID of the sticky project to check.
     /// @param granter The address to check.
     /// @return isGranter Whether the address is a project granter.
-    function isGranterOf(uint256 projectId, address granter) external view returns (bool);
+    function isGranterOf(uint256 projectId, address granter) external view returns (bool isGranter);
 
     /// @notice Whether a holder allows a sender to add stakes to their position.
     /// @param projectId The ID of the sticky project to check.
     /// @param holder The holder whose position would be added to.
     /// @param sender The sender to check.
     /// @return isTrusted Whether the holder trusts the sender.
-    function isTrustedSenderOf(uint256 projectId, address holder, address sender) external view returns (bool);
+    function isTrustedSenderOf(uint256 projectId, address holder, address sender) external view returns (bool isTrusted);
 
     /// @notice The longest streak a holder has ever had, including their active streak.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
     /// @return duration The holder's longest streak duration, in seconds.
-    function longestStreakOf(uint256 projectId, address holder) external view returns (uint256);
+    function longestStreakOf(uint256 projectId, address holder) external view returns (uint256 duration);
 
     /// @notice Backing excluded when the most recent share supply began.
     /// @dev While no shares exist, all current terminal backing is unowned even if this stored value is lower.
@@ -120,31 +120,31 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param projectId The ID of the sticky project to check the balance of.
     /// @param holder The address to check the balance of.
     /// @return balance The holder's currently staked token balance.
-    function stakedBalanceOf(uint256 projectId, address holder) external view returns (uint256);
+    function stakedBalanceOf(uint256 projectId, address holder) external view returns (uint256 balance);
 
     /// @notice The timestamp at which a holder's active streak started, or 0 if nothing is staked.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
     /// @return timestamp The active streak's start timestamp, or zero if the balance is zero.
-    function streakStartOf(uint256 projectId, address holder) external view returns (uint256);
+    function streakStartOf(uint256 projectId, address holder) external view returns (uint256 timestamp);
 
     /// @notice The sticky token allowed to report transfers and burns for a project.
     /// @param projectId The ID of the sticky project to get the token of.
     /// @return token The project's registered sticky token.
-    function tokenOf(uint256 projectId) external view returns (address);
+    function tokenOf(uint256 projectId) external view returns (address token);
 
     /// @notice The number of tranches a holder has.
     /// @param projectId The ID of the sticky project to check the tranches of.
     /// @param holder The address to check the tranches of.
     /// @return count The number of active tranches.
-    function trancheCountOf(uint256 projectId, address holder) external view returns (uint256);
+    function trancheCountOf(uint256 projectId, address holder) external view returns (uint256 count);
 
     /// @notice A holder's tranches, oldest first.
     /// @dev Copies every active tranche. Use the paginated overload for positions with many deposits or transfers.
     /// @param projectId The ID of the sticky project to get the tranches of.
     /// @param holder The address to get the tranches of.
     /// @return tranches The active tranches, oldest first.
-    function tranchesOf(uint256 projectId, address holder) external view returns (JBStickyTranche[] memory);
+    function tranchesOf(uint256 projectId, address holder) external view returns (JBStickyTranche[] memory tranches);
 
     /// @notice A bounded range of a holder's active tranches, oldest first.
     /// @param projectId The ID of the sticky project.
@@ -162,7 +162,7 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
         view
         returns (JBStickyTranche[] memory tranches);
 
-    /// @notice Consume the newest tranches for every positive token burn, including voluntary controller burns.
+    /// @notice Consumes the newest tranches for every positive token burn, including voluntary controller burns.
     /// @dev Only the registered sticky token can report burns. Zero burns leave accounting unchanged.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose tokens were burned.

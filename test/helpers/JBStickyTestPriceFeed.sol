@@ -8,7 +8,7 @@ contract JBStickyTestPriceFeed is IJBPriceFeed {
     /// @notice The fixed denominator returned for every requested precision.
     uint256 public immutable PRICE;
 
-    /// @notice Set the deliberately incorrect fallback denominator.
+    /// @notice Sets the deliberately incorrect fallback denominator.
     /// @param price The denominator to return.
     constructor(uint256 price) {
         PRICE = price;

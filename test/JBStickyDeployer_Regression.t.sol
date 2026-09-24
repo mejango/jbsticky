@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
-
 import {TestBaseWorkflow} from "@bananapus/core-v6/test/helpers/TestBaseWorkflow.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
-
 import {JBStickyTestFeeReceiver} from "./helpers/JBStickyTestFeeReceiver.sol";
 import {JBStickyTestLauncher} from "./helpers/JBStickyTestLauncher.sol";
 

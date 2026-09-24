@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-
 import {IJBCashOutHook} from "@bananapus/core-v6/src/interfaces/IJBCashOutHook.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBPayHook} from "@bananapus/core-v6/src/interfaces/IJBPayHook.sol";
@@ -19,6 +14,10 @@ import {JBBeforePayRecordedContext} from "@bananapus/core-v6/src/structs/JBBefor
 import {JBCashOutHookSpecification} from "@bananapus/core-v6/src/structs/JBCashOutHookSpecification.sol";
 import {JBPayHookSpecification} from "@bananapus/core-v6/src/structs/JBPayHookSpecification.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
+import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
 
@@ -48,13 +47,16 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Thrown when a token reports more tokens leaving than the holder has staked.
     error JBStickyHook_InsufficientStakedBalance(uint256 projectId, address holder, uint256 balance, uint256 count);
 
-    /// @notice The terminal's backing cannot be below the excluded orphaned balance.
+    /// @notice Thrown when the terminal's backing is below the excluded orphaned balance, since share-owned backing
+    /// cannot be negative.
     error JBStickyHook_InvalidBacking(uint256 projectId, uint256 backing, uint256 orphanedBalance);
 
-    /// @notice A payment callback did not carry the pricing snapshot produced by this hook.
+    /// @notice Thrown when a payment callback does not carry the pricing snapshot produced by this hook, so its
+    /// issuance cannot be authenticated.
     error JBStickyHook_InvalidPricingMetadata(uint256 projectId, uint256 length);
 
-    /// @notice A token callback changed aggregate pricing state before this payment could be accounted for.
+    /// @notice Thrown when a token callback changes aggregate pricing state before this payment is accounted for, so a
+    /// stale quote cannot issue shares.
     error JBStickyHook_PricingStateChanged(
         uint256 projectId, uint256 expectedSupply, uint256 actualSupply, uint256 expectedBacking, uint256 actualBacking
     );
@@ -66,16 +68,19 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Thrown when an address other than the deployer attempts to set a project's granters or token.
     error JBStickyHook_Unauthorized(address caller, address deployer);
 
-    /// @notice The terminal must issue exactly the shares priced by the authenticated pre-payment snapshot.
+    /// @notice Thrown when the terminal issues a share count other than the one priced by the authenticated
+    /// pre-payment snapshot.
     error JBStickyHook_UnexpectedIssuedCount(uint256 projectId, uint256 expected, uint256 actual);
 
-    /// @notice Sticky callbacks never receive forwarded native funds.
+    /// @notice Thrown when a callback receives native funds, which this hook has no path to withdraw.
     error JBStickyHook_UnexpectedValue(uint256 value);
 
-    /// @notice Pricing requires the token registered for a Sticky project.
+    /// @notice Thrown when pricing a payment for a project without a registered Sticky token, since issuance depends on
+    /// its share supply.
     error JBStickyHook_UnknownProject(uint256 projectId);
 
-    /// @notice Thrown when a positive payment would issue no sticky tokens.
+    /// @notice Thrown when a positive payment would issue no sticky tokens, so the payer keeps funds that bought no
+    /// shares.
     error JBStickyHook_ZeroIssuance(uint256 projectId, uint256 amount);
 
     //*********************************************************************//
@@ -99,10 +104,6 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
-    /// @notice The sticky token allowed to report transfers and burns for a project.
-    /// @custom:param projectId The ID of the sticky project.
-    mapping(uint256 projectId => address) public override tokenOf;
-
     /// @notice Whether an address can airdrop stakes to any holder of a sticky project.
     /// @custom:param projectId The ID of the sticky project the granter can airdrop to.
     /// @custom:param granter The address allowed to airdrop.
@@ -116,22 +117,26 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         public
         override isTrustedSenderOf;
 
-    /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
-    /// @custom:param projectId The ID of the sticky project the balance belongs to.
-    /// @custom:param holder The address the balance belongs to.
-    mapping(uint256 projectId => mapping(address holder => uint256)) public override stakedBalanceOf;
-
     /// @notice Underlying backing permanently excluded because it was present when the project had no shares.
     /// @dev Refreshed when the next positive stake establishes a new supply. With zero supply all current backing
     /// is unowned, including donations received since this value was last stored.
     /// @custom:param projectId The ID of the sticky project.
     mapping(uint256 projectId => uint256) public override orphanedBalanceOf;
 
+    /// @notice The total number of staked project tokens a holder has, as a fixed point number with 18 decimals.
+    /// @custom:param projectId The ID of the sticky project the balance belongs to.
+    /// @custom:param holder The address the balance belongs to.
+    mapping(uint256 projectId => mapping(address holder => uint256)) public override stakedBalanceOf;
+
     /// @notice The timestamp at which a holder's active streak started, or 0 if nothing is staked.
     /// @dev Staking more never moves this timestamp. It resets only when the holder's staked balance returns to zero.
     /// @custom:param projectId The ID of the sticky project the streak belongs to.
     /// @custom:param holder The address the streak belongs to.
     mapping(uint256 projectId => mapping(address holder => uint256)) public override streakStartOf;
+
+    /// @notice The sticky token allowed to report transfers and burns for a project.
+    /// @custom:param projectId The ID of the sticky project.
+    mapping(uint256 projectId => address) public override tokenOf;
 
     //*********************************************************************//
     // -------------------- internal stored properties ------------------- //
@@ -170,7 +175,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Bind position accounting to the trusted project directory and sticky deployer.
+    /// @notice Binds position accounting to the trusted project directory and sticky deployer.
     /// @param directory The directory of terminals and controllers for projects.
     /// @param deployer The address allowed to set a project's granters, once, at launch.
     // The Sticky deployer creates its hook with its own nonzero address as the immutable registrar.
@@ -187,7 +192,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // ---------------------- external transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Accept a terminal's cash out callback without modifying token accounting.
+    /// @notice Accepts a terminal's cash out callback without modifying token accounting.
     /// @dev Burns are recorded by the registered token, including direct controller burns. Recording them here as
     /// well would consume the holder's tranches twice. This compatibility callback is not requested by the hook.
     /// @param context The cash out context passed in by the terminal.
@@ -202,7 +207,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         }
     }
 
-    /// @notice Record a stake as a new tranche for the payment's beneficiary. If the beneficiary's staked balance was
+    /// @notice Records a stake as a new tranche for the payment's beneficiary. If the beneficiary's staked balance was
     /// zero, their streak starts. Staking more never moves an existing streak's start — each tranche keeps its own
     /// timestamp so its recorded age cannot be backdated by topping up. Distributor rewards use voting checkpoints,
     /// independently of tranche age.
@@ -322,7 +327,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         });
     }
 
-    /// @notice Consume the newest tranches for every token burn, including burns that reclaim no backing.
+    /// @notice Consumes the newest tranches for every token burn, including burns that reclaim no backing.
     /// @dev Only the project's registered sticky token can report burns. Zero burns leave accounting unchanged.
     /// A holder's exit never depends on the share supply left with other holders. Small supplies can make later
     /// deposits unissuable, in which case the payment's rounding checks reject them without taking funds.
@@ -436,7 +441,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Cash out against share-owned backing, excluding funds that existed without any shares.
+    /// @notice Prices a cash out against share-owned backing, excluding funds that existed without any shares.
     /// @param context The cash out context passed to this hook by the terminal.
     /// @return cashOutTaxRate The ruleset's cash out tax rate, unchanged.
     /// @return effectiveCashOutCount The number of tokens being cashed out, unchanged.
@@ -481,7 +486,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         );
     }
 
-    /// @notice Price new shares against their pre-payment backing and request a callback to record the stake.
+    /// @notice Prices new shares against their pre-payment backing and requests a callback to record the stake.
     /// @dev Self-stakes are always allowed. Stakes to someone else require the payer to be one of the project's
     /// granters or a sender the beneficiary has trusted — so nobody can pad a stranger's position.
     /// @param context The payment context passed to this hook by the terminal.
@@ -567,7 +572,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
     /// @return duration The holder's longest streak duration, in seconds.
-    function longestStreakOf(uint256 projectId, address holder) external view override returns (uint256) {
+    function longestStreakOf(uint256 projectId, address holder) external view override returns (uint256 duration) {
         // Include an ongoing streak because it can exceed every streak the holder has already completed.
         uint256 current = currentStreakOf({projectId: projectId, holder: holder});
 
@@ -638,7 +643,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @param holder The address to check the streak of.
     /// @return duration The number of seconds since the holder's staked balance last became non-zero, or 0 if nothing
     /// is staked.
-    function currentStreakOf(uint256 projectId, address holder) public view override returns (uint256) {
+    function currentStreakOf(uint256 projectId, address holder) public view override returns (uint256 duration) {
         // The saved start tracks uninterrupted positive ownership, independently of individual tranche ages.
         uint256 streakStart = streakStartOf[projectId][holder];
 
@@ -649,7 +654,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Indicates whether this contract adheres to the specified interface.
     /// @param interfaceId The ID of the interface to check for adherence to.
     /// @return supported Whether the provided interface ID is supported.
-    function supportsInterface(bytes4 interfaceId) public view override(ERC165, IERC165) returns (bool) {
+    function supportsInterface(bytes4 interfaceId) public view override(ERC165, IERC165) returns (bool supported) {
         // Advertise the Sticky and core hook entry points while retaining the inherited ERC165 support.
         return interfaceId == type(IJBStickyHook).interfaceId || interfaceId == type(IJBRulesetDataHook).interfaceId
             || interfaceId == type(IJBPayHook).interfaceId || interfaceId == type(IJBCashOutHook).interfaceId
@@ -798,10 +803,10 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     }
 
     //*********************************************************************//
-    // ------------------------- internal views -------------------------- //
+    // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Read pre-payment or post-payment backing in the project's single accepted token.
+    /// @notice Reads pre-payment or post-payment backing in the project's single accepted token.
     /// @param terminal The project's immutable terminal.
     /// @param projectId The ID of the sticky project.
     /// @param token The accepted underlying token.
@@ -829,7 +834,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         return terminal.currentSurplusOf({projectId: projectId, tokens: tokens, decimals: decimals, currency: currency});
     }
 
-    /// @notice Copy a bounded range of active tranches without exposing logically discarded entries.
+    /// @notice Copies a bounded range of active tranches without exposing logically discarded entries.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose tranches to read.
     /// @param start The zero-based index of the first tranche to read.

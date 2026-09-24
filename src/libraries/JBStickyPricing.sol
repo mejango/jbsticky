@@ -9,7 +9,7 @@ library JBStickyPricing {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice The terminal's supported accounting precision cannot exceed 36 decimals.
+    /// @notice Thrown when the payment's accounting precision exceeds the 36 decimals the terminal supports.
     error JBStickyPricing_UnsupportedDecimals(uint256 decimals);
 
     //*********************************************************************//
@@ -28,7 +28,7 @@ library JBStickyPricing {
     // ----------------------- internal helpers -------------------------- //
     //*********************************************************************//
 
-    /// @notice Calculate the numerator of the exact share issuance ratio for a payment.
+    /// @notice Calculates the numerator of the exact share issuance ratio for a payment.
     /// @dev Empty projects begin with decimal-normalized one-for-one issuance. Their previous backing must be
     /// excluded separately. Returning zero lets terminal previews report an unissuable amount; the pay callback
     /// must reject positive payments that issue nothing. The loss bound concerns shares, not cash-out rounding.

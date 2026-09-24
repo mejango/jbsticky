@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBMultiTerminal} from "@bananapus/core-v6/src/JBMultiTerminal.sol";
+import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
 import {JBOptimismSucker} from "@bananapus/suckers-v6/src/JBOptimismSucker.sol";
+import {JBSucker} from "@bananapus/suckers-v6/src/JBSucker.sol";
 import {IJBSuckerRegistry} from "@bananapus/suckers-v6/src/interfaces/IJBSuckerRegistry.sol";
 import {IOPMessenger} from "@bananapus/suckers-v6/src/interfaces/IOPMessenger.sol";
 import {JBClaim} from "@bananapus/suckers-v6/src/structs/JBClaim.sol";
@@ -14,6 +13,7 @@ import {JBLeaf} from "@bananapus/suckers-v6/src/structs/JBLeaf.sol";
 import {JBMessageRoot} from "@bananapus/suckers-v6/src/structs/JBMessageRoot.sol";
 import {JBOutboxTree} from "@bananapus/suckers-v6/src/structs/JBOutboxTree.sol";
 import {MerkleLib} from "@bananapus/suckers-v6/src/utils/MerkleLib.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 import {JBStickyAutoStick} from "../../src/JBStickyAutoStick.sol";

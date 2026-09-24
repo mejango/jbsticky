@@ -23,11 +23,12 @@ contract JBStickyRewardReceiver {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice The receiver must settle its rewards into a nonzero distributor.
+    /// @notice Thrown when the distributor is the zero address, since the immutable settlement destination cannot be
+    /// corrected after deployment.
     /// @param distributor The distributor provided for the receiver.
     error JBStickyRewardReceiver_InvalidDistributor(IJBDistributor distributor);
 
-    /// @notice The receiver must reward a nonzero Sticky token.
+    /// @notice Thrown when the Sticky token is the zero address, since arrivals would have no rewarded holder pool.
     /// @param stickyToken The Sticky token provided for the receiver.
     error JBStickyRewardReceiver_InvalidStickyToken(address stickyToken);
 

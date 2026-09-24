@@ -23,7 +23,8 @@ contract JBStickyPriceFeed is IJBPriceFeed {
     /// @notice Thrown when existing shares have no positive backing, so their issuance ratio cannot be priced.
     error JBStickyPriceFeed_InvalidBacking(uint256 backing, uint256 orphanedBalance);
 
-    /// @notice Thrown when the requested precision exceeds the core's supported accounting precision.
+    /// @notice Thrown when the requested precision exceeds the core's supported accounting precision, which its
+    /// decimal conversions cannot represent.
     error JBStickyPriceFeed_UnsupportedDecimals(uint256 decimals);
 
     //*********************************************************************//
@@ -62,7 +63,7 @@ contract JBStickyPriceFeed is IJBPriceFeed {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Bind the feed to a launched project's terminal, share token and cached accounting context.
+    /// @notice Binds the feed to a launched project's terminal, share token and cached accounting context.
     /// @param hook The project's pricing and position-accounting hook.
     /// @param terminal The project's staking terminal.
     /// @param token The project's share token.
@@ -104,7 +105,7 @@ contract JBStickyPriceFeed is IJBPriceFeed {
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Return exact share-owned backing, or one underlying unit when bootstrapping an empty project.
+    /// @notice Returns exact share-owned backing, or one underlying unit when bootstrapping an empty project.
     /// @dev The terminal asks for `DECIMALS`, making this denominator exact. Other precisions are adjusted using
     /// the core's standard conversion. The hook rejects zero backing before core can try fallback feeds.
     /// @param decimals The precision requested for the returned denominator, up to 36.

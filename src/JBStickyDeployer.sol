@@ -34,19 +34,22 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice Thrown when a commitment reward is above the maximum cash out tax rate.
+    /// @notice Thrown when the requested cash out tax rate is above the protocol maximum, which core cannot apply.
     error JBStickyDeployer_InvalidCashOutTaxRate(uint256 rate, uint256 max);
 
     /// @notice Thrown when the underlying token maps to currency zero, which the core price registry rejects.
     error JBStickyDeployer_InvalidCurrency(address token);
 
-    /// @notice Thrown when feed registration and payment pricing would use different core price registries.
+    /// @notice Thrown when feed registration and payment pricing would use different core price registries, so the
+    /// terminal could not read the registered issuance denominator.
     error JBStickyDeployer_PriceRegistryMismatch(address controllerPrices, address terminalPrices);
 
-    /// @notice Thrown when the staked token is a share token of a project launched by this deployer.
+    /// @notice Thrown when the staked token is a share token of a project launched by this deployer, whose reward
+    /// weight the terminal could never claim.
     error JBStickyDeployer_StakedTokenIsSticky(address token, uint256 projectId);
 
-    /// @notice Thrown when an NFT arrives other than a project NFT minted during this deployer's own launch.
+    /// @notice Thrown when an NFT arrives other than a project NFT minted during this deployer's own launch, so no
+    /// unrelated project can be held without Sticky's permanent configuration.
     error JBStickyDeployer_UnexpectedNft(address collection, address from, uint256 tokenId);
 
     //*********************************************************************//
@@ -95,7 +98,7 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Bind every launched project to the same controller, terminal and position-accounting hook.
+    /// @notice Binds every launched project to the same controller, terminal and position-accounting hook.
     /// @param controller The controller used to launch and manage sticky projects.
     /// @param terminal The terminal sticky projects accept their staked token through.
     constructor(IJBController controller, IJBTerminal terminal) {
@@ -138,8 +141,8 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     /// @param projectUri The sticky project's metadata URI.
     /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`. Zero uses
     /// proportional redemption of share-owned backing. Positive values apply the protocol's cash-out curve; the maximum
-    /// returns no backing. Terminal fee
-    /// rules apply independently, including any fee-free intra-terminal balance allowances.
+    /// returns no backing. Terminal fee rules apply independently, including any fee-free intra-terminal balance
+    /// allowances.
     /// @param granters Addresses allowed to airdrop stakes to any holder (e.g. the community's grant program).
     /// Permanent — holders can additionally trust senders for their own position at any time.
     /// @param soulbound Whether transfers between holders revert. Otherwise, incoming transfers create fresh
@@ -328,7 +331,7 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Accept ownership of the project NFTs minted to this contract when sticky projects launch.
+    /// @notice Accepts ownership of the project NFTs minted to this contract when sticky projects launch.
     /// @dev Only a mint from the controller's `PROJECTS` while a launch is in progress is accepted. `originalPayer` is
     /// non-zero exactly for the duration of `deployStickyFor`, and `JBProjects` mints before forwarding its creation
     /// fee, so the accepted NFT is the one the launch requested. Transfers of existing NFTs and mints outside a launch

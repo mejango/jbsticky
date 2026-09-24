@@ -3,15 +3,14 @@
 // forge-lint: disable-next-line(pragma-inconsistent)
 pragma solidity 0.8.28;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {JBAutoStickStatus} from "./enums/JBAutoStickStatus.sol";
 
@@ -34,53 +33,59 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice The collectable or delivered reward is below the holder's minimum.
+    /// @notice Thrown when the collectable or delivered reward is below the required minimum, so a dust reward cannot
+    /// create another tranche.
     /// @param collectable The available reward amount in underlying-token decimals.
     /// @param minimum The required minimum reward amount in underlying-token decimals.
     error JBStickyAutoStick_BelowMinimum(uint256 collectable, uint256 minimum);
 
-    /// @notice The holder's previous compound is too recent.
+    /// @notice Thrown when the holder's previous automated compound is more recent than their cooldown allows.
     /// @param availableAt The earliest timestamp another compound is allowed.
     error JBStickyAutoStick_Cooldown(uint256 availableAt);
 
-    /// @notice The holder has not enabled auto-stick for this project.
+    /// @notice Thrown when a keeper acts for a holder who has not enabled auto-stick for this project.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose configuration is disabled.
     error JBStickyAutoStick_Disabled(uint256 projectId, address holder);
 
-    /// @notice The holder's allowance cannot cover the collectable reward.
+    /// @notice Thrown when the holder's allowance cannot cover the collectable reward, which is collected to their
+    /// wallet before being staked.
     /// @param allowance The current allowance to this adapter.
     /// @param needed The underlying-token allowance required for this reward.
     error JBStickyAutoStick_InsufficientAllowance(uint256 allowance, uint256 needed);
 
-    /// @notice The terminal returned fewer shares than its preview.
+    /// @notice Thrown when the terminal returns fewer shares than its preview quoted for the delivered reward.
     /// @param received The Sticky token count returned by the terminal.
     /// @param minimum The minimum Sticky token count required by the preview.
     error JBStickyAutoStick_InsufficientStickyTokens(uint256 received, uint256 minimum);
 
-    /// @notice The requested cooldown is outside the supported range.
+    /// @notice Thrown when the requested cooldown is outside the supported range, which bounds keeper-driven tranche
+    /// growth.
     /// @param cooldown The requested cooldown in seconds.
     error JBStickyAutoStick_InvalidCooldown(uint256 cooldown);
 
-    /// @notice The requested minimum reward amount is zero.
+    /// @notice Thrown when the requested minimum reward amount is zero, so every saved configuration stays usable.
     /// @param minimumAmount The requested minimum in underlying-token decimals.
     error JBStickyAutoStick_InvalidMinimum(uint256 minimumAmount);
 
-    /// @notice The configured deployer cannot resolve a complete Sticky project.
+    /// @notice Thrown when the configured deployer cannot resolve a complete Sticky project to compound into.
     /// @param projectId The unrecognized project ID.
     error JBStickyAutoStick_InvalidProject(uint256 projectId);
 
-    /// @notice The holder has not trusted this adapter and the project has not approved it as a granter.
+    /// @notice Thrown when the holder has not trusted this adapter and the project has not approved it as a granter, so
+    /// the hook would reject the stake.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose position the adapter cannot add to.
     error JBStickyAutoStick_NotTrusted(uint256 projectId, address holder);
 
-    /// @notice The adapter received a different amount than it transferred from the holder.
+    /// @notice Thrown when the adapter receives a different amount than it transferred from the holder, so the payment
+    /// cannot consume unrelated adapter funds.
     /// @param expected The amount transferred from the holder.
     /// @param received The actual increase in the adapter's underlying-token balance.
     error JBStickyAutoStick_UnexpectedTokenDelta(uint256 expected, uint256 received);
 
-    /// @notice The terminal preview cannot issue any Sticky shares for the reward.
+    /// @notice Thrown when the terminal preview cannot issue any Sticky shares for the reward, which would otherwise be
+    /// donated.
     /// @param projectId The ID of the sticky project.
     /// @param underlyingAmount The reward amount in underlying-token decimals.
     error JBStickyAutoStick_ZeroIssuance(uint256 projectId, uint256 underlyingAmount);
@@ -392,7 +397,7 @@ contract JBStickyAutoStick is ReentrancyGuard, IJBStickyAutoStick {
     }
 
     //*********************************************************************//
-    // ------------------- internal transactions ------------------------- //
+    // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
     /// @notice Collects a holder's vested rewards to their wallet and pays the delivered amount into their sticky

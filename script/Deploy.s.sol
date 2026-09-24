@@ -13,7 +13,7 @@ contract Deploy is JBStickyDeployment, Sphinx {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice Sphinx resolved a Safe other than the reviewed V6 deployment Safe.
+    /// @notice Thrown when Sphinx resolves a Safe other than the reviewed V6 deployment Safe.
     error Deploy_UnexpectedSafe(address expected, address actual);
 
     //*********************************************************************//

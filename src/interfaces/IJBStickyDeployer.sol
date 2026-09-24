@@ -33,35 +33,35 @@ interface IJBStickyDeployer is IJBPayerTracker {
 
     /// @notice The controller used to launch and manage sticky projects.
     /// @return controller The immutable project controller.
-    function CONTROLLER() external view returns (IJBController);
+    function CONTROLLER() external view returns (IJBController controller);
 
     /// @notice The data hook that tracks staking positions for sticky projects.
     /// @return hook The immutable pricing and accounting hook.
-    function HOOK() external view returns (IJBStickyHook);
+    function HOOK() external view returns (IJBStickyHook hook);
 
     /// @notice The terminal sticky projects accept their staked token through.
     /// @return terminal The immutable staking terminal.
-    function TERMINAL() external view returns (IJBTerminal);
+    function TERMINAL() external view returns (IJBTerminal terminal);
 
     /// @notice The contract managing token minting and burning for projects.
     /// @return tokens The controller's token registry.
-    function TOKENS() external view returns (IJBTokens);
+    function TOKENS() external view returns (IJBTokens tokens);
 
     /// @notice The project's cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
     /// @dev The retained proportion also depends on the fraction of supply redeemed; this is not a flat fee.
     /// @param projectId The ID of the sticky project to get the cash out tax rate of.
     /// @return rate The project's permanent tax rate, out of the protocol maximum.
-    function cashOutTaxRateOf(uint256 projectId) external view returns (uint256);
+    function cashOutTaxRateOf(uint256 projectId) external view returns (uint256 rate);
 
     /// @notice The immutable accounting feed supplying the denominator of the share issuance ratio.
     /// @param projectId The ID of the sticky project.
     /// @return feed The project's feed, or the zero address for an unknown project.
-    function priceFeedOf(uint256 projectId) external view returns (IJBPriceFeed);
+    function priceFeedOf(uint256 projectId) external view returns (IJBPriceFeed feed);
 
     /// @notice The token a sticky project accepts for staking.
     /// @param projectId The ID of the sticky project to get the staked token of.
     /// @return token The underlying token, or the zero address for an unknown project.
-    function stakedTokenOf(uint256 projectId) external view returns (IERC20Metadata);
+    function stakedTokenOf(uint256 projectId) external view returns (IERC20Metadata token);
 
     /// @notice Deploys a sticky project for a token.
     /// @dev The `msg.value` must equal the project creation fee required by `JBProjects`.

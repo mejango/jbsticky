@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {JBMultiTerminal} from "@bananapus/core-v6/src/JBMultiTerminal.sol";
 import {JBFees} from "@bananapus/core-v6/src/libraries/JBFees.sol";
 import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
 import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
 import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {JBStickyAutoStick} from "../../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../../src/JBStickyDeployer.sol";
@@ -235,7 +235,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         assertEq(_hook.trancheCountOf(_projectId, _alice), 3);
         vm.startPrank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: _bob, trusted: false});
-        vm.expectRevert(JBStickyToken.JBStickyToken_Soulbound.selector);
+        vm.expectRevert(abi.encodeWithSelector(JBStickyToken.JBStickyToken_Soulbound.selector, _alice, _bob));
         _token.transfer({to: _bob, value: amount});
         vm.stopPrank();
         assertFalse(_hook.isTrustedSenderOf(_projectId, _alice, _bob));
