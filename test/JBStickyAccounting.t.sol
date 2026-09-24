@@ -27,6 +27,8 @@ contract JBStickyAccountingTest is Test {
     mapping(address holder => uint256) internal _modelBalance;
     mapping(address holder => uint256) internal _modelStart;
     mapping(address holder => uint256) internal _modelLongest;
+    mapping(uint256 epoch => uint256) internal _modelBucket;
+    uint256[] internal _modelEpochs;
 
     function setUp() public {
         IJBDirectory directory = IJBDirectory(makeAddr("directory"));
@@ -198,32 +200,56 @@ contract JBStickyAccountingTest is Test {
         assertEq(_token.delegates(_alice), address(0));
     }
 
-    function test_partialExitAcrossThousandPositiveDustTransfersHasBoundedGas() public {
+    function test_sameWeekDustTransfersMergeIntoTheNewestTranche() public {
+        _dustPosition();
+        JBStickyTranche[] memory tranches = _hook.tranchesOf(_PROJECT_ID, _alice);
+        assertEq(tranches.length, 1);
+        assertEq(tranches[0].amount, 10e18 + 1000);
+        // The merged tranche carries the latest joining's timestamp, never an earlier one.
+        assertEq(tranches[0].timestamp, 1001);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 0), 10e18 + 1000);
+        assertEq(_hook.stakedBalanceThroughEpochOf(_PROJECT_ID, _alice, 0), 10e18 + 1000);
+
+        // The next week starts a new tranche instead of extending the merged one.
+        vm.warp(1 weeks + 5);
+        _mintAndRecord(_alice, 7);
+        tranches = _hook.tranchesOf(_PROJECT_ID, _alice);
+        assertEq(tranches.length, 2);
+        assertEq(tranches[1].amount, 7);
+        assertEq(tranches[1].timestamp, 1 weeks + 5);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 1), 7);
+        assertEq(_hook.stakedBalanceThroughEpochOf(_PROJECT_ID, _alice, 0), 10e18 + 1000);
+        assertEq(_hook.stakedBalanceThroughEpochOf(_PROJECT_ID, _alice, 1), 10e18 + 1007);
+    }
+
+    function test_partialExitAcrossThousandSameWeekDustTransfersHasBoundedGas() public {
         _dustPosition();
         vm.cool(address(_hook));
         vm.cool(address(_token));
         uint256 beforeGas = gasleft();
         (bool success,) = address(_token).call{gas: 250_000}(abi.encodeCall(JBStickyToken.burn, (_alice, 1001)));
-        emit log_named_uint("Cold partial burn through 1,000 dust tranches", beforeGas - gasleft());
+        emit log_named_uint("Cold partial burn through 1,000 same-week dust transfers", beforeGas - gasleft());
         assertTrue(success, "partial exit must fit the fixed gas budget");
         JBStickyTranche[] memory tranches = _hook.tranchesOf(_PROJECT_ID, _alice);
         assertEq(tranches.length, 1);
         assertEq(tranches[0].amount, 10e18 - 1);
-        assertEq(tranches[0].timestamp, 1);
+        assertEq(tranches[0].timestamp, 1001);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 0), 10e18 - 1);
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _alice), _token.balanceOf(_alice));
     }
 
-    function test_fullExitAcrossThousandPositiveDustTransfersHasBoundedGas() public {
+    function test_fullExitAcrossThousandSameWeekDustTransfersHasBoundedGas() public {
         _dustPosition();
         vm.cool(address(_hook));
         vm.cool(address(_token));
         uint256 beforeGas = gasleft();
         (bool success,) = address(_token).call{gas: 200_000}(abi.encodeCall(JBStickyToken.burn, (_alice, 10e18 + 1000)));
-        emit log_named_uint("Cold full burn through 1,000 dust tranches", beforeGas - gasleft());
+        emit log_named_uint("Cold full burn through 1,000 same-week dust transfers", beforeGas - gasleft());
         assertTrue(success, "full exit must fit the fixed gas budget");
         assertEq(_hook.trancheCountOf(_PROJECT_ID, _alice), 0);
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _alice), 0);
         assertEq(_hook.streakStartOf(_PROJECT_ID, _alice), 0);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 0), 0);
         _mintAndRecord(_alice, 123);
         JBStickyTranche[] memory tranches = _hook.tranchesOf(_PROJECT_ID, _alice);
         assertEq(tranches.length, 1);
@@ -231,8 +257,59 @@ contract JBStickyAccountingTest is Test {
         assertEq(tranches[0].timestamp, vm.getBlockTimestamp());
     }
 
+    function test_exitGasGrowsWithDistinctWeeksNotDeposits() public {
+        // Ten years of weekly dust: 520 tranches in 520 distinct epochs, the most tenure rewards can distinguish.
+        _weeklyPosition(520);
+        vm.cool(address(_hook));
+        vm.cool(address(_token));
+        uint256 beforeGas = gasleft();
+        (bool success,) =
+            address(_token).call{gas: 5_000_000}(abi.encodeCall(JBStickyToken.burn, (_alice, 10e18 + 520)));
+        uint256 used = beforeGas - gasleft();
+        emit log_named_uint("Cold full burn through 520 weekly tranches", used);
+        assertTrue(success, "a full exit across 520 weekly tranches must fit the recorded budget");
+        // About 7,600 gas per distinct week: one tranche read and one bucket debit each. Recorded in RISKS.md.
+        assertLt(used, 4_200_000);
+        assertEq(_hook.trancheCountOf(_PROJECT_ID, _alice), 0);
+        assertEq(_hook.stakedBalanceOf(_PROJECT_ID, _alice), 0);
+        for (uint256 epoch; epoch <= 520; epoch++) {
+            assertEq(_hook.netStakedIn(_PROJECT_ID, epoch), 0);
+        }
+    }
+
+    function test_partialExitDebitsEachConsumedWeekAtItsOriginalEpoch() public {
+        _weeklyPosition(3);
+        // Alice: 10e18 in epoch 0, then 1 unit in each of epochs 1, 2, 3.
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 0), 10e18);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 1), 1);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 2), 1);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 3), 1);
+        assertEq(_hook.netStakedWithin(_PROJECT_ID, 0, 3), 10e18 + 3);
+        assertEq(_hook.netStakedWithin(_PROJECT_ID, 1, 2), 2);
+
+        // Burning 2 + a slice of epoch 1 leaves epoch 0 whole, trims epoch 1, and empties epochs 2 and 3.
+        vm.warp(10 weeks);
+        _token.burn({account: _alice, amount: 2});
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 0), 10e18);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 1), 1);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 2), 0);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 3), 0);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 10), 0);
+        _token.burn({account: _alice, amount: 5});
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 0), 10e18 - 4);
+        assertEq(_hook.netStakedIn(_PROJECT_ID, 1), 0);
+        assertEq(_hook.stakedBalanceThroughEpochOf(_PROJECT_ID, _alice, 0), 10e18 - 4);
+        assertEq(_hook.stakedBalanceThroughEpochOf(_PROJECT_ID, _alice, 9), 10e18 - 4);
+        assertEq(_hook.trancheCountOf(_PROJECT_ID, _alice), 1);
+    }
+
+    function test_netStakedWithinRejectsInvertedRange() public {
+        vm.expectRevert(abi.encodeWithSelector(JBStickyHook.JBStickyHook_InvalidEpochRange.selector, 3, 2));
+        _hook.netStakedWithin(_PROJECT_ID, 3, 2);
+    }
+
     function test_paginationCapsResultsAndNeverRevealsDiscardedTail() public {
-        _dustPosition();
+        _weeklyPosition(1000);
         JBStickyTranche[] memory page = _hook.tranchesOf(_PROJECT_ID, _alice, 0, type(uint256).max);
         assertEq(page.length, 256);
         assertEq(page[0].amount, 10e18);
@@ -252,7 +329,8 @@ contract JBStickyAccountingTest is Test {
     function testFuzz_mixedMovementsMatchLifoReferenceModel(uint256 seed) public {
         for (uint256 i; i < 64; i++) {
             seed = uint256(keccak256(abi.encode(seed, i)));
-            vm.warp(vm.getBlockTimestamp() + seed % 100);
+            // Jumps under a week keep merges common; the occasional multi-day jump crosses epoch boundaries.
+            vm.warp(vm.getBlockTimestamp() + seed % 4 days);
             address from = seed & 1 == 0 ? _alice : _bob;
             address to = seed & 2 == 0 ? _alice : _bob;
             uint256 operation = (seed >> 2) % 5;
@@ -276,8 +354,26 @@ contract JBStickyAccountingTest is Test {
             }
             _assertPosition(_alice);
             _assertPosition(_bob);
+            _assertBuckets();
             assertEq(_token.totalSupply(), _modelBalance[_alice] + _modelBalance[_bob]);
             assertEq(_token.getTotalActiveVotes(), _token.totalSupply());
+        }
+    }
+
+    function testFuzz_stakedBalanceThroughEpochMatchesBruteForce(uint256 seed) public {
+        for (uint256 i; i < 48; i++) {
+            seed = uint256(keccak256(abi.encode(seed, i)));
+            vm.warp(vm.getBlockTimestamp() + seed % 10 days);
+            uint256 amount = (seed >> 8) % 1e20;
+            if (seed & 1 == 0) {
+                _mintAndRecord(_alice, amount);
+                _modelAdd(_alice, amount);
+            } else {
+                amount %= _modelBalance[_alice] + 1;
+                _token.burn({account: _alice, amount: amount});
+                _modelConsume(_alice, amount);
+            }
+            _assertThroughEpochs(_alice);
         }
     }
 
@@ -289,8 +385,11 @@ contract JBStickyAccountingTest is Test {
             assertEq(actual[i].amount, _modelTranches[holder][i].amount);
             assertEq(actual[i].timestamp, _modelTranches[holder][i].timestamp);
             assertGt(actual[i].amount, 0);
+            // Merging keeps every active tranche in a distinct, increasing epoch.
+            if (i != 0) assertGt(uint256(actual[i].timestamp) / 1 weeks, uint256(actual[i - 1].timestamp) / 1 weeks);
             sum += actual[i].amount;
         }
+        _assertThroughEpochs(holder);
         assertEq(sum, _modelBalance[holder]);
         assertEq(_hook.stakedBalanceOf(_PROJECT_ID, holder), sum);
         assertEq(_token.balanceOf(holder), sum);
@@ -304,6 +403,40 @@ contract JBStickyAccountingTest is Test {
         );
     }
 
+    /// @notice Checks `stakedBalanceThroughEpochOf` against a brute-force sum of the model's tranches at every epoch
+    /// boundary the holder's tranches touch, plus the edges.
+    function _assertThroughEpochs(address holder) internal view {
+        JBStickyTranche[] storage model = _modelTranches[holder];
+        uint256 probes = model.length * 3 + 2;
+        for (uint256 p; p < probes; p++) {
+            uint256 epoch;
+            if (p == probes - 2) {
+                epoch = 0;
+            } else if (p == probes - 1) {
+                epoch = type(uint256).max;
+            } else {
+                uint256 base = uint256(model[p / 3].timestamp) / 1 weeks;
+                epoch = p % 3 == 0 ? base : (p % 3 == 1 ? base + 1 : (base == 0 ? 0 : base - 1));
+            }
+            uint256 expected;
+            for (uint256 i; i < model.length; i++) {
+                if (uint256(model[i].timestamp) / 1 weeks <= epoch) expected += model[i].amount;
+            }
+            assertEq(_hook.stakedBalanceThroughEpochOf(_PROJECT_ID, holder, epoch), expected);
+        }
+    }
+
+    /// @notice Checks every touched epoch bucket against the model, and that the buckets sum to the balances.
+    function _assertBuckets() internal view {
+        uint256 sum;
+        for (uint256 i; i < _modelEpochs.length; i++) {
+            uint256 epoch = _modelEpochs[i];
+            assertEq(_hook.netStakedIn(_PROJECT_ID, epoch), _modelBucket[epoch]);
+            sum += _modelBucket[epoch];
+        }
+        assertEq(sum, _modelBalance[_alice] + _modelBalance[_bob]);
+    }
+
     function _callback(address holder, uint256 amount) internal {
         JBAfterCashOutRecordedContext memory context;
         context.projectId = _PROJECT_ID;
@@ -313,6 +446,7 @@ contract JBStickyAccountingTest is Test {
         _hook.afterCashOutRecordedWith(context);
     }
 
+    /// @notice Alice holds 10e18 plus 1,000 same-week dust transfers, which all merge into one tranche.
     function _dustPosition() internal {
         vm.warp(1);
         _mintAndRecord(_alice, 10e18);
@@ -323,7 +457,21 @@ contract JBStickyAccountingTest is Test {
             _token.transfer({to: _alice, value: 1});
         }
         vm.stopPrank();
-        assertEq(_hook.trancheCountOf(_PROJECT_ID, _alice), 1001);
+        assertEq(_hook.trancheCountOf(_PROJECT_ID, _alice), 1);
+    }
+
+    /// @notice Alice holds 10e18 plus one dust transfer in each of the next `weeks` weeks: `weeks + 1` tranches.
+    function _weeklyPosition(uint256 weeks_) internal {
+        vm.warp(1);
+        _mintAndRecord(_alice, 10e18);
+        _mintAndRecord(_stranger, weeks_);
+        vm.startPrank(_stranger);
+        for (uint256 i; i < weeks_; i++) {
+            vm.warp((i + 1) * 1 weeks + 1);
+            _token.transfer({to: _alice, value: 1});
+        }
+        vm.stopPrank();
+        assertEq(_hook.trancheCountOf(_PROJECT_ID, _alice), weeks_ + 1);
     }
 
     function _mintAndRecord(address holder, uint256 amount) internal {
@@ -346,9 +494,16 @@ contract JBStickyAccountingTest is Test {
         if (amount == 0) return;
         if (_modelBalance[holder] == 0) _modelStart[holder] = vm.getBlockTimestamp();
         _modelBalance[holder] += amount;
-        _modelTranches[holder].push(
-            JBStickyTranche({amount: uint208(amount), timestamp: uint48(vm.getBlockTimestamp())})
-        );
+        uint256 epoch = vm.getBlockTimestamp() / 1 weeks;
+        _modelCredit(epoch, amount);
+        JBStickyTranche[] storage tranches = _modelTranches[holder];
+        // Same-epoch joins extend the newest tranche and move its timestamp to now.
+        if (tranches.length != 0 && uint256(tranches[tranches.length - 1].timestamp) / 1 weeks == epoch) {
+            tranches[tranches.length - 1].amount += uint208(amount);
+            tranches[tranches.length - 1].timestamp = uint48(vm.getBlockTimestamp());
+            return;
+        }
+        tranches.push(JBStickyTranche({amount: uint208(amount), timestamp: uint48(vm.getBlockTimestamp())}));
     }
 
     function _modelConsume(address holder, uint256 amount) internal {
@@ -356,11 +511,14 @@ contract JBStickyAccountingTest is Test {
         _modelBalance[holder] -= amount;
         while (amount != 0) {
             JBStickyTranche storage tranche = _modelTranches[holder][_modelTranches[holder].length - 1];
+            uint256 epoch = uint256(tranche.timestamp) / 1 weeks;
             if (tranche.amount > amount) {
                 tranche.amount -= uint208(amount);
+                _modelBucket[epoch] -= amount;
                 amount = 0;
             } else {
                 amount -= tranche.amount;
+                _modelBucket[epoch] -= tranche.amount;
                 _modelTranches[holder].pop();
             }
         }
@@ -369,6 +527,17 @@ contract JBStickyAccountingTest is Test {
             if (duration > _modelLongest[holder]) _modelLongest[holder] = duration;
             _modelStart[holder] = 0;
         }
+    }
+
+    function _modelCredit(uint256 epoch, uint256 amount) internal {
+        if (_modelBucket[epoch] == 0) {
+            bool known;
+            for (uint256 i; i < _modelEpochs.length; i++) {
+                if (_modelEpochs[i] == epoch) known = true;
+            }
+            if (!known) _modelEpochs.push(epoch);
+        }
+        _modelBucket[epoch] += amount;
     }
 
     function _payContext(

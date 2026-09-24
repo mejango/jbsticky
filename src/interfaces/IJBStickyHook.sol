@@ -8,8 +8,8 @@ import {IJBRulesetDataHook} from "@bananapus/core-v6/src/interfaces/IJBRulesetDa
 
 import {JBStickyTranche} from "../structs/JBStickyTranche.sol";
 
-/// @notice A data hook that tracks staking positions for sticky projects: per-deposit tranches, LIFO unstaking, and a
-/// holder-level streak clock.
+/// @notice A data hook that tracks staking positions for sticky projects: per-epoch tranches, LIFO unstaking, net
+/// stake buckets by joining epoch, and a holder-level streak clock.
 interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @notice Emitted when backing present without any shares is excluded from future holders' claims.
     /// @param projectId The ID of the sticky project.
@@ -36,7 +36,7 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param trusted Whether the sender is now trusted.
     event SetTrustedSender(uint256 indexed projectId, address indexed holder, address indexed sender, bool trusted);
 
-    /// @notice Emitted when tokens are staked, creating a new tranche.
+    /// @notice Emitted when tokens are staked, joining the holder's newest tranche of the epoch or creating a new one.
     /// @param projectId The ID of the sticky project being staked to.
     /// @param holder The address the staked position belongs to.
     /// @param payer The address the staked tokens came from.
@@ -84,6 +84,11 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @return directory The directory used to validate terminal callbacks.
     function DIRECTORY() external view returns (IJBDirectory directory);
 
+    /// @notice The duration of one stake-age epoch. Tranches created in the same epoch merge, and net stake is
+    /// bucketed by the epoch it joined in.
+    /// @return duration The epoch duration, in seconds.
+    function EPOCH_DURATION() external view returns (uint256 duration);
+
     /// @notice The duration of a holder's active streak, in seconds.
     /// @param projectId The ID of the sticky project to check the streak of.
     /// @param holder The address to check the streak of.
@@ -110,6 +115,27 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @return duration The holder's longest streak duration, in seconds.
     function longestStreakOf(uint256 projectId, address holder) external view returns (uint256 duration);
 
+    /// @notice The net stake still held from tranches created in an epoch, as a fixed point number with 18 decimals.
+    /// @param projectId The ID of the sticky project.
+    /// @param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
+    /// @return amount The epoch's net stake bucket.
+    function netStakedIn(uint256 projectId, uint256 epoch) external view returns (uint256 amount);
+
+    /// @notice The net stake still held from tranches created within an inclusive epoch range, as a fixed point
+    /// number with 18 decimals.
+    /// @param projectId The ID of the sticky project.
+    /// @param fromEpoch The first epoch to include.
+    /// @param toEpoch The last epoch to include.
+    /// @return amount The sum of the range's net stake buckets.
+    function netStakedWithin(
+        uint256 projectId,
+        uint256 fromEpoch,
+        uint256 toEpoch
+    )
+        external
+        view
+        returns (uint256 amount);
+
     /// @notice Backing excluded when the most recent share supply began.
     /// @dev While no shares exist, all current terminal backing is unowned even if this stored value is lower.
     /// @param projectId The ID of the sticky project.
@@ -121,6 +147,21 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param holder The address to check the balance of.
     /// @return balance The holder's currently staked token balance.
     function stakedBalanceOf(uint256 projectId, address holder) external view returns (uint256 balance);
+
+    /// @notice A holder's staked balance held in tranches created through an epoch, as a fixed point number with 18
+    /// decimals.
+    /// @param projectId The ID of the sticky project.
+    /// @param holder The holder whose tranches to read.
+    /// @param epoch The last epoch to include.
+    /// @return balance The staked balance from tranches created in or before the epoch.
+    function stakedBalanceThroughEpochOf(
+        uint256 projectId,
+        address holder,
+        uint256 epoch
+    )
+        external
+        view
+        returns (uint256 balance);
 
     /// @notice The timestamp at which a holder's active streak started, or 0 if nothing is staked.
     /// @param projectId The ID of the sticky project to check the streak of.
@@ -170,7 +211,8 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     function recordBurn(uint256 projectId, address holder, uint256 amount) external;
 
     /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
-    /// tranches are consumed and the receiver gets a fresh tranche. The receiver's existing streak continues.
+    /// tranches are consumed and the moved tokens join the receiver's newest tranche of the current epoch, or a fresh
+    /// one. The receiver's existing streak continues.
     /// @dev Can only be called by the project's registered sticky token. Zero and self transfers are no-ops.
     /// @param projectId The ID of the sticky project the transfer belongs to.
     /// @param from The holder the tokens moved from.

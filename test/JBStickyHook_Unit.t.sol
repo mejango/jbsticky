@@ -174,9 +174,9 @@ contract JBStickyHookUnitTest is Test {
     function test_afterCashOut_spansMultipleTranches() public {
         uint256 start = vm.getBlockTimestamp();
         _pay(holder, 4e18);
-        vm.warp(start + 1 days);
+        vm.warp(start + 1 weeks);
         _pay(holder, 3e18);
-        vm.warp(start + 2 days);
+        vm.warp(start + 2 weeks);
         _pay(holder, 2e18);
 
         // Unstaking 6 consumes the two newest tranches (2 + 3) and splits 1 out of the oldest.

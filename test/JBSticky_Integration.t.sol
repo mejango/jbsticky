@@ -512,8 +512,9 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         vm.prank(keeper);
         adapter.beginVestingFor({projectId: projectId, holder: user});
 
-        // Once fully vested, the keeper compounds: the user's 75 ART share is collected, pulled, and restuck.
-        vm.warp(vm.getBlockTimestamp() + 3 days);
+        // Once fully vested and a week past the original stake, the keeper compounds: the user's 75 ART share is
+        // collected, pulled, and restuck into a tranche of its own rather than merging into the same-week one.
+        vm.warp(start + 1 weeks);
         vm.roll(vm.getBlockNumber() + 1);
         (JBAutoStickStatus status,,,) = adapter.statusOf(projectId, user);
         assertEq(uint256(status), uint256(JBAutoStickStatus.Ready));
@@ -524,7 +525,7 @@ contract JBStickyIntegrationTest is TestBaseWorkflow {
         assertEq(stickyTokenCount, 75e18);
 
         // The reward passed through the user's wallet and ended up staked — a fresh tranche at the compound
-        // timestamp, with the original streak untouched.
+        // timestamp because a week has passed, with the original streak untouched.
         assertEq(art.balanceOf(user), walletBefore);
         assertEq(hook.stakedBalanceOf(projectId, user), 105e18);
         JBStickyTranche[] memory tranches = hook.tranchesOf(projectId, user);

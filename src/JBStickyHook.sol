@@ -26,11 +26,13 @@ import {JBStickyPricing} from "./libraries/JBStickyPricing.sol";
 import {JBStickyPaySnapshot} from "./structs/JBStickyPaySnapshot.sol";
 import {JBStickyTranche} from "./structs/JBStickyTranche.sol";
 
-/// @notice A data hook that tracks staking positions for sticky projects. Each stake creates a tranche with its own
-/// timestamp, unstakes consume tranches newest-first (splitting the newest tranche if needed, without resetting its
-/// timestamp), and each holder has a streak clock that starts when their staked balance becomes non-zero and resets
-/// only when it returns to zero. Tranche and streak views are informational; reward distributions use the token's
-/// voting checkpoints.
+/// @notice A data hook that tracks staking positions for sticky projects. Each stake joins the holder's newest
+/// tranche when both were created in the same epoch and otherwise creates a tranche with its own timestamp, unstakes
+/// consume tranches newest-first (splitting the newest tranche if needed, without resetting its timestamp), and each
+/// holder has a streak clock that starts when their staked balance becomes non-zero and resets only when it returns
+/// to zero. Net stake is also bucketed by the epoch it joined in, so the distributor can weigh tenure rewards by
+/// tranche age without checkpoints. Streak views are informational; default-group rewards use the token's voting
+/// checkpoints.
 // Callbacks are payable to implement the core interfaces, but both explicitly reject ETH.
 // slither-disable-next-line locked-ether
 contract JBStickyHook is ERC165, IJBStickyHook {
@@ -50,6 +52,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice Thrown when the terminal's backing is below the excluded orphaned balance, since share-owned backing
     /// cannot be negative.
     error JBStickyHook_InvalidBacking(uint256 projectId, uint256 backing, uint256 orphanedBalance);
+
+    /// @notice Thrown when an epoch range ends before it starts, so it selects no buckets.
+    error JBStickyHook_InvalidEpochRange(uint256 fromEpoch, uint256 toEpoch);
 
     /// @notice Thrown when a payment callback does not carry the pricing snapshot produced by this hook, so its
     /// issuance cannot be authenticated.
@@ -84,6 +89,14 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     error JBStickyHook_ZeroIssuance(uint256 projectId, uint256 amount);
 
     //*********************************************************************//
+    // ------------------------- public constants ------------------------ //
+    //*********************************************************************//
+
+    /// @notice The duration of one stake-age epoch. Tranches created in the same epoch merge, and net stake is
+    /// bucketed by the epoch it joined in.
+    uint256 public constant override EPOCH_DURATION = 1 weeks;
+
+    //*********************************************************************//
     // ----------------------- internal constants ------------------------ //
     //*********************************************************************//
 
@@ -116,6 +129,14 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     mapping(uint256 projectId => mapping(address holder => mapping(address sender => bool)))
         public
         override isTrustedSenderOf;
+
+    /// @notice The net stake still held from tranches created in each epoch, as a fixed point number with 18
+    /// decimals.
+    /// @dev Grows when tokens join a position during the epoch and shrinks when a tranche created in the epoch is
+    /// later consumed, so a project's buckets always sum to its holders' staked balances.
+    /// @custom:param projectId The ID of the sticky project.
+    /// @custom:param epoch The epoch, measured as `timestamp / EPOCH_DURATION`.
+    mapping(uint256 projectId => mapping(uint256 epoch => uint256)) public override netStakedIn;
 
     /// @notice Underlying backing permanently excluded because it was present when the project had no shares.
     /// @dev Refreshed when the next positive stake establishes a new supply. With zero supply all current backing
@@ -163,8 +184,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     mapping(uint256 projectId => mapping(address holder => mapping(uint256 index => uint256))) internal _trancheEndOf;
 
     /// @notice Each holder's staking tranches, oldest first, including inactive storage awaiting reuse.
-    /// @dev Only entries below `_trancheCountOf` are active. Logical truncation keeps full exits constant cost and
-    /// partial exits logarithmic even after arbitrary incoming dust transfers.
+    /// @dev Only entries below `_trancheCountOf` are active, and each active tranche was created in a distinct epoch.
+    /// Logical truncation plus same-epoch merging keeps an exit's cost bounded by the number of epochs it consumes
+    /// even after arbitrary incoming dust transfers.
     /// @custom:param projectId The ID of the sticky project the tranches belong to.
     /// @custom:param holder The address the tranches belong to.
     /// @custom:param index The tranche's zero-based index.
@@ -207,10 +229,11 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         }
     }
 
-    /// @notice Records a stake as a new tranche for the payment's beneficiary. If the beneficiary's staked balance was
-    /// zero, their streak starts. Staking more never moves an existing streak's start — each tranche keeps its own
-    /// timestamp so its recorded age cannot be backdated by topping up. Distributor rewards use voting checkpoints,
-    /// independently of tranche age.
+    /// @notice Records a stake for the payment's beneficiary, joining their newest tranche when it was created in the
+    /// same epoch and creating a new tranche otherwise. If the beneficiary's staked balance was zero, their streak
+    /// starts. Staking more never moves an existing streak's start, and a tranche's timestamp only ever moves
+    /// forward, so a recorded age cannot be backdated by topping up. Tenure rewards weigh tranche age through the
+    /// epoch buckets; default-group rewards use voting checkpoints.
     /// @dev Can only be called by a terminal of the project. No funds are forwarded to this hook.
     /// @param context The payment context passed in by the terminal.
     function afterPayRecordedWith(JBAfterPayRecordedContext calldata context) external payable override {
@@ -311,7 +334,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
             });
         }
 
-        // Record the stake as a new tranche, starting the beneficiary's streak if their balance was zero.
+        // Record the stake in the beneficiary's newest tranche, starting their streak if their balance was zero.
         uint256 stakedBalance = _addTo({projectId: context.projectId, holder: context.beneficiary, count: count});
 
         // Publish the authenticated deposit and resulting balance for position histories.
@@ -354,7 +377,8 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     }
 
     /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
-    /// tranches are consumed and the receiver gets a fresh tranche. The receiver's existing streak continues.
+    /// tranches are consumed and the moved tokens join the receiver's newest tranche of the current epoch, or a fresh
+    /// one. The receiver's existing streak continues.
     /// @dev Can only be called by the project's registered sticky token.
     /// @param projectId The ID of the sticky project the transfer belongs to.
     /// @param from The holder the tokens moved from.
@@ -378,7 +402,7 @@ contract JBStickyHook is ERC165, IJBStickyHook {
             projectId: projectId, holder: from, count: amount, stakedBalance: fromBalance, caller: msg.sender
         });
 
-        // The moved tokens restart their clock as the receiver's newest tranche.
+        // The moved tokens restart their clock in the receiver's newest tranche.
         uint256 toBalance = _addTo({projectId: projectId, holder: to, count: amount});
 
         // Attribute the receiver's added stake to the sender while preserving their resulting balance.
@@ -583,6 +607,73 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         return current > longestCompleted ? current : longestCompleted;
     }
 
+    /// @notice The net stake still held from tranches created within an inclusive epoch range, as a fixed point
+    /// number with 18 decimals.
+    /// @param projectId The ID of the sticky project.
+    /// @param fromEpoch The first epoch to include.
+    /// @param toEpoch The last epoch to include.
+    /// @return amount The sum of the range's net stake buckets.
+    function netStakedWithin(
+        uint256 projectId,
+        uint256 fromEpoch,
+        uint256 toEpoch
+    )
+        external
+        view
+        override
+        returns (uint256 amount)
+    {
+        // An inverted range selects no buckets, so reject it instead of silently reporting zero.
+        if (fromEpoch > toEpoch) revert JBStickyHook_InvalidEpochRange({fromEpoch: fromEpoch, toEpoch: toEpoch});
+
+        // Sum every bucket in the range; callers bound the range to the weeks their reward window spans.
+        for (uint256 epoch = fromEpoch; epoch <= toEpoch; epoch++) {
+            // Each bucket holds only stake that joined in its epoch and is still held.
+            amount += netStakedIn[projectId][epoch];
+        }
+    }
+
+    /// @notice A holder's staked balance held in tranches created through an epoch, as a fixed point number with 18
+    /// decimals.
+    /// @dev Tranche timestamps never decrease with their index, so a binary search finds the newest tranche created
+    /// in or before the epoch and its cumulative endpoint is the balance through that epoch.
+    /// @param projectId The ID of the sticky project.
+    /// @param holder The holder whose tranches to read.
+    /// @param epoch The last epoch to include.
+    /// @return balance The staked balance from tranches created in or before the epoch.
+    function stakedBalanceThroughEpochOf(
+        uint256 projectId,
+        address holder,
+        uint256 epoch
+    )
+        external
+        view
+        override
+        returns (uint256 balance)
+    {
+        // Start at the oldest tranche so the search can include every active tranche.
+        uint256 low;
+
+        // Search the whole active prefix; discarded entries above it are never read.
+        uint256 high = _trancheCountOf[projectId][holder];
+
+        // Find the number of active tranches created through the epoch. Each iteration halves the range.
+        // Solidity initializes low to zero, including the oldest active tranche in the search.
+        // forge-lint: disable-next-line(uninitialized-local)
+        while (low < high) {
+            // Split the remaining range without adding its two indices, which could overflow.
+            uint256 middle = low + (high - low) / 2;
+
+            // A tranche created through the epoch means the boundary lies strictly after it.
+            if (uint256(_tranchesOf[projectId][holder][middle].timestamp) / EPOCH_DURATION <= epoch) low = middle + 1;
+            // Otherwise this tranche is too new, and so is everything after it.
+            else high = middle;
+        }
+
+        // The cumulative endpoint of the newest qualifying tranche is the balance through the epoch.
+        return low == 0 ? 0 : _trancheEndOf[projectId][holder][low - 1];
+    }
+
     /// @notice The number of tranches a holder has.
     /// @param projectId The ID of the sticky project to check the tranches of.
     /// @param holder The address to check the tranches of.
@@ -665,8 +756,12 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     // ---------------------- internal transactions ---------------------- //
     //*********************************************************************//
 
-    /// @notice Records tokens joining a holder's position as a fresh tranche, starting their streak if their staked
-    /// balance was zero.
+    /// @notice Records tokens joining a holder's position, merging them into the newest tranche when it was created
+    /// in the current epoch and appending a fresh tranche otherwise, and starts their streak if their staked balance
+    /// was zero.
+    /// @dev Merging keeps every active tranche in a distinct epoch, which bounds the bucket updates an exit makes to
+    /// the number of epochs the holder staked in. A merged tranche takes the current timestamp, so its recorded age
+    /// never overstates the age of the tokens that joined last.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder the tokens joined.
     /// @param count The number of tokens joining, as a fixed point number with 18 decimals.
@@ -681,18 +776,41 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         // Append to the active prefix, reusing discarded storage while preserving cumulative-balance ordering.
         uint256 index = _trancheCountOf[projectId][holder];
 
-        // The resulting total is both the holder's balance and the new tranche's cumulative endpoint.
+        // The resulting total is both the holder's balance and the newest tranche's cumulative endpoint.
         stakedBalance += count;
 
-        // Give incoming shares their own deposit age; checked casts prevent truncating the amount or timestamp.
-        _tranchesOf[projectId][holder][index] =
-            JBStickyTranche({amount: SafeCast.toUint208(count), timestamp: SafeCast.toUint48(block.timestamp)});
+        // Bucket the addition by the epoch it joins in, so aged stake can be totaled without checkpoints.
+        uint256 epoch = block.timestamp / EPOCH_DURATION;
+
+        // Tokens joining in the epoch of the newest tranche share its age, so they extend it instead of a new entry.
+        // Whole-epoch comparison; a validator moving the timestamp within a block cannot change entitlements.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (index != 0 && uint256(_tranchesOf[projectId][holder][index - 1].timestamp) / EPOCH_DURATION == epoch) {
+            // Edit the newest tranche in place; its index becomes the cumulative endpoint written below.
+            index -= 1;
+
+            // Read the tranche once for both the amount extension and the timestamp refresh.
+            JBStickyTranche storage tranche = _tranchesOf[projectId][holder][index];
+
+            // Grow the tranche by the joining tokens; the checked cast prevents truncating the amount.
+            tranche.amount = SafeCast.toUint208(uint256(tranche.amount) + count);
+
+            // Move the tranche's age to the latest joining, so it never overstates how long its tokens have stuck.
+            tranche.timestamp = SafeCast.toUint48(block.timestamp);
+        } else {
+            // Give incoming shares their own deposit age; checked casts prevent truncating the amount or timestamp.
+            _tranchesOf[projectId][holder][index] =
+                JBStickyTranche({amount: SafeCast.toUint208(count), timestamp: SafeCast.toUint48(block.timestamp)});
+
+            // Include the appended tranche in the logical stack without reactivating any later discarded storage.
+            _trancheCountOf[projectId][holder] = index + 1;
+        }
 
         // Store the cumulative endpoint so a later newest-first exit can locate its retained tail by binary search.
         _trancheEndOf[projectId][holder][index] = stakedBalance;
 
-        // Include the appended tranche in the logical stack without reactivating any later discarded storage.
-        _trancheCountOf[projectId][holder] = index + 1;
+        // Credit the epoch's bucket; the matching exit debits the same epoch, so buckets always sum to balances.
+        netStakedIn[projectId][epoch] += count;
 
         // Keep aggregate position accounting aligned with the sum of the holder's active tranches.
         stakedBalanceOf[projectId][holder] = stakedBalance;
@@ -710,7 +828,11 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     }
 
     /// @notice Consumes a holder's newest tranches to cover tokens leaving their position, splitting the last tranche
-    /// in place (keeping its original timestamp) and ending the holder's streak if their balance reached zero.
+    /// in place (keeping its original timestamp), debiting each consumed tranche's original epoch bucket, and ending
+    /// the holder's streak if their balance reached zero.
+    /// @dev The retained tail is found by binary search. Each fully consumed tranche then debits its own epoch's
+    /// bucket, so an exit's cost grows with the number of distinct epochs it consumes, not with the number of
+    /// deposits made in them.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder the tokens left.
     /// @param count The number of tokens leaving, as a fixed point number with 18 decimals.
@@ -736,16 +858,22 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         // Keep the aggregate synchronized with the retained prefix before adjusting its tranche boundary.
         stakedBalanceOf[projectId][holder] = stakedBalance;
 
+        // Every tranche at or above this index leaves the position entirely and must debit its epoch bucket.
+        uint256 activeCount = _trancheCountOf[projectId][holder];
+
+        // The oldest tranche that leaves entirely; a full exit removes them all, starting at the oldest.
+        uint256 removedFrom;
+
         // A full exit needs no search because every tranche can be removed from the logical stack at once.
         if (stakedBalance == 0) {
-            // Discard the entire logical stack without clearing storage proportional to its length.
+            // Discard the entire logical stack; the bucket loop below still visits each removed tranche's epoch.
             _trancheCountOf[projectId][holder] = 0;
         } else {
             // Start at the oldest tranche so the search includes every possible retained prefix.
             uint256 low;
 
             // A positive retained balance guarantees an active tranche and bounds the search at its newest entry.
-            uint256 high = _trancheCountOf[projectId][holder] - 1;
+            uint256 high = activeCount - 1;
 
             // Find the first cumulative tranche balance that contains the retained balance. Each iteration halves
             // the range, so even a dust-filled position can exit without scanning or deleting its newest tranches.
@@ -764,15 +892,37 @@ contract JBStickyHook is ERC165, IJBStickyHook {
             // Edit the last retained tranche in place so its surviving shares keep their original deposit timestamp.
             JBStickyTranche storage tranche = _tranchesOf[projectId][holder][low];
 
-            // Remove only the part above the retained balance; an exact endpoint leaves this tranche intact.
-            tranche.amount =
-                SafeCast.toUint208(tranche.amount - (_trancheEndOf[projectId][holder][low] - stakedBalance));
+            // Only the part above the retained balance leaves; an exact endpoint leaves this tranche intact.
+            uint256 trimmed = _trancheEndOf[projectId][holder][low] - stakedBalance;
+
+            // Remove the trimmed part while keeping the tranche's original timestamp.
+            tranche.amount = SafeCast.toUint208(tranche.amount - trimmed);
+
+            // Debit the trimmed part from the epoch this tranche joined in, not the epoch it leaves in.
+            netStakedIn[projectId][uint256(tranche.timestamp) / EPOCH_DURATION] -= trimmed;
 
             // Align the retained tail's cumulative endpoint with the holder's reduced aggregate balance.
             _trancheEndOf[projectId][holder][low] = stakedBalance;
 
-            // Discard all newer tranches logically, keeping exit cost independent of how many were consumed.
+            // Discard all newer tranches logically; only their epoch buckets still need debiting below.
             _trancheCountOf[projectId][holder] = low + 1;
+
+            // Every tranche after the retained tail leaves entirely.
+            removedFrom = low + 1;
+        }
+
+        // Debit each fully removed tranche from its original epoch bucket. Merging keeps active tranches in distinct
+        // epochs, so this loop runs once per epoch the exit consumes rather than once per deposit.
+        // Solidity initializes `removedFrom` to zero, which a full exit relies on to visit every active tranche.
+        // forge-lint: disable-next-line(uninitialized-local)
+        for (uint256 i = removedFrom; i < activeCount; i++) {
+            // Read the removed tranche once for both its epoch and its amount.
+            JBStickyTranche storage removed = _tranchesOf[projectId][holder][i];
+
+            // Return the tranche's full amount to the bucket it was credited to when it joined.
+            // Each consumed epoch needs its own bucket debit; the exiting holder pays for the epochs they staked in.
+            // forge-lint: disable-next-line(costly-loop)
+            netStakedIn[projectId][uint256(removed.timestamp) / EPOCH_DURATION] -= removed.amount;
         }
 
         // Partial exits preserve uninterrupted positive ownership; only a complete exit ends the streak.

@@ -9,15 +9,17 @@ import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Vo
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
+import {IJBStickyToken} from "./interfaces/IJBStickyToken.sol";
 
 /// @notice An ERC-20 representing a staked position in a sticky project, minted by staking and burned by cashing out
 /// or voluntarily through the controller. Its transfer policy is permanent: soulbound tokens reject transfers;
 /// transferable tokens consume the sender's newest tranches and create a fresh tranche for the recipient.
-/// @dev Checkpointed votes make the token a valid stake source for `JBTokenDistributor` rewards: every holder is
-/// self-delegated automatically on first mint and delegation can never be changed, so each holder's voting power
-/// always equals their staked balance and the active-vote total always equals the total supply.
-/// A recipient's existing streak continues when tokens arrive; the incoming tranche carries its own timestamp.
-contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
+/// @dev Checkpointed votes make the token a valid stake source for `JBStickyDistributor` default-group rewards: every
+/// holder is self-delegated automatically on first mint and delegation can never be changed, so each holder's voting
+/// power always equals their staked balance and the active-vote total always equals the total supply. Tenure rewards
+/// read the hook's tranches instead. A recipient's existing streak continues when tokens arrive; the incoming tokens
+/// join the recipient's newest tranche of the current epoch or start a new one.
+contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
@@ -47,16 +49,16 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBToken {
     //*********************************************************************//
 
     /// @notice The hook that tracks tranches and streaks, notified when tokens burn or transfer between holders.
-    IJBStickyHook public immutable HOOK;
+    IJBStickyHook public immutable override HOOK;
 
     /// @notice The ID of the sticky project this token belongs to. This token can't be attached to any other project.
-    uint256 public immutable PROJECT_ID;
+    uint256 public immutable override PROJECT_ID;
 
     /// @notice Whether transfers between accounts revert.
-    bool public immutable SOULBOUND;
+    bool public immutable override SOULBOUND;
 
     /// @notice The contract that manages minting and burning of this token.
-    IJBTokens public immutable TOKENS;
+    IJBTokens public immutable override TOKENS;
 
     //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
