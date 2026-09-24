@@ -12,6 +12,7 @@ Sticky permanently binds projects to a specific core release and underlying toke
 | Unsupported underlying token | Transfer failures, backing mismatch, or unexpected value loss | Review transfer, rebase, freeze, mint, and upgrade behavior before accepting an asset |
 | Incorrect core or deployment identity | Immutable bindings can point to unsuitable or privileged dependencies | Verify code, bindings, chain, and executed receipts for the reviewed release |
 | Incorrect bridge destination | Rewards can become inaccessible or fund unintended holders | Predict the receiver on the destination chain and verify the reward-token route |
+| Reserved-token split before the source ERC-20 exists | Credits moved to the distributor are stranded with no path to claim or move them | Route a reserved-token split to the distributor only after the source project deploys its ERC-20 |
 
 ## Redemption and deposit availability
 
@@ -40,6 +41,8 @@ The denominator read relies on the hook's buckets summing to the token supply. D
 The round current at receiver settlement determines its recipients and, for tenure groups, its window. Anyone can settle immediately or across a round boundary. A funder cannot reserve an arrival for a chosen future round by leaving it in a receiver. Funding a round with zero eligible stake, including a tenure window nothing has aged into, leaves that round without a claimant until its unclaimed inventory becomes recyclable.
 
 Splits carry the group in `split.projectId`. Tools that render a split destination without checking its hook first will show that number as a project. An invalid group or an unregistered beneficiary silently funds group 0; a funder who intends a tenure group must confirm the split's `projectId` decodes as one.
+
+A reserved-token split only works once the source project has deployed its ERC-20. Before that, the controller moves project credits to the split hook before calling it, then catches the hook's revert: the credits stay in the distributor, which has no path to claim or transfer them, and deploying the ERC-20 later does not recover them. Route reserved-token splits to the distributor only after the source project's ERC-20 exists; payout splits are unaffected.
 
 Every share holder is self-delegated, contracts included, so reward weight follows balances by design. An AMM pool that holds transferable shares receives an allocation that anyone can collect to the pool and then skim. Sticky tokens cannot be another Sticky project's staked token, so no terminal holds reward weight. A Sticky token funded as a reward leaves the distributor itself holding aged shares with weight in that token's rounds. The distributor cannot pay itself: collecting its allocation to the distributor, the only beneficiary a helper may use, recycles the unlocked amount into the current round of the same pot (`collectVestedRewards(..., beneficiary: distributor)`, or `releaseForfeitedRewards` for group 0), and a holder collecting their own rewards to the distributor is rejected. The distributor keeps its weight, so each recycled round hands it a share again; the remainder shrinks geometrically across rounds and anyone can keep recycling it.
 
