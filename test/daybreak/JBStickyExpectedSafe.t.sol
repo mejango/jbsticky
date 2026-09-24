@@ -23,7 +23,7 @@ contract JBStickyExpectedSafeTest is Test {
         );
         vm.expectRevert(
             abi.encodeWithSelector(
-                Deploy.Deploy_UnexpectedSafe.selector, 0x4dc161eF837fF1C4485b08DDFcDB182F2157bE18, unexpected
+                Deploy.Deploy_UnexpectedSafe.selector, 0xd5136c794ee43BEf1eD4cF1eB6DEe45b7F803437, unexpected
             )
         );
         deployment.run();
