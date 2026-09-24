@@ -236,6 +236,12 @@ test('a recovered Safe execution does not confuse an earlier wallet execution ha
   const h = harness();
   h.state.code = '0x6001';
   h.state.ledger.clear();
+  // The returned hash is the pending outer execution being replaced at the same executor nonce.
+  const original = safeEvidence(HASH);
+  delete original.receipt;
+  original.transaction.blockHash = null;
+  original.transaction.blockNumber = null;
+  h.state.ledger.set(HASH, original);
   h.state.ledger.set(REPLACEMENT, safeEvidence(REPLACEMENT));
   await prepare(h);
   await assert.rejects(h.engine.run({ review: h.review }), /still unresolved/);

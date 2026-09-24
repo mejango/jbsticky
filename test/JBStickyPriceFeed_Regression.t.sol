@@ -161,23 +161,6 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
         _feed.currentUnitPrice(37);
     }
 
-    /// @notice Feed registration uses the exact direct pair and permanently captures the project's dependencies.
-    function test_feedRegisteredWithExactPairAndImmutableBindings() public view {
-        uint256 currency = uint32(uint160(address(_underlying)));
-        uint256 baseCurrency = JBRulesetMetadataResolver.baseCurrency(jbRulesets().currentOf(_projectId));
-        assertEq(baseCurrency, type(uint32).max);
-        assertEq(jbPrices().priceFeedCountFor(_projectId, currency, baseCurrency), 1);
-        assertEq(jbPrices().priceFeedCountFor(_projectId, baseCurrency, currency), 0);
-        assertEq(address(jbPrices().priceFeedFor(_projectId, currency, baseCurrency)), address(_feed));
-        assertEq(address(_feed.HOOK()), address(_hook));
-        assertEq(_feed.PROJECT_ID(), _projectId);
-        assertEq(address(_feed.TERMINAL()), address(jbMultiTerminal()));
-        assertEq(address(_feed.TOKEN()), address(_token));
-        assertEq(_feed.UNDERLYING_TOKEN(), address(_underlying));
-        assertEq(_feed.DECIMALS(), 6);
-        assertEq(_feed.CURRENCY(), currency);
-    }
-
     /// @notice A token whose currency equals MAX32 receives a different synthetic currency and prices correctly.
     function test_maxCurrencyUsesDistinctSyntheticPair() public {
         address collisionToken = address(uint160(0x1ffffffff));
@@ -215,6 +198,27 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
         );
         _launch(IERC20Metadata(zeroCurrencyToken));
         assertEq(jbProjects().count(), projectCount);
+    }
+
+    //*********************************************************************//
+    // -------------------------- public views --------------------------- //
+    //*********************************************************************//
+
+    /// @notice Feed registration uses the exact direct pair and permanently captures the project's dependencies.
+    function test_feedRegisteredWithExactPairAndImmutableBindings() public view {
+        uint256 currency = uint32(uint160(address(_underlying)));
+        uint256 baseCurrency = JBRulesetMetadataResolver.baseCurrency(jbRulesets().currentOf(_projectId));
+        assertEq(baseCurrency, type(uint32).max);
+        assertEq(jbPrices().priceFeedCountFor(_projectId, currency, baseCurrency), 1);
+        assertEq(jbPrices().priceFeedCountFor(_projectId, baseCurrency, currency), 0);
+        assertEq(address(jbPrices().priceFeedFor(_projectId, currency, baseCurrency)), address(_feed));
+        assertEq(address(_feed.HOOK()), address(_hook));
+        assertEq(_feed.PROJECT_ID(), _projectId);
+        assertEq(address(_feed.TERMINAL()), address(jbMultiTerminal()));
+        assertEq(address(_feed.TOKEN()), address(_token));
+        assertEq(_feed.UNDERLYING_TOKEN(), address(_underlying));
+        assertEq(_feed.DECIMALS(), 6);
+        assertEq(_feed.CURRENCY(), currency);
     }
 
     //*********************************************************************//
@@ -284,7 +288,7 @@ contract JBStickyPriceFeedRegressionTest is TestBaseWorkflow {
     }
 
     //*********************************************************************//
-    // ------------------------- internal views -------------------------- //
+    // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
 
     /// @notice Read all underlying backing, including the excluded orphan balance.

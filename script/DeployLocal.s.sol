@@ -2,18 +2,15 @@
 pragma solidity 0.8.28;
 
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
-import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
-import {JBTokenDistributor} from "@bananapus/distributor-v6/src/JBTokenDistributor.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IREVLoans} from "@rev-net/core-v6/src/interfaces/IREVLoans.sol";
-import {IREVOwner} from "@rev-net/core-v6/src/interfaces/IREVOwner.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {JBStickyAutoStick} from "../src/JBStickyAutoStick.sol";
 import {JBStickyDeployer} from "../src/JBStickyDeployer.sol";
-import {JBStickyRewardPockets} from "../src/JBStickyRewardPockets.sol";
+import {JBStickyDistributor} from "../src/JBStickyDistributor.sol";
+import {JBStickyRewardReceiverFactory} from "../src/JBStickyRewardReceiverFactory.sol";
+
 import {JBStickyDeployment} from "./helpers/JBStickyDeployment.sol";
 import {MockArt} from "./mocks/MockArt.sol";
 import {MockBan} from "./mocks/MockBan.sol";
@@ -26,7 +23,7 @@ contract DeployLocal is JBStickyDeployment {
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice The disposable local demo was not explicitly enabled.
+    /// @notice Thrown when the disposable local demo is not explicitly enabled, so it cannot run by accident.
     error DeployLocal_LocalDemoNotEnabled();
 
     //*********************************************************************//
@@ -54,19 +51,17 @@ contract DeployLocal is JBStickyDeployment {
         JBStickyDeployer deployer = new JBStickyDeployer({controller: controller, terminal: terminal});
 
         // A demo rewards distributor with fast rounds: 10-minute rounds, vested after 2 rounds, 7-day claims.
-        JBTokenDistributor distributor = new JBTokenDistributor({
-            directory: IJBDirectory(address(controller.DIRECTORY())),
+        JBStickyDistributor distributor = new JBStickyDistributor({
             controller: controller,
-            revLoans: IREVLoans(address(0)),
-            revOwner: IREVOwner(address(0)),
+            directory: controller.DIRECTORY(),
+            stickyHook: deployer.HOOK(),
             initialRoundDuration: 600,
             initialVestingRounds: 2,
             initialClaimDuration: 7 days
         });
 
-        JBStickyAutoStick autoStick =
-            new JBStickyAutoStick({deployer: deployer, distributor: IJBDistributor(address(distributor))});
-        JBStickyRewardPockets pockets = new JBStickyRewardPockets(IJBDistributor(address(distributor)));
+        JBStickyAutoStick autoStick = new JBStickyAutoStick({deployer: deployer, distributor: distributor});
+        JBStickyRewardReceiverFactory rewardReceiverFactory = new JBStickyRewardReceiverFactory(distributor);
 
         // The immutable adapter is available to every holder from launch. This does not enable auto-stick or grant a
         // token allowance for anyone; each holder still opts in and approves their own underlying token.
@@ -106,8 +101,8 @@ contract DeployLocal is JBStickyDeployment {
         console2.log({p0: "JBStickyHook", p1: address(deployer.HOOK())});
         console2.log({p0: "projectId", p1: projectId});
         console2.log({p0: "banProjectId", p1: banProjectId});
-        console2.log({p0: "JBTokenDistributor", p1: address(distributor)});
+        console2.log({p0: "JBStickyDistributor", p1: address(distributor)});
         console2.log({p0: "JBStickyAutoStick", p1: address(autoStick)});
-        console2.log({p0: "JBStickyRewardPockets", p1: address(pockets)});
+        console2.log({p0: "JBStickyRewardReceiverFactory", p1: address(rewardReceiverFactory)});
     }
 }

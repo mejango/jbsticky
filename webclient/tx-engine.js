@@ -67,6 +67,9 @@
           || !/^0x[0-9a-f]+$/.test(step.submission.nonceFloor) || typeof step.submission.senderIsContract !== "boolean") {
           throw new Error("Saved submission evidence is invalid. Do not repeat the transaction.");
         }
+        if (step.submission.safeTxHash !== undefined && !HASH.test(step.submission.safeTxHash)) {
+          throw new Error("Saved Safe proposal evidence is invalid.");
+        }
       }
       if ((step.state === "confirmed" || step.state === "reverted") && (!HASH.test(step.hash) || !step.receipt)) {
         throw new Error("Saved receipt evidence is incomplete.");
@@ -189,26 +192,45 @@
       const direct = same(transaction.from, tx.from) && same(transaction.to, tx.to)
         && same(transaction.input ?? transaction.data ?? "0x", tx.data)
         && quantity(transaction.value) === tx.value && BigInt(transaction.nonce) >= BigInt(step.submission.nonceFloor);
-      // eth_sendTransaction does not identify whether its hash is a Safe proposal or an
-      // execution transaction. Preserve that reference without assuming either meaning.
-      const safeOutcome = !direct && step.submission.senderIsContract
-        ? safe?.inspectSafeOutcome(transaction, receipt, {
-          ...tx, ...(step.reportedHashKind === "proposal" ? { safeTxHash: step.reportedHash } : {}),
-        }) : null;
+      // A Safe may have multiple live proposals for the same inner call. Identify this
+      // submission from its proposal event, its returned execution hash, or an exact
+      // replacement of that outer transaction. Calldata alone cannot consume a proposal.
+      let safeProof = null;
+      let safeSubmissionMatched = false;
+      if (!direct && step.submission.senderIsContract && step.reportedHash) {
+        const proposal = step.submission.safeTxHash || step.reportedHash;
+        safeProof = safe?.inspectSafeTransaction(transaction, receipt, { ...tx, safeTxHash: proposal });
+        if (safeProof && quantity(receipt.status) === "0x1") safeSubmissionMatched = true;
+        else if (!step.submission.safeTxHash && step.reportedHashKind !== "proposal") {
+          if (same(hash, step.reportedHash)) safeSubmissionMatched = true;
+          else {
+            const reported = await rpc(tx, "eth_getTransactionByHash", [step.reportedHash]);
+            safeSubmissionMatched = !!reported && same(reported.hash, step.reportedHash)
+              && same(reported.from, transaction.from) && same(reported.to, tx.from)
+              && quantity(reported.nonce) === quantity(transaction.nonce)
+              && quantity(reported.value) === quantity(transaction.value)
+              && same(reported.input ?? reported.data, transaction.input ?? transaction.data)
+              && (reported.chainId === undefined || quantity(reported.chainId) === quantity(tx.chainId));
+          }
+          if (safeSubmissionMatched) safeProof = safe?.inspectSafeTransaction(transaction, receipt, tx);
+        }
+      }
+      if (!safeSubmissionMatched) safeProof = null;
+      const safeOutcome = safeProof?.outcome;
+      const safeTxHash = safeProof?.safeTxHash || undefined;
       if (!direct && !safeOutcome) return null;
-      if ((direct && quantity(receipt.status) === "0x1") || safeOutcome === "success") return { receipt, state: "confirmed" };
+      if ((direct && quantity(receipt.status) === "0x1") || safeOutcome === "success") return { receipt, state: "confirmed", safeTxHash };
       if (!(direct && quantity(receipt.status) === "0x0") && safeOutcome !== "failure") return null;
       // An outer Safe revert does not consume the Safe nonce: its proposal can still
       // execute. An inner failure proves consumption only for the exact known proposal.
-      if (!direct && (quantity(receipt.status) !== "0x1"
-        || (step.reportedHashKind !== "proposal" && !same(hash, step.reportedHash)))) return { receipt, state: "pending" };
+      if (!direct && quantity(receipt.status) !== "0x1") return { receipt, state: "pending" };
       // A failed transaction is retryable only after its canonical block is finalized.
       let finalized;
       try { finalized = await rpc(tx, "eth_getBlockByNumber", ["finalized", false]); } catch { return { receipt, state: "pending" }; }
       if (!finalized || BigInt(finalized.number) < BigInt(receipt.blockNumber)) return { receipt, state: "pending" };
       const stillCanonical = await rpc(tx, "eth_getBlockByNumber", [quantity(receipt.blockNumber), false]);
       if (!same(stillCanonical?.hash, receipt.blockHash)) return null;
-      return { receipt, state: "reverted" };
+      return { receipt, state: "reverted", safeTxHash };
     }
 
     async function check(session, step) {
@@ -216,6 +238,7 @@
       if (evidence && evidence.state !== "pending") {
         step.state = evidence.state;
         step.receipt = evidence.receipt;
+        if (evidence.safeTxHash) step.submission.safeTxHash = evidence.safeTxHash;
         save(session);
       } else if (step.state === "confirmed" || step.state === "reverted" || step.state === "submitting") {
         step.state = step.hash ? "pending" : "unknown";
@@ -327,10 +350,11 @@
         const step = session.steps.find((item) => item.state !== "confirmed");
         if (!step || !step.submission || !["submitting", "unknown", "pending"].includes(step.state)) throw new Error("This step does not need an execution hash.");
         const evidence = await inspect(step, hash);
-        if (!evidence || evidence.state !== "confirmed") throw new Error("That hash does not prove the saved transaction completed. The original wallet reference has been kept.");
+        if (!evidence || !["confirmed", "reverted"].includes(evidence.state)) throw new Error("That hash does not prove the saved submission succeeded or finalized as reverted. The original wallet reference has been kept.");
         step.hash = hash.toLowerCase();
         step.receipt = evidence.receipt;
-        step.state = "confirmed";
+        step.state = evidence.state;
+        if (evidence.safeTxHash) step.submission.safeTxHash = evidence.safeTxHash;
         save(session);
         return clone(session);
       });

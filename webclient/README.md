@@ -52,10 +52,21 @@ listings. Configuration is not cached; scripts and HTML must revalidate.
 Contract deployments are a separate prerequisite. This repository currently has
 no tracked production deployment manifest, and its ignored local configuration
 is not evidence of a live deployment. Configure verified Sticky deployer,
-distributor, reward-pocket, and auto-stick addresses on each intended network
+distributor, reward receiver factory, and auto-stick addresses on each intended network
 before selecting it for a production launch. Set optional extension addresses
 only where those extensions are deployed. A successful health check verifies the
 site's build and configuration, not on-chain contract deployment or RPC uptime.
+
+`JBStickyRewardReceiver` holds arriving ERC-20 rewards for one Sticky token and
+reward group until they are settled into the distributor. `JBStickyRewardReceiverFactory`
+predicts and deploys those receivers, so each project and group has its own
+destination address even before its receiver is deployed. Configure the factory address using
+`STICKY_REWARD_RECEIVER_FACTORY_<chainId>` (or the global
+`STICKY_REWARD_RECEIVER_FACTORY`); generated and hand-written configurations use
+`rewardReceiverFactory`. The client derives the individual receiver address with
+`predictReceiverOf(address,uint256)` and settles arrivals through the factory's
+`settleFor(address,uint256,address)`, where the `uint256` is the reward group
+chosen in the funding dialog's stake-age fields.
 
 ## Transactions and recovery
 
@@ -78,6 +89,13 @@ or resume to recheck canonical receipts. An unresolved wallet submission is neve
 sent again automatically; use its execution hash to recover it. Safe proposals
 remain pending until their exact execution is verified. A finalized outer Safe
 failure alone does not invalidate a proposal.
+
+Safe recovery binds the execution to the wallet's returned proposal hash, returned
+execution hash, or an exact replacement at the same executor nonce. An identical
+inner call from another proposal is insufficient. If a Safe wallet returned no
+reference, preserve its record: the client cannot identify the original proposal
+from an execution hash alone. Ordinary wallet submissions can recover a verified
+finalized revert, after which the saved plan can be reviewed again or dismissed.
 
 Sticky's deployed factory has no deployment nonce or idempotency key. A published
 launch quote therefore cannot be discarded or replaced merely because it expired,

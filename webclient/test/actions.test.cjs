@@ -12,10 +12,11 @@ const STICKY = address('3');
 const TERMINAL = address('4');
 const DISTRIBUTOR = address('5');
 const ADAPTER = address('6');
-const POCKETS = address('7');
-const POCKET = address('8');
+const RECEIVER_FACTORY = address('7');
+const RECEIVER = address('8');
 const OTHER = address('9');
 const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const FUND_TOPIC = '0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd8778965935ddf2';
 const uint = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const words = (...values) => `0x${values.map((value) => uint(value).slice(2)).join('')}`;
 const mintQuote = (mint) => words(...Array(9).fill(0), mint, 0, 384, 0);
@@ -35,6 +36,9 @@ const names = [
   'claimReward', 'saveAutoStick', 'toggleAutoStick', 'repairAutoStick', 'autoStickNow', 'beginAutoStickVesting',
   'claimAndStick', 'settleArrivals', 'stake', 'curveReclaim', 'previewStickMint', 'unstake', 'transferSticky',
   'readTranchePage', 'poolBacking', 'homeSecuredSeries', 'asStatusLine', 'renderStickQuote',
+  'decodeGroupId', 'isValidGroupId', 'groupIdFromWeeks', 'groupLabel', 'groupSentence', 'groupNote', 'fundGroupId',
+  'rewardStakeOf', 'discoverFunding', 'rewardRows', 'stakedRewardGroups', 'vestableRewardGroups', 'groupListLabel',
+  'autoStickState',
 ];
 
 function fixture(overrides = {}) {
@@ -44,7 +48,7 @@ function fixture(overrides = {}) {
   const reads = [];
   const context = vm.createContext({
     TextEncoder, TextDecoder, Uint8Array, console,
-    ctx: { chainId: 1, currentId: 12n, terminal: TERMINAL, hook: POCKETS, store: DISTRIBUTOR, autoStick: null },
+    ctx: { chainId: 1, currentId: 12n, terminal: TERMINAL, hook: RECEIVER_FACTORY, store: DISTRIBUTOR, autoStick: null },
     window: {},
     $: (id) => {
       if (!fields.has(id)) fields.set(id, { value: '', close() {} });
@@ -54,7 +58,7 @@ function fixture(overrides = {}) {
     account: () => HOLDER,
     distributor: () => DISTRIBUTOR,
     autoStickAdapter: () => ADAPTER,
-    stickyDeploymentFor: () => ({ pockets: POCKETS }),
+    stickyDeploymentFor: () => ({ rewardReceiverFactory: RECEIVER_FACTORY }),
     projectInfo: async () => info,
     stickyLabel: () => 'Sticky Artizen',
     shortAddr: (value) => value,
@@ -65,6 +69,7 @@ function fixture(overrides = {}) {
       if (selector === '0x70a08231') return uint(100_000_000);
       if (selector === '0x95d89b41') return `0x${context.encode(['string'], ['ART'])}`;
       if (selector === '0x313ce567') return uint(6);
+      if (selector === '0x0468459c') return uint(1);
       return uint(0);
     },
     rpc: async (method, params) => {
@@ -79,7 +84,9 @@ function fixture(overrides = {}) {
   const selectorsStart = source.indexOf('const SEL =');
   const selectors = source.slice(selectorsStart, source.indexOf('\n};', selectorsStart) + 3);
   const codec = source.slice(source.indexOf('const strip ='), source.indexOf('// ------------------------------------------------------------- rpc plumbing'));
-  vm.runInContext(`${selectors}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nlet stickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
+  const topics = source.slice(source.indexOf('const TOPIC ='), source.indexOf('\n};', source.indexOf('const TOPIC =')) + 3);
+  vm.runInContext(`${selectors}\n${topics}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nlet stickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
+  context.readAutoStickState = context.autoStickState;
   context.autoStickState = async () => null;
   Object.assign(context, overrides);
   return { context, fields, info, plans, reads };
@@ -354,6 +361,8 @@ test('native ETH reward funding attaches exact value and never approves a sentin
   assert.equal(plans[0].txs[0].value, '0x1');
   assert.equal(arg(plans[0].txs[0].data, 1), BigInt(NATIVE));
   assert.equal(arg(plans[0].txs[0].data, 2), 1n);
+  assert.equal(arg(plans[0].txs[0].data, 3), 0n);
+  assert.equal(plans[0].txs[0].data.slice(0, 10), '0x77531866');
 });
 
 test('reward token decimals fail closed instead of silently assuming 18', async () => {
@@ -365,11 +374,13 @@ test('reward token decimals fail closed instead of silently assuming 18', async 
 test('normal reward collection is one transaction because the distributor already starts vesting', async () => {
   const { context: c, plans } = fixture();
   const baseView = c.view;
-  c.view = async (to, selector, args) => selector === '0x77b8073a' ? uint(1) : baseView(to, selector, args);
+  c.view = async (to, selector, args) => selector === '0x5710be41' ? uint(1) : baseView(to, selector, args);
   await c.claimReward(TOKEN);
   assert.equal(plans[0].txs.length, 1);
-  assert.equal(plans[0].txs[0].data.slice(0, 10), '0xf8724f34');
-  assert.equal(arg(plans[0].txs[0].data, 3), BigInt(HOLDER));
+  assert.equal(plans[0].txs[0].data.slice(0, 10), '0x4d355ce6');
+  assert.equal(arg(plans[0].txs[0].data, 1), 0n);
+  assert.equal(arg(plans[0].txs[0].data, 4), BigInt(HOLDER));
+  assert.ok(!plans[0].txs[0].args.some(([label]) => label === 'FORFEIT'));
 });
 
 test('vesting-only claims refuse a verified empty allocation', async () => {
@@ -431,11 +442,13 @@ test('claim-and-stick adds missing holder trust before the atomic claim', async 
   const { context: c, info, plans } = fixture();
   c.autoStickState = async () => ({ info, projectGranter: false, personallyTrusted: false });
   const baseView = c.view;
-  c.view = async (to, selector, data) => selector === '0x77b8073a' ? uint(500) : baseView(to, selector, data);
+  c.view = async (to, selector, data) => selector === '0x5710be41' ? uint(500) : baseView(to, selector, data);
   await c.claimAndStick();
   assert.equal(plans[0].txs.length, 3);
   assert.equal(plans[0].txs[1].data.slice(0, 10), '0x3a799596');
-  assert.equal(plans[0].txs[2].data.slice(0, 10), '0xd3a651da');
+  assert.equal(plans[0].txs[2].data.slice(0, 10), '0x40b5a05d');
+  assert.equal(arg(plans[0].txs[2].data, 2), 1n);
+  assert.equal(arg(plans[0].txs[2].data, 3), 0n);
 });
 
 test('manual and automatic compounding reject a zero canonical mint for any token precision', async () => {
@@ -457,36 +470,217 @@ test('claim-and-stick supports more than 18 decimals and discloses a changing ba
   info.decimals = 24;
   c.autoStickState = async () => ({ info, status: 0, enabled: true, minimum: 1n, collectable: 1000000n, projectGranter: true });
   const baseView = c.view;
-  c.view = async (to, selector, data) => selector === '0x77b8073a' ? uint(1000000n) : baseView(to, selector, data);
+  c.view = async (to, selector, data) => selector === '0x5710be41' ? uint(1000000n) : baseView(to, selector, data);
   await c.claimAndStick();
-  assert.equal(plans[0].txs.at(-1).data.slice(0, 10), '0xd3a651da');
+  assert.equal(plans[0].txs.at(-1).data.slice(0, 10), '0x40b5a05d');
   assert.ok(plans[0].summary.some(([label, value]) => label === 'Estimated Sticky tokens' && value.includes('0.000000000000000777')));
   assert.ok(plans[0].summary.some(([label, value]) => label === 'Rate' && value.includes('can change')));
 });
 
-test('pocket settlement uses the selected destination reward token, verifies distributor, and rejects empty arrivals', async () => {
+test('receiver settlement uses the selected destination reward token, verifies distributor, and rejects empty arrivals', async () => {
   const { context: c, plans } = fixture();
   c.$('bridge-reward-token').value = OTHER;
   const baseView = c.view;
   c.view = async (to, selector, data) => {
     if (selector === '0x9c26149f') return uint(BigInt(DISTRIBUTOR));
-    if (selector === '0x7780193e') return uint(BigInt(POCKET));
+    if (selector === '0x330b5eea') return uint(BigInt(RECEIVER));
     return baseView(to, selector, data);
   };
   await c.settleArrivals();
-  assert.equal(arg(plans[0].txs[0].data, 1), BigInt(OTHER));
+  assert.equal(plans[0].txs[0].data.slice(0, 10), '0xa4b4e8bf');
+  assert.equal(arg(plans[0].txs[0].data, 1), 0n);
+  assert.equal(arg(plans[0].txs[0].data, 2), BigInt(OTHER));
   c.view = async (to, selector, data) => selector === '0x9c26149f' ? uint(BigInt(OTHER)) : baseView(to, selector, data);
   await assert.rejects(c.settleArrivals(), /different distributor/);
   c.view = async (to, selector, data) => {
     if (selector === '0x9c26149f') return uint(BigInt(DISTRIBUTOR));
-    if (selector === '0x7780193e') return uint(BigInt(POCKET));
+    if (selector === '0x330b5eea') return uint(BigInt(RECEIVER));
     if (selector === '0x70a08231') return uint(0);
     return baseView(to, selector, data);
   };
   await assert.rejects(c.settleArrivals(), /no ART arrivals/);
 });
 
-test('pockets reject native ETH rather than falsely describing an ERC20 settlement', async () => {
+test('reward groups encode and label stake-age windows exactly like the distributor', () => {
+  const { context: c } = fixture();
+  assert.equal(c.groupIdFromWeeks('', ''), 0n);
+  assert.equal(c.groupIdFromWeeks('0', ''), 0n);
+  assert.equal(c.groupIdFromWeeks('4', ''), 4000n);
+  assert.equal(c.groupIdFromWeeks('4', '0'), 4000n);
+  assert.equal(c.groupIdFromWeeks('4', '8'), 4008n);
+  assert.equal(c.groupIdFromWeeks('520', '520'), 520520n);
+  assert.throws(() => c.groupIdFromWeeks('521', ''), /520 weeks/);
+  assert.throws(() => c.groupIdFromWeeks('0', '4'), /minimum of at least 1/);
+  assert.throws(() => c.groupIdFromWeeks('8', '4'), /at least the minimum/);
+  assert.throws(() => c.groupIdFromWeeks('4.5', ''), /whole number/);
+  assert.throws(() => c.groupIdFromWeeks('-1', ''), /whole number/);
+  for (const id of [0n, 1000n, 4000n, 4008n, 520000n, 520520n]) assert.equal(c.isValidGroupId(id), true, String(id));
+  for (const id of [4n, 999n, 8004n, 521000n, 4521n, 1000000n]) assert.equal(c.isValidGroupId(id), false, String(id));
+  assert.equal(c.groupLabel(0n), 'Everyone');
+  assert.equal(c.groupLabel(4000n), 'Staked 4+ weeks');
+  assert.equal(c.groupLabel(4008n), 'Staked 4–8 weeks');
+  assert.match(c.groupSentence(0n), /Everyone holding at the round's snapshot/);
+  assert.match(c.groupSentence(1000n), /at least 1 week old/);
+  assert.match(c.groupSentence(4008n), /between 4 weeks and 8 weeks old[\s\S]*forfeits/);
+  assert.equal(c.groupNote('4', '8').groupId, 4008n);
+  assert.match(c.groupNote('8', '4').text, /at least the minimum/);
+  assert.equal(c.groupNote('8', '4').groupId, null);
+});
+
+test('funding passes the chosen group, describes it, and rejects windows the distributor refuses', async () => {
+  const { context: c, plans } = fixture();
+  c.$('r-token').value = TOKEN;
+  c.$('r-amount').value = '5';
+  c.$('r-min-weeks').value = '4';
+  c.$('r-max-weeks').value = '8';
+  await c.fundRewards();
+  const tx = plans[0].txs.at(-1);
+  assert.equal(tx.data.slice(0, 10), '0x77531866');
+  assert.equal(arg(tx.data, 0), BigInt(STICKY));
+  assert.equal(arg(tx.data, 1), BigInt(TOKEN));
+  assert.equal(arg(tx.data, 2), 5000000n);
+  assert.equal(arg(tx.data, 3), 4008n);
+  assert.ok(tx.args.some(([label, value]) => label === 'WHO' && value === 'Staked 4–8 weeks (group 4008)'));
+  assert.ok(plans[0].summary.some(([label, value]) => label === 'How' && /between 4 weeks and 8 weeks old/.test(value)));
+  c.$('r-min-weeks').value = '0';
+  c.$('r-max-weeks').value = '4';
+  await assert.rejects(c.fundRewards(), /minimum of at least 1/);
+  c.$('r-min-weeks').value = '4';
+  c.$('r-max-weeks').value = '';
+  const baseView = c.view;
+  c.view = async (to, selector, data) => selector === '0x0468459c' ? uint(0) : baseView(to, selector, data);
+  await assert.rejects(c.fundRewards(), /does not accept this stake-age window/);
+  assert.equal(plans.length, 1);
+});
+
+test('receiver prediction and settlement are per group', async () => {
+  const { context: c, plans, reads } = fixture();
+  c.$('bridge-reward-token').value = OTHER;
+  c.$('r-min-weeks').value = '4';
+  const baseView = c.view;
+  c.view = async (to, selector, data) => {
+    reads.push({ to, selector, data });
+    if (selector === '0x9c26149f') return uint(BigInt(DISTRIBUTOR));
+    if (selector === '0x330b5eea') return uint(BigInt(RECEIVER));
+    return baseView(to, selector, data);
+  };
+  await c.settleArrivals();
+  const predicted = reads.find((read) => read.selector === '0x330b5eea');
+  assert.equal(predicted.to, RECEIVER_FACTORY);
+  assert.equal(predicted.data, `${STICKY.slice(2).padStart(64, '0')}${uint(4000).slice(2)}`);
+  assert.equal(arg(plans[0].txs[0].data, 0), BigInt(STICKY));
+  assert.equal(arg(plans[0].txs[0].data, 1), 4000n);
+  assert.equal(arg(plans[0].txs[0].data, 2), BigInt(OTHER));
+  assert.ok(plans[0].txs[0].args.some(([label, value]) => label === 'WHO' && value === 'Staked 4+ weeks (group 4000)'));
+  c.$('r-min-weeks').value = '0';
+  c.$('r-max-weeks').value = '4';
+  await assert.rejects(c.settleArrivals(), /minimum of at least 1/);
+});
+
+test('per-group claims collect from that group and warn that exiting forfeits a stake-age allocation', async () => {
+  const { context: c, plans, reads } = fixture();
+  const baseView = c.view;
+  c.view = async (to, selector, data) => {
+    reads.push({ to, selector, data });
+    return selector === '0x5710be41' ? uint(7) : baseView(to, selector, data);
+  };
+  await c.claimReward(TOKEN, 4008n);
+  const collectable = reads.find((read) => read.selector === '0x5710be41');
+  assert.equal(collectable.data, `${STICKY.slice(2).padStart(64, '0')}${uint(4008).slice(2)}${HOLDER.slice(2).padStart(64, '0')}${TOKEN.slice(2).padStart(64, '0')}`);
+  const tx = plans[0].txs[0];
+  assert.equal(tx.data.slice(0, 10), '0x4d355ce6');
+  assert.equal(arg(tx.data, 0), BigInt(STICKY));
+  assert.equal(arg(tx.data, 1), 4008n);
+  assert.equal(arg(tx.data, 4), BigInt(HOLDER));
+  assert.ok(tx.args.some(([label, value]) => label === 'GROUP' && value === '4008 — Staked 4–8 weeks'));
+  assert.ok(tx.args.some(([label, value]) => label === 'FORFEIT' && /still hold/.test(value)));
+});
+
+test('vesting checks for a stake-age group weigh the live in-window stake from the hook', async () => {
+  const calls = [];
+  const { context: c, info } = fixture({ view: async (to, selector, data) => {
+    calls.push({ to, selector, data });
+    if (selector === '0x8a19c8bc') return uint(3);
+    if (selector === '0x5fef1a8a') return uint(2);
+    if (selector === '0xc45c9bf6') return words(100, 12, 0, 0, 100);
+    if (selector === '0x09ff1c3f') return uint(20);
+    if (selector === '0x0fdcc877') {
+      const epoch = BigInt(`0x${data.slice(-64)}`);
+      return uint(epoch === 16n ? 40 : 10);
+    }
+    throw new Error('unexpected read');
+  } });
+  assert.equal(await c.hasRewardsToVest(info, HOLDER, TOKEN, 4008n), true);
+  const cursor = calls.find((call) => call.selector === '0x5fef1a8a');
+  assert.equal(BigInt(`0x${cursor.data.slice(64, 128)}`), 4008n);
+  const windows = calls.filter((call) => call.selector === '0x0fdcc877');
+  assert.deepEqual(windows.map((call) => [call.to, BigInt(`0x${call.data.slice(-64)}`)]), [[RECEIVER_FACTORY, 16n], [RECEIVER_FACTORY, 11n]]);
+  assert.ok(!calls.some((call) => call.selector === '0x3a46b1a8'));
+  // A round whose snapshot epoch is younger than the minimum age has no eligible stake.
+  assert.equal(await c.rewardStakeOf(info, HOLDER, 30000n, 1n, 12n), 0n);
+});
+
+test('reward rows come from Fund logs, one per group and token, with hand-checked tokens under every group', async () => {
+  const funding = (groupId, token, amount) => ({
+    address: DISTRIBUTOR, topics: [FUND_TOPIC, uint(BigInt(STICKY)), uint(groupId), uint(BigInt(token))], data: words(1, amount, BigInt(HOLDER)),
+  });
+  const { context: c, info } = fixture({ getLogs: async (address, topics) => {
+    assert.equal(address, DISTRIBUTOR);
+    assert.equal(topics[0], FUND_TOPIC);
+    assert.equal(topics[1], uint(BigInt(STICKY)));
+    return [funding(4000, OTHER, 5), funding(0, NATIVE, 2), funding(4000, OTHER, 6)];
+  } });
+  const funded = await c.discoverFunding(info);
+  assert.equal([...funded.values()].map((row) => `${row.groupId}:${row.token}:${row.funded}`).join(' '),
+    `4000:${OTHER.toLowerCase()}:11 0:${NATIVE}:2`);
+  c.rewardTokens[c.ctx.currentId.toString()] = new Set([TOKEN.toLowerCase()]);
+  const { groups, rows } = c.rewardRows(info, funded);
+  assert.equal(groups.join(','), '0,4000');
+  assert.equal(rows.map((row) => `${row.groupId}:${row.token}:${row.funded}`).join(' '),
+    `4000:${OTHER.toLowerCase()}:11 0:${NATIVE}:2 0:${TOKEN.toLowerCase()}:0 4000:${TOKEN.toLowerCase()}:0`);
+});
+
+test('auto-stick status, compounding, and vesting pass the groups holding underlying rewards', async () => {
+  const { context: c, info, plans, reads } = fixture();
+  c.ctx.rewardGroups = [0n, 4000n, 4008n];
+  c.ctx.hook = OTHER;
+  const baseView = c.view;
+  c.view = async (to, selector, data) => {
+    reads.push({ to, selector, data });
+    if (selector === '0x5710be41') {
+      const groupId = BigInt(`0x${data.slice(64, 128)}`);
+      return uint(groupId === 4000n ? 300 : groupId === 4008n ? 200 : 0);
+    }
+    if (selector === '0x7d33ed0f') return words(0, 500, 10n ** 30n, 0);
+    if (selector === '0x7f1a9379') return words(1, 86400, 0, 1);
+    if (selector === '0xb9f2a2ba' || selector === '0x5d0bc3bb') return uint(1);
+    return baseView(to, selector, data);
+  };
+  const groupList = (result) => `${result.groupIds.join(',')}|${result.collectable}`;
+  const state = await c.readAutoStickState();
+  assert.equal(groupList(state), '4000,4008|500');
+  const status = reads.find((read) => read.selector === '0x7d33ed0f');
+  assert.equal(status.data, c.encode(['uint256', 'address', 'uint256[]'], [12n, HOLDER, [4000n, 4008n]]));
+  assert.equal(groupList(await c.stakedRewardGroups(info, HOLDER)), '4000,4008|500');
+  c.autoStickState = c.readAutoStickState;
+  await c.autoStickNow();
+  const compound = plans.at(-1).txs[0];
+  assert.equal(compound.data, `0x8244fb99${c.encode(['uint256', 'address', 'uint256[]'], [12n, HOLDER, [4000n, 4008n]])}`);
+  assert.ok(compound.args.some(([label, value]) => label === 'GROUPS' && value === 'Staked 4+ weeks, Staked 4–8 weeks'));
+  await c.claimAndStick();
+  const stick = plans.at(-1).txs.at(-1);
+  assert.equal(stick.data, `0x40b5a05d${c.encode(['uint256', 'uint256[]'], [12n, [4000n, 4008n]])}`);
+  assert.ok(plans.at(-1).summary.some(([label, value]) => label === 'Claim' && /^0\.0005(00)? ART$/.test(value)));
+  c.hasRewardsToVest = async (_info, _holder, _token, groupId) => groupId === 4008n;
+  await c.beginAutoStickVesting();
+  const vest = plans.at(-1).txs[0];
+  assert.equal(vest.data, `0xa15557e8${c.encode(['uint256', 'address', 'uint256[]'], [12n, HOLDER, [4008n]])}`);
+  // Nothing ready anywhere falls back to group 0 so the adapter's status read never sends an empty list.
+  c.view = async (to, selector, data) => selector === '0x5710be41' ? uint(0) : baseView(to, selector, data);
+  assert.equal(groupList(await c.stakedRewardGroups(info, HOLDER)), '0|0');
+});
+
+test('receivers reject native ETH rather than falsely describing an ERC20 settlement', async () => {
   const { context: c, plans } = fixture();
   c.$('bridge-reward-token').value = 'ETH';
   await assert.rejects(c.settleArrivals(), /settle ERC-20/);

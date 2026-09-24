@@ -88,7 +88,7 @@ def build_config(environ):
     contract_fields = {
         "deployer": "STICKY_DEPLOYER",
         "distributor": "STICKY_DISTRIBUTOR",
-        "pockets": "STICKY_POCKETS",
+        "rewardReceiverFactory": "STICKY_REWARD_RECEIVER_FACTORY",
         "autoStickAdapter": "STICKY_AUTOSTICK_ADAPTER",
     }
     chains = {}

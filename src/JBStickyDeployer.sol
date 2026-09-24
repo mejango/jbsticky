@@ -9,6 +9,7 @@ import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
 import {JBConstants} from "@bananapus/core-v6/src/libraries/JBConstants.sol";
+import {JBPayerTrackerLib} from "@bananapus/core-v6/src/libraries/JBPayerTrackerLib.sol";
 import {JBAccountingContext} from "@bananapus/core-v6/src/structs/JBAccountingContext.sol";
 import {JBFundAccessLimitGroup} from "@bananapus/core-v6/src/structs/JBFundAccessLimitGroup.sol";
 import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.sol";
@@ -17,6 +18,7 @@ import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
 import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 
 import {JBStickyHook} from "./JBStickyHook.sol";
 import {JBStickyPriceFeed} from "./JBStickyPriceFeed.sol";
@@ -28,19 +30,30 @@ import {IJBStickyHook} from "./interfaces/IJBStickyHook.sol";
 /// @notice Deploys permanently configured staking projects with backing-priced shares, a chosen cash-out tax and
 /// optional soulbound transfers. Owns each project's NFT without exposing any operation to change its rules,
 /// terminals, metadata, token or ownership, or withdraw project funds.
+/// @dev Each share token is deployed with CREATE2 under a salt bound to the launcher and the launch configuration, so
+/// no other launcher can occupy an address a launcher, or a receiver prefunded for it, predicted.
 contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
 
-    /// @notice Thrown when a commitment reward is above the maximum cash out tax rate.
+    /// @notice Thrown when the requested cash out tax rate is above the protocol maximum, which core cannot apply.
     error JBStickyDeployer_InvalidCashOutTaxRate(uint256 rate, uint256 max);
 
-    /// @notice The core price registry does not support a zero currency ID.
+    /// @notice Thrown when the underlying token maps to currency zero, which the core price registry rejects.
     error JBStickyDeployer_InvalidCurrency(address token);
 
-    /// @notice Feed registration and payment pricing must use the same core registry.
+    /// @notice Thrown when feed registration and payment pricing would use different core price registries, so the
+    /// terminal could not read the registered issuance denominator.
     error JBStickyDeployer_PriceRegistryMismatch(address controllerPrices, address terminalPrices);
+
+    /// @notice Thrown when the staked token is a share token of a project launched by this deployer, whose reward
+    /// weight the terminal could never claim.
+    error JBStickyDeployer_StakedTokenIsSticky(address token, uint256 projectId);
+
+    /// @notice Thrown when an NFT arrives other than a project NFT minted during this deployer's own launch, so no
+    /// unrelated project can be held without Sticky's permanent configuration.
+    error JBStickyDeployer_UnexpectedNft(address collection, address from, uint256 tokenId);
 
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
@@ -62,8 +75,8 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     // --------------------- public stored properties -------------------- //
     //*********************************************************************//
 
-    /// @notice The portion of an unwind a sticky project leaves behind for remaining stakers — its commitment
-    /// reward — out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @notice The project's cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @dev The retained proportion also depends on the fraction of supply redeemed; this is not a flat fee.
     /// @custom:param projectId The ID of the sticky project.
     mapping(uint256 projectId => uint256) public override cashOutTaxRateOf;
 
@@ -76,23 +89,45 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     mapping(uint256 projectId => IERC20Metadata) public override stakedTokenOf;
 
     //*********************************************************************//
+    // ------------------- transient stored properties ------------------- //
+    //*********************************************************************//
+
+    /// @notice The account that paid the creation fee for the project currently being launched.
+    /// @dev Exposed while the controller launches the project so fee receivers credit the launcher or its upstream
+    /// payer. Restored to the previous value after the call so a nested launch preserves the outer payer.
+    address public transient override originalPayer;
+
+    //*********************************************************************//
     // -------------------------- constructor ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Bind every launched project to the same controller, terminal and position-accounting hook.
+    /// @notice Binds every launched project to the same controller, terminal and position-accounting hook.
     /// @param controller The controller used to launch and manage sticky projects.
     /// @param terminal The terminal sticky projects accept their staked token through.
     constructor(IJBController controller, IJBTerminal terminal) {
+        // Locate the registry where the controller will register each project's issuance feed.
         address controllerPrices = address(controller.PRICES());
+
+        // Read the terminal's actual pricing registry so registration and payment pricing can be compared.
         address terminalPrices = address(IJBMultiTerminal(address(terminal)).STORE().PRICES());
+
+        // Reject a pairing that would leave the terminal unable to read the registered issuance denominator.
         if (controllerPrices != terminalPrices) {
             revert JBStickyDeployer_PriceRegistryMismatch({
                 controllerPrices: controllerPrices, terminalPrices: terminalPrices
             });
         }
+
+        // Keep all project launches and initial configuration on the validated controller.
         CONTROLLER = controller;
+
+        // Fix the staking terminal so projects retain the validated pricing path.
         TERMINAL = terminal;
+
+        // Use the controller's token manager as the only authority allowed to mint and burn Sticky shares.
         TOKENS = controller.TOKENS();
+
+        // Share one accounting hook across projects, with this deployer authorized to bind tokens and granters.
         HOOK = new JBStickyHook({directory: controller.DIRECTORY(), deployer: address(this)});
     }
 
@@ -101,19 +136,22 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     //*********************************************************************//
 
     /// @notice Deploys a sticky project for a token.
-    /// @dev The `msg.value` must equal the project creation fee required by `JBProjects`.
-    /// @param stakedToken The token the project accepts for staking.
+    /// @dev The `msg.value` must equal the project creation fee required by `JBProjects`. The share token lands at
+    /// `predictStickyTokenOf(msg.sender, projectId, ...)` for the same arguments, where `projectId` is the ID the
+    /// launch receives.
+    /// @param stakedToken The token the project accepts for staking. Cannot be the share token of another project
+    /// launched by this deployer.
     /// @param name The name of the share token issued to represent staked positions.
     /// @param symbol The symbol of the share token issued to represent staked positions.
     /// @param projectUri The sticky project's metadata URI.
-    /// @param cashOutTaxRate The portion of an unwind left behind for remaining stakers — the project's commitment
-    /// reward — out of `JBConstants.MAX_CASH_OUT_TAX_RATE`. Zero uses proportional redemption of share-owned
-    /// backing. Positive values apply the protocol's cash-out curve; the maximum returns no backing. Terminal fee
-    /// rules apply independently, including any fee-free intra-terminal balance allowances.
+    /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`. Zero uses
+    /// proportional redemption of share-owned backing. Positive values apply the protocol's cash-out curve; the maximum
+    /// returns no backing. Terminal fee rules apply independently, including any fee-free intra-terminal balance
+    /// allowances.
     /// @param granters Addresses allowed to airdrop stakes to any holder (e.g. the community's grant program).
     /// Permanent — holders can additionally trust senders for their own position at any time.
-    /// @param soulbound Whether the staked copy's transfers revert. If false, transfers are allowed and restart the
-    /// streak clock on the moved tokens.
+    /// @param soulbound Whether transfers between holders revert. Otherwise, incoming transfers create fresh
+    /// tranches; a recipient's existing streak continues until their entire balance leaves.
     /// @return projectId The ID of the sticky project.
     function deployStickyFor(
         IERC20Metadata stakedToken,
@@ -129,62 +167,114 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
         override
         returns (uint256 projectId)
     {
-        // Make sure the commitment reward fits the protocol's cash out tax range.
+        // Keep the requested cash out curve within the protocol's supported range before launching a project.
         if (cashOutTaxRate > JBConstants.MAX_CASH_OUT_TAX_RATE) {
             revert JBStickyDeployer_InvalidCashOutTaxRate({
                 rate: cashOutTaxRate, max: JBConstants.MAX_CASH_OUT_TAX_RATE
             });
         }
 
-        // A distinct synthetic currency makes core use the project's exact backing denominator for issuance.
+        // Match the core convention for identifying an ERC-20 accounting currency from its address.
         uint32 currency = uint32(uint160(address(stakedToken)));
+
+        // The core price registry rejects currency zero, so fail before creating a project that cannot be priced.
         if (currency == 0) revert JBStickyDeployer_InvalidCurrency(address(stakedToken));
+
+        // Find the project, if any, whose share token is the requested staking asset.
+        uint256 stakedTokenProjectId = TOKENS.projectIdOf(IJBToken(address(stakedToken)));
+
+        // Reject another Sticky project's shares: every holder self-delegates, so the terminal would hold reward
+        // weight in that project's distributor rounds with no way to claim the rewards.
+        if (HOOK.tokenOf(stakedTokenProjectId) == address(stakedToken)) {
+            revert JBStickyDeployer_StakedTokenIsSticky({token: address(stakedToken), projectId: stakedTokenProjectId});
+        }
+
+        // Force a currency conversion so core consults the exact backing denominator instead of using a 1:1 rate.
         uint32 baseCurrency = currency == type(uint32).max ? type(uint32).max - 1 : type(uint32).max;
 
-        // Keep a reference to the single eternal ruleset the sticky project will run on.
+        // Supply one ruleset so the launcher does not schedule any later change in staking policy.
         JBRulesetConfig[] memory rulesetConfigurations = new JBRulesetConfig[](1);
+
+        // Fix issuance, redemption and administrative restrictions for the lifetime of the project.
         rulesetConfigurations[0] = JBRulesetConfig({
+            // Make staking available as soon as the project launches.
             mustStartAtOrAfter: 0,
+            // Keep the initial ruleset active without a recurring expiry.
             duration: 0,
+            // Provide a nonzero nominal weight; the pay data hook supplies the actual issuance numerator.
             weight: 1e18,
+            // Prevent time-based decay of the configured issuance weight.
             weightCutPercent: 0,
+            // No approval mechanism is needed because this owner exposes no ruleset-queueing operation.
             approvalHook: IJBRulesetApprovalHook(address(0)),
             metadata: JBRulesetMetadata({
+                // Give every issued share to the depositor's beneficiary instead of reserving a separate portion.
                 reservedPercent: 0,
-                // casting to 'uint16' is safe because the rate is checked against `MAX_CASH_OUT_TAX_RATE` above.
+                // Preserve the chosen cash out curve; the maximum-rate check above makes this cast safe.
                 // forge-lint: disable-next-line(unsafe-typecast)
                 cashOutTaxRate: uint16(cashOutTaxRate),
+                // Route payment pricing through the synthetic-currency feed registered below.
                 baseCurrency: baseCurrency,
+                // Allow holders to create stakes by paying the terminal.
                 pausePay: false,
+                // Prevent credit transfers from bypassing the share token's tranche accounting and transfer policy.
                 pauseCreditTransfers: true,
+                // Prevent owner minting from diluting stakes without a backing deposit.
                 allowOwnerMinting: false,
+                // Permit the initial Sticky token attachment; this owner exposes no later token-setting method.
                 allowSetCustomToken: true,
+                // Keep backing in the terminal whose accounting the hook and feed use.
                 allowTerminalMigration: false,
+                // Prevent changing the set of terminals that can receive stakes and redeem shares.
                 allowSetTerminals: false,
+                // Preserve the controller that enforces this project's issuance and configuration rules.
                 allowSetController: false,
+                // Keep the underlying token as the project's only accepted staking asset.
                 allowAddAccountingContext: false,
+                // Permit initial feed registration; this owner exposes no later feed-setting method.
                 allowAddPriceFeed: true,
+                // No payout permission gate is needed because the project has no fund-access limits.
                 ownerMustSendPayouts: false,
+                // Let terminal fees process normally instead of accumulating deferred fee obligations.
                 holdFees: false,
+                // Use the core's aggregate surplus path; this project has one fixed staking terminal.
                 scopeCashOutsToLocalBalances: false,
+                // Price each deposit against share-owned backing and request its tranche-accounting callback.
                 useDataHookForPay: true,
+                // Exclude orphaned funds from the backing available to redeeming holders.
                 useDataHookForCashOut: true,
+                // Use the same accounting authority that the project's share token will notify.
                 dataHook: address(HOOK),
+                // Leave application-specific metadata bits unset because Sticky requires no additional flags.
                 metadata: 0
             }),
+            // No payout or reserved-share allocation is needed for a project funded only for its share holders.
             splitGroups: new JBSplitGroup[](0),
+            // Expose no payout limits or surplus allowances that could withdraw holder backing.
             fundAccessLimitGroups: new JBFundAccessLimitGroup[](0)
         });
 
-        // Keep a reference to the terminal configuration accepting the staked token.
+        // Allocate exactly one accepted asset so the project's backing stays denominated in its underlying token.
         JBAccountingContext[] memory accountingContexts = new JBAccountingContext[](1);
+
+        // Cache the token's precision at launch so terminal accounting does not follow later metadata changes.
         accountingContexts[0] =
             JBAccountingContext({token: address(stakedToken), decimals: stakedToken.decimals(), currency: currency});
+
+        // Configure a single terminal so payments and cash outs share one backing ledger.
         JBTerminalConfig[] memory terminalConfigurations = new JBTerminalConfig[](1);
+
+        // Bind that terminal to the accepted asset and its cached accounting units.
         terminalConfigurations[0] =
             JBTerminalConfig({terminal: TERMINAL, accountingContextsToAccept: accountingContexts});
 
-        // Launch the sticky project, owned by this contract forever.
+        // Preserve any outer launch's fee payer in case a creation-fee callback starts a nested launch.
+        address previousPayer = originalPayer;
+
+        // Expose the resolved launcher so the controller attributes creation-fee tokens to the account funding them.
+        originalPayer = JBPayerTrackerLib.resolve(msg.sender);
+
+        // Forward the creation fee and retain the project NFT here, with no operation to alter its policy or owner.
         projectId = CONTROLLER.launchProjectFor{value: msg.value}({
             owner: address(this),
             projectUri: projectUri,
@@ -192,33 +282,58 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
             terminalConfigurations: terminalConfigurations,
             memo: "JBSticky"
         });
+        // Each nested launch attributes its own fee, then restores the outer launch's payer before returning.
+        // slither-disable-next-line reentrancy-eth
+        originalPayer = previousPayer;
 
-        // Deploy the share token representing staked positions, bound to this project.
-        IJBToken token = new JBStickyToken({
+        // Deploy the share token representing staked positions, bound to this project, at an address only this
+        // launcher can produce for this configuration.
+        IJBToken token = new JBStickyToken{
+            salt: _stickyTokenSaltOf({
+                launcher: msg.sender,
+                stakedToken: stakedToken,
+                name: name,
+                symbol: symbol,
+                projectUri: projectUri,
+                cashOutTaxRate: cashOutTaxRate,
+                granters: granters,
+                soulbound: soulbound
+            })
+        }({
             name: name, symbol: symbol, tokens: TOKENS, projectId: projectId, hook: HOOK, soulbound: soulbound
         });
 
-        // Attach the token and register it as the project's transfer and burn reporter. The custom-token flag is
-        // needed for this attachment; this permanent owner exposes no later token-setting operation.
+        // Make terminal issuance use these shares; the custom-token flag permits this initial attachment.
         CONTROLLER.setTokenFor({projectId: projectId, token: token});
+
+        // Authorize only this share token to report transfers and burns to the project's position accounting.
         HOOK.setTokenFor({projectId: projectId, token: address(token)});
 
-        // The price-feed flag allows this initial registration. This owner exposes no later feed-setting method.
+        // Bind an immutable issuance denominator to the launched project's terminal, supply and orphaned backing.
         IJBPriceFeed feed = new JBStickyPriceFeed({
             hook: HOOK, terminal: TERMINAL, token: token, projectId: projectId, underlyingToken: address(stakedToken)
         });
+
+        // Register the feed for the exact currency pair that core consults when pricing a staking payment.
         CONTROLLER.addPriceFeedFor({
             projectId: projectId, pricingCurrency: currency, unitCurrency: baseCurrency, feed: feed
         });
+
+        // Expose the project's feed so clients can inspect the denominator used for issuance.
         priceFeedOf[projectId] = feed;
 
         // Allow the project's granters to airdrop stakes to any holder.
         HOOK.setGrantersFor({projectId: projectId, granters: granters});
 
-        // Store the token the project accepts for staking, and the commitment reward its unwinds leave behind.
+        // Expose the accepted staking asset so clients can identify the backing for this project's shares.
         stakedTokenOf[projectId] = stakedToken;
+
+        // Expose the fixed curve parameter so clients can account for backing retained during cash outs.
         cashOutTaxRateOf[projectId] = cashOutTaxRate;
 
+        // Announce the completed configuration so indexers can discover the project and its share token.
+        // Launches receive distinct project IDs, and every configuration write is scoped to its own project.
+        // forge-lint: disable-next-item(reentrancy-events)
         emit DeploySticky({
             projectId: projectId,
             stakedToken: stakedToken,
@@ -233,23 +348,118 @@ contract JBStickyDeployer is IERC721Receiver, IJBStickyDeployer {
     // ----------------------- external views ---------------------------- //
     //*********************************************************************//
 
-    /// @notice Accept ownership of the project NFTs minted to this contract when sticky projects launch.
-    /// @param operator The address performing the NFT transfer.
-    /// @param from The previous NFT holder.
-    /// @param tokenId The NFT ID being received.
-    /// @param data Extra transfer data.
+    /// @notice Accepts ownership of the project NFTs minted to this contract when sticky projects launch.
+    /// @dev Only a mint from the controller's `PROJECTS` while a launch is in progress is accepted. `originalPayer` is
+    /// non-zero exactly for the duration of `deployStickyFor`, and `JBProjects` mints before forwarding its creation
+    /// fee, so the accepted NFT is the one the launch requested. Transfers of existing NFTs and mints outside a launch
+    /// revert.
+    /// @inheritdoc IERC721Receiver
+    /// @param from The previous owner of the NFT, which is the zero address for a mint.
+    /// @param tokenId The ID of the NFT received, reported when the NFT is rejected.
     /// @return selector The ERC721 receiver acceptance selector.
     function onERC721Received(
-        address operator,
+        address,
         address from,
         uint256 tokenId,
-        bytes calldata data
+        bytes calldata
     )
         external
-        pure
+        view
         override
         returns (bytes4 selector)
     {
+        // Retain only freshly minted project NFTs requested by a launch in progress.
+        if (msg.sender != address(CONTROLLER.PROJECTS()) || from != address(0) || originalPayer == address(0)) {
+            revert JBStickyDeployer_UnexpectedNft({collection: msg.sender, from: from, tokenId: tokenId});
+        }
+
+        // Accept the project NFT so the deployer can retain ownership and enforce permanent configuration.
         return IERC721Receiver.onERC721Received.selector;
+    }
+
+    /// @notice The share token address a launch produces for a launcher, project ID and configuration.
+    /// @dev The project ID enters the token's creation code, and every launch on the chain advances it, so a
+    /// prediction holds only for the ID the launch actually receives. Matching token addresses across chains
+    /// require the same deployer address, launcher, project ID and configuration on each.
+    /// @param launcher The account that calls `deployStickyFor`.
+    /// @param projectId The ID of the sticky project the launch receives.
+    /// @param stakedToken The token the project accepts for staking.
+    /// @param name The name of the share token.
+    /// @param symbol The symbol of the share token.
+    /// @param projectUri The sticky project's metadata URI.
+    /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @param granters Addresses allowed to airdrop stakes to any holder.
+    /// @param soulbound Whether transfers between holders revert.
+    /// @return token The share token's address, whether or not it has been deployed.
+    function predictStickyTokenOf(
+        address launcher,
+        uint256 projectId,
+        IERC20Metadata stakedToken,
+        string calldata name,
+        string calldata symbol,
+        string calldata projectUri,
+        uint256 cashOutTaxRate,
+        address[] calldata granters,
+        bool soulbound
+    )
+        external
+        view
+        override
+        returns (address token)
+    {
+        // Reproduce the launch's deployment so receivers can be funded before the token exists.
+        token = Create2.computeAddress({
+            salt: _stickyTokenSaltOf({
+                launcher: launcher,
+                stakedToken: stakedToken,
+                name: name,
+                symbol: symbol,
+                projectUri: projectUri,
+                cashOutTaxRate: cashOutTaxRate,
+                granters: granters,
+                soulbound: soulbound
+            }),
+            // Include the constructor arguments because they permanently bind the token to its project and policy.
+            bytecodeHash: keccak256(
+                bytes.concat(
+                    type(JBStickyToken).creationCode, abi.encode(name, symbol, TOKENS, projectId, HOOK, soulbound)
+                )
+            )
+        });
+    }
+
+    //*********************************************************************//
+    // ----------------------- internal helpers -------------------------- //
+    //*********************************************************************//
+
+    /// @notice The CREATE2 salt of a launcher's share token for a launch configuration.
+    /// @param launcher The account that calls `deployStickyFor`.
+    /// @param stakedToken The token the project accepts for staking.
+    /// @param name The name of the share token.
+    /// @param symbol The symbol of the share token.
+    /// @param projectUri The sticky project's metadata URI.
+    /// @param cashOutTaxRate The cash out curve parameter, out of `JBConstants.MAX_CASH_OUT_TAX_RATE`.
+    /// @param granters Addresses allowed to airdrop stakes to any holder.
+    /// @param soulbound Whether transfers between holders revert.
+    /// @return salt The salt, distinct for every launcher and configuration.
+    function _stickyTokenSaltOf(
+        address launcher,
+        IERC20Metadata stakedToken,
+        string calldata name,
+        string calldata symbol,
+        string calldata projectUri,
+        uint256 cashOutTaxRate,
+        address[] calldata granters,
+        bool soulbound
+    )
+        internal
+        pure
+        returns (bytes32 salt)
+    {
+        // Binding the launcher keeps a predicted address out of every other launcher's reach; binding the
+        // configuration commits the prediction to the launch it was made for.
+        // forge-lint: disable-next-item(asm-keccak256)
+        return
+            keccak256(abi.encode(launcher, stakedToken, name, symbol, projectUri, cashOutTaxRate, granters, soulbound));
     }
 }

@@ -12,19 +12,34 @@
     "foundry.toml",
     "remappings.txt",
     "script/",
-    "src/"
+    "src/",
+    "foundry.lock",
+    "sphinx.lock"
   ],
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
     "test": "forge test",
+    "test:fork": "sh script/test-fork.sh",
     "coverage": "forge coverage --match-path \"./src/*.sol\" --report lcov --report summary",
-    "deploy:mainnets": "set -a; if [ -f ./.env ]; then . ./.env || exit; fi; set +a; FOUNDRY_PROFILE=deploy sphinx propose ./script/Deploy.s.sol --networks mainnets",
-    "deploy:testnets": "set -a; if [ -f ./.env ]; then . ./.env || exit; fi; set +a; FOUNDRY_PROFILE=deploy sphinx propose ./script/Deploy.s.sol --networks testnets",
+    "deploy:mainnets": "npm run deploy:propose:mainnets",
+    "deploy:testnets": "npm run deploy:propose:testnets",
     "deploy:rehearse": "FOUNDRY_PROFILE=deploy forge script script/Rehearse.s.sol:Rehearse",
     "deploy:verify": "FOUNDRY_PROFILE=deploy forge script script/Verify.s.sol:Verify",
-    "test:deployment": "forge test --match-path \"test/deployment/*.t.sol\" && node --test test/deployment/config.test.cjs"
+    "test:deployment": "forge test --match-path \"test/deployment/*.t.sol\" && node --test test/deployment/*.test.cjs test/deployment/*.test.mjs",
+    "deploy:preflight:testnets": "sh script/deploy.sh preflight testnets",
+    "deploy:rehearse:testnets": "sh script/deploy.sh rehearse testnets",
+    "deploy:propose:testnets": "sh script/deploy.sh propose testnets",
+    "deploy:verify:testnets": "sh script/deploy.sh verify testnets",
+    "deploy:artifacts:testnets": "sh script/deploy.sh artifacts testnets",
+    "deploy:post:testnets": "npm run deploy:verify:testnets && npm run deploy:artifacts:testnets",
+    "deploy:preflight:mainnets": "sh script/deploy.sh preflight mainnets",
+    "deploy:rehearse:mainnets": "sh script/deploy.sh rehearse mainnets",
+    "deploy:propose:mainnets": "sh script/deploy.sh propose mainnets",
+    "deploy:verify:mainnets": "sh script/deploy.sh verify mainnets",
+    "deploy:artifacts:mainnets": "sh script/deploy.sh artifacts mainnets",
+    "deploy:post:mainnets": "npm run deploy:verify:mainnets && npm run deploy:artifacts:mainnets"
   },
   "dependencies": {
     "@bananapus/721-hook-v6": "^1.0.0",

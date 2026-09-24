@@ -3,19 +3,22 @@ pragma solidity ^0.8.0;
 
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
-import {IJBDistributor} from "@bananapus/distributor-v6/src/interfaces/IJBDistributor.sol";
 
 import {JBAutoStickStatus} from "../enums/JBAutoStickStatus.sol";
+
 import {IJBStickyDeployer} from "./IJBStickyDeployer.sol";
+import {IJBStickyDistributor} from "./IJBStickyDistributor.sol";
 import {IJBStickyHook} from "./IJBStickyHook.sol";
 
 /// @notice Auto-compounds vested underlying-token rewards back into the same holder's sticky position.
-/// @dev Best effort: rewards already collected to the holder must be staked separately.
+/// @dev Best effort: rewards already collected to the holder must be staked separately. Callers choose which reward
+/// groups to collect from; the holder's minimum applies to the combined amount.
 interface IJBStickyAutoStick {
     /// @notice Emitted when vested rewards are collected and stuck back into the holder's position.
     /// @param projectId The ID of the sticky project compounded into.
     /// @param holder The holder whose rewards were compounded.
     /// @param token The underlying token that was compounded.
+    /// @param groupIds The reward groups the rewards were collected from.
     /// @param underlyingAmount The underlying-token amount collected and stuck.
     /// @param stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
     /// @param caller The address that triggered the compound.
@@ -23,6 +26,7 @@ interface IJBStickyAutoStick {
         uint256 indexed projectId,
         address indexed holder,
         address indexed token,
+        uint256[] groupIds,
         uint256 underlyingAmount,
         uint256 stickyTokenCount,
         address caller
@@ -32,9 +36,10 @@ interface IJBStickyAutoStick {
     /// @param projectId The ID of the sticky project the vesting belongs to.
     /// @param holder The holder whose rewards began vesting.
     /// @param token The underlying token that began vesting.
+    /// @param groupIds The reward groups that began vesting.
     /// @param caller The address that triggered the vesting.
     event BeganAutoStickVesting(
-        uint256 indexed projectId, address indexed holder, address indexed token, address caller
+        uint256 indexed projectId, address indexed holder, address indexed token, uint256[] groupIds, address caller
     );
 
     /// @notice Emitted when a holder changes their auto-stick configuration.
@@ -59,7 +64,7 @@ interface IJBStickyAutoStick {
 
     /// @notice The distributor vested rewards are collected from.
     /// @return distributor The bound rewards distributor.
-    function DISTRIBUTOR() external view returns (IJBDistributor distributor);
+    function DISTRIBUTOR() external view returns (IJBStickyDistributor distributor);
 
     /// @notice The data hook that gates third-party stakes and tracks positions.
     /// @return hook The bound Sticky position hook.
@@ -88,16 +93,19 @@ interface IJBStickyAutoStick {
         view
         returns (uint128 minimumAmount, uint48 cooldown, uint48 lastCompoundedAt, bool enabled);
 
-    /// @notice Why a holder's next compound can or cannot happen right now, plus the reads the UI needs.
+    /// @notice The first condition preventing a holder's next automated compound, with reward and approval amounts.
+    /// @dev A ready status is a preview; balances, approvals, backing and configuration can change before execution.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder to check.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return status The current auto-stick status.
-    /// @return collectableAmount The underlying-token amount currently collectable from the distributor.
+    /// @return collectableAmount The underlying-token amount currently collectable across the groups.
     /// @return allowance The holder's current underlying-token allowance to this adapter.
     /// @return nextCompoundAt The earliest timestamp the next compound can happen.
     function statusOf(
         uint256 projectId,
-        address holder
+        address holder,
+        uint256[] calldata groupIds
     )
         external
         view
@@ -106,21 +114,25 @@ interface IJBStickyAutoStick {
     /// @notice Starts vesting a holder's eligible reward rounds for the project's underlying token.
     /// @param projectId The ID of the sticky project.
     /// @param holder The holder whose rewards should begin vesting.
-    function beginVestingFor(uint256 projectId, address holder) external;
+    /// @param groupIds The reward groups to begin vesting, strictly ascending.
+    function beginVestingFor(uint256 projectId, address holder, uint256[] calldata groupIds) external;
 
     /// @notice Collects a holder's vested underlying-token rewards and sticks them back into their position.
     /// @param projectId The ID of the sticky project to compound into.
     /// @param holder The holder whose rewards are compounded.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount collected and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the holder, as a fixed point number with 18 decimals.
     function compoundFor(
         uint256 projectId,
-        address holder
+        address holder,
+        uint256[] calldata groupIds
     )
         external
         returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 
     /// @notice Sets the caller's auto-stick configuration for a sticky project.
+    /// @dev The minimum and cooldown must be valid even when disabling. Disabling preserves the last compound time.
     /// @param projectId The ID of the sticky project.
     /// @param enabled Whether auto-stick should be on.
     /// @param minimumAmount The smallest reward worth compounding, in the underlying token's decimals. Non-zero.
@@ -130,7 +142,13 @@ interface IJBStickyAutoStick {
     /// @notice Claims the caller's vested underlying-token rewards and sticks them, atomically, in one call.
     /// @dev Reverts before payment if the reward would issue zero Sticky token atoms.
     /// @param projectId The ID of the sticky project whose rewards are claimed and stuck.
+    /// @param groupIds The reward groups to collect from, strictly ascending.
     /// @return underlyingAmount The underlying-token amount claimed and stuck.
     /// @return stickyTokenCount The sticky tokens minted to the caller, as a fixed point number with 18 decimals.
-    function stickRewardsFor(uint256 projectId) external returns (uint256 underlyingAmount, uint256 stickyTokenCount);
+    function stickRewardsFor(
+        uint256 projectId,
+        uint256[] calldata groupIds
+    )
+        external
+        returns (uint256 underlyingAmount, uint256 stickyTokenCount);
 }

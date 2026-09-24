@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       network:
-        description: Read-only fork rehearsal RPC alias
+        description: Read-only fork rehearsal network or group
         type: choice
         default: ethereum_sepolia
-        options: [ethereum, optimism, base, arbitrum, ethereum_sepolia, optimism_sepolia, base_sepolia, arbitrum_sepolia]
+        options: [testnets, mainnets, ethereum, optimism, base, arbitrum, ethereum_sepolia, optimism_sepolia, base_sepolia, arbitrum_sepolia]
 jobs:
   forge-test:
     runs-on: ubuntu-latest
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Bananapus/nana-core-v6
-          ref: 898f08b96194391d545df31a62f9d89ef6759f9a
+          ref: feff600654aee6fb1747dded692f18068b2230a6
           path: nana-core-v6
       - uses: actions/checkout@v4
         with:
@@ -46,17 +46,30 @@ jobs:
         with:
           version: v1.8.1
       - name: Run tests
-        run: forge test --fail-fast --summary --detailed
+        run: forge test --deny notes --fail-fast --summary --detailed --skip "*/script/**"
+      - name: Test real projects and Ethereum-to-Base rewards
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 30
+        run: npm run test:fork
+        env:
+          RPC_ETHEREUM_MAINNET: ${{ secrets.RPC_ETHEREUM_MAINNET }}
+          RPC_BASE_MAINNET: ${{ secrets.RPC_BASE_MAINNET }}
       - name: Check Sphinx configuration without public RPC calls
-        run: node --test test/deployment/config.test.cjs
-      - name: Check contract sizes
-        run: forge build --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
+        run: node --test test/deployment/*.test.cjs test/deployment/*.test.mjs
+      - name: Check runtime lint and contract sizes
+        run: forge build --deny notes --sizes --skip "*/test/**" --skip "*/script/**" --skip SphinxUtils
       - name: Compile deployment entrypoints
         run: forge build --skip "*/test/**"
       - name: Rehearse deployment and restart on the selected chain
         if: github.event_name == 'workflow_dispatch'
-        run: forge script script/Rehearse.s.sol:Rehearse --rpc-url "${{ inputs.network }}" -vv
+        run: |
+          case "$STICKY_NETWORK" in
+            testnets|mainnets) sh script/deploy.sh rehearse "$STICKY_NETWORK" ;;
+            *) forge script script/Rehearse.s.sol:Rehearse --rpc-url "$STICKY_NETWORK" -vv ;;
+          esac
         env:
+          STICKY_NETWORK: ${{ inputs.network }}
+          STICKY_REVISION: ${{ github.sha }}
           FOUNDRY_PROFILE: deploy
           RPC_ETHEREUM_MAINNET: ${{ secrets.RPC_ETHEREUM_MAINNET }}
           RPC_OPTIMISM_MAINNET: ${{ secrets.RPC_OPTIMISM_MAINNET }}

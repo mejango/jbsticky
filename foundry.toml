@@ -4,6 +4,8 @@ bytecode_hash = "none"
 evm_version = 'cancun'
 via_ir = true
 optimizer_runs = 200
+# Live-project tests require explicit archive RPC access through the fork profile.
+no_match_path = "test/fork/**"
 # Required by Sphinx proposal artifact collection.
 extra_output = ["storageLayout"]
 # Match deploy-all-v6: artifact inspection is local script work, outside transaction gas estimates.
@@ -18,9 +20,16 @@ fs_permissions = [
 ]
 
 # Sphinx 0.33 uses the non-isolated script model. Foundry 1.8.1's isolated Optimism calls reject the canonical
-# CREATE2 factory even when the same call succeeds on its RPC. Scope this compatibility setting to deployment.
+# CREATE2 factory even when the same call succeeds on its RPC. Use this execution model for production setup.
 [profile.deploy]
 isolate = false
+
+[profile.fork]
+# Real-project setup uses the same production artifact inspection as deployment rehearsals.
+isolate = false
+# An empty exclusion matches every file in Foundry 1.8.1. Override it with the local deployment-test path.
+no_match_path = "test/deployment/**"
+match_path = "test/fork/**"
 
 [fuzz]
 runs = 4096

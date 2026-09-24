@@ -30,7 +30,7 @@
     font-weight: 700; font-display: swap;
   }
   :root {
-    --bg: #f0f7f9; --card: #f8fcfd; --line: #d8e7eb; --text: #1c2d33; --muted: #64808a;
+    --bg: #f0f7f9; --card: #f8fcfd; --line: #d8e7eb; --text: #1c2d33; --muted: #57727c;
     --accent: #0e7c91; --amber: #2fb3c7; --ink: #1c2d33; --teal: #7fd4e0; --err: #b34a35; --out: #b34a35;
     --top-fold-height: 50px;
   }
@@ -87,29 +87,14 @@
     border: 1px solid var(--line); border-radius: 4px; padding: 6px 34px 6px 8px; cursor: pointer;
   }
   select:focus { outline: none; border-color: var(--amber); }
-  .dd { position: relative; }
-  .dd-btn {
-    display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; color: var(--text);
-    letter-spacing: 1px; border: 1px solid var(--line); border-radius: 4px; padding: 6px 34px 6px 8px;
-    cursor: pointer;
-    background: #fdffff url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364808a'/%3E%3C/svg%3E") no-repeat right 12px center;
-  }
-  .dd-btn:hover { border-color: var(--ink); }
-  .dd-btn svg, .dd-item svg { display: block; flex: none; }
-  .dd-menu {
-    position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; z-index: 30;
-    background: var(--card); border: 1px solid var(--ink); border-radius: 6px; overflow: auto;
-    max-height: 280px; box-shadow: 0 8px 24px rgba(33, 30, 26, 0.18);
-  }
-  .dd-item { display: flex; align-items: center; gap: 8px; padding: 7px 12px; cursor: pointer; white-space: nowrap; letter-spacing: 1px; }
-  .dd-item:hover { background: #fdffff; }
-  .dd-item.on { color: var(--accent); font-weight: 700; }
   button {
     background: var(--teal); color: var(--ink); border: none; border-radius: 4px; font: inherit;
     font-weight: 700; letter-spacing: 1px; padding: 8px 15px; cursor: pointer; margin-top: 10px;
   }
   button.ghost { background: transparent; color: var(--text); border: 1px solid var(--ink); }
   button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
+  button.text-button { background: transparent; color: var(--accent); margin: 0; padding: 0; min-height: 24px; font: inherit; letter-spacing: inherit; text-decoration: underline; }
+  :is(a, button, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 140px; }
   table { width: 100%; border-collapse: collapse; margin-top: 4px; }
@@ -128,6 +113,7 @@
   .list-card { background: transparent; border: none; border-radius: 0; overflow: hidden; }
   .card-item { padding: 12px 14px; border-bottom: 1px solid var(--line); }
   .card-item:last-child { border-bottom: none; }
+  a.card-item { display: block; color: inherit; text-decoration: none; }
   .card-item.pickc { cursor: pointer; }
   .card-item.pickc:hover { background: #e6f0f3; }
   .card-head { display: flex; gap: 10px; align-items: flex-start; }
@@ -335,6 +321,7 @@
     font-family: "Agrandir", "Beatrice", sans-serif; color: var(--muted); border-bottom: 2px solid transparent;
     text-decoration: none;
   }
+  button.tab { background: transparent; margin: 0; border-radius: 0; }
   .tab.on { color: var(--text); border-bottom-color: var(--amber); }
   .chip { display: inline-block; border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; font-size: 13px; margin-right: 8px; background: #fdffff; }
   .chip i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 1px; }
@@ -473,10 +460,10 @@
   .hint { font-size: 13px; margin: 2px 0 6px; }
   .hint-subtle { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
   .option-detail { margin-left: 28px; }
-  .preset-row { display: flex; gap: 8px; margin: 4px 0 6px; }
+  .preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 6px; }
   .preset {
     border: 1px solid var(--line); border-radius: 4px; padding: 5px 14px; cursor: pointer;
-    background: #fdffff; font-size: 13px; letter-spacing: 1px;
+    background: #fdffff; font-size: 13px; letter-spacing: 1px; margin: 0; font-weight: 400;
   }
   .preset:hover { border-color: var(--ink); }
   .preset.on { background: var(--teal); border-color: var(--teal); color: var(--ink); font-weight: 700; }
@@ -582,10 +569,10 @@
       <img src="jar.png" alt="" style="width:260px;max-width:70%">
       <h2>Dip one in, get a sticky one out</h2>
       <ol>
-        <li>Exchange any token for a sticky version back.</li>
+        <li>Deposit a supported token for sticky shares of its backing.</li>
         <li>Stick more anytime, unstick anytime too.</li>
-        <li>Sticky tokens can be airdropped reward tokens by anyone, claimable weekly.</li>
-        <li>Sticky tokens can have a bonus: all who unstick give back a little to all who stick.</li>
+        <li>Anyone can fund weekly rewards for sticky holders. After each round, start unlocking your share over four rounds.</li>
+        <li>Sticky tokens can have a bonus: partial unsticks leave backing for the remaining holders.</li>
         <li>Sticky token rules are set when the token is made, and can't be changed.</li>
       </ol>
     </div>
@@ -597,20 +584,20 @@
         <li>The ledger remembers who has stuck around — stickiness we can attest to.</li>
         <li>Airdrops from anyone, and bonuses paid by unsticking, go to those who stick around.</li>
         <li>Unstick anytime to take your share, minus any stickiness bonus tax you leave behind.</li>
-        <li>No admins, no updates, no surprises. The code is public and can't be changed.</li>
-        <li>Works for any token — across Ethereum, Arbitrum, Base, and Optimism.</li>
+        <li>No Sticky administrator can change your project's rules. The underlying token and Juicebox core retain their own controls.</li>
+        <li>Supports standard ERC-20 tokens on Ethereum, Arbitrum, Base, and Optimism. Tokens that rebase or charge transfer fees are unsupported.</li>
       </ol>
     </div>
 
     <div class="explain">
       <img src="juicebox.png" alt="" style="width:180px;max-width:55%">
       <h2>Juicy insides</h2>
-      <p>Under the hood, every sticky token is a fine-tuned <a class="link" href="https://juicebox.money" target="_blank" rel="noopener">Juicebox</a> — inheriting Juicebox's security, and making it completely interoperable with other Juicebox-based systems.</p>
+      <p>Every sticky token uses <a class="link" href="https://juicebox.money" target="_blank" rel="noopener">Juicebox V6</a> for its project, token issuance, and backing accounting. Rewards and supported bridge routes connect it to other Juicebox projects.</p>
     </div>
   </div>
   <!-- ========================================================= ACCOUNT -->
   <div id="view-account" class="hide">
-    <p><span class="link" onclick="location.hash=''">&larr; home</span></p>
+    <p><a class="link" href="#/">&larr; home</a></p>
     <section>
       <div class="proj-head">
         <div class="logo" id="a-logo"></div>
@@ -638,7 +625,7 @@
       <div class="logo" id="p-logo" style="width:104px;height:104px"></div>
       <div>
         <h2><span id="h-symbol"></span> <span class="mut" id="h-name"></span></h2>
-        <div class="headline"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b><span class="pip">|</span><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b><span class="pip">|</span><span class="headline-key">Average active stick:</span> <b id="h-average">–</b><span class="pip">|</span><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b><span id="h-chains-wrap"><span class="pip">|</span><span class="headline-key">On:</span> <span class="project-chains" id="h-chains"></span></span></div>
+        <div class="headline"><span class="headline-key">Stuck:</span> <b id="h-staked">–</b><span class="pip">|</span><span class="headline-key">Sticks:</span> <b id="h-streakers">–</b><span class="pip">|</span><span class="headline-key">Average active stick:</span> <b id="h-average">–</b><span class="pip">|</span><span class="headline-key">Longest active stick:</span> <b id="h-top">–</b><span id="h-chains-wrap" title="These chains were selected at launch. Each chain's deployment must be confirmed separately."><span class="pip">|</span><span class="headline-key">Planned chains:</span> <span class="project-chains" id="h-chains"></span></span></div>
       </div>
     </div>
 
@@ -649,13 +636,13 @@
           <div>
             <div style="display:flex;gap:8px;align-items:stretch">
               <div style="position:relative;flex:1;min-width:0">
-                <input id="stake-amount" placeholder="10" style="padding-right:64px;height:100%">
+                <input aria-label="Amount of underlying tokens to stick" inputmode="decimal" id="stake-amount" placeholder="10" style="padding-right:64px;height:100%">
                 <span id="stake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
               </div>
               <button id="stake" style="margin-top:0;flex:none">Stick</button>
             </div>
             <div class="mut" style="margin-top:3px;font-size:12px">
-              <span class="link" id="stake-balance" role="button" tabindex="0" title="Use full wallet balance"></span>
+              <button type="button" class="link text-button" id="stake-balance" title="Use full wallet balance"></button>
               <span id="stake-balance-label"></span>
             </div>
           </div>
@@ -672,7 +659,7 @@
             <input id="transfer-recipient" placeholder="0x…" autocomplete="off">
             <label for="transfer-amount">Sticky token amount</label>
             <input id="transfer-amount" placeholder="0" inputmode="decimal">
-            <p class="mut hint">Moved tokens start a fresh streak for the recipient. Your remaining tokens keep their existing streak.</p>
+            <p class="mut hint">Moved tokens form a fresh tranche for the recipient. An existing recipient streak keeps running; otherwise, a new streak starts. Your remaining tokens keep their existing streak.</p>
             <button id="transfer-send" type="button">Review transfer</button>
           </details>
         </section>
@@ -704,17 +691,26 @@
         <div id="tab-rewards" class="hide">
           <section>
             <h2>Send airdrop rewards</h2>
-            <p class="mut">Reward those currently stuck, proportional to amount stuck.</p>
+            <p class="mut">Each reward names who it goes to: everyone holding at the round's snapshot, or only stake
+              that had been held for a minimum number of weeks when the round started. Shares are pro-rata within
+              that group.</p>
             <button id="open-fund">Send</button>
             <details class="token-contracts" style="margin-top:14px">
               <summary>Recurring rewards from a Juicebox project's splits</summary>
               <p class="mut" style="margin:10px 0 6px">In any Juicebox project's reserved token splits (or payout
-                splits), add a split with the reward distributor as its hook and this sticky token as its
-                beneficiary. Every distribution then funds that round's rewards for stickers directly — no manual
-                sends, nothing to settle. The routed project's token must be deployed as an ERC-20.</p>
+                splits), add a split with the reward distributor as its hook, this sticky token as its
+                beneficiary, and the reward group as its project ID. Every distribution then funds that round's
+                rewards for stickers directly — no manual sends, nothing to settle. The routed project's token must
+                be deployed as an ERC-20. A project ID that is not a valid group funds everyone.</p>
+              <div class="row">
+                <div><label for="rr-min-weeks">MINIMUM STAKE AGE (WEEKS)</label><input id="rr-min-weeks" placeholder="0" inputmode="numeric"></div>
+                <div><label for="rr-max-weeks">MAXIMUM STAKE AGE (WEEKS)</label><input id="rr-max-weeks" placeholder="no limit" inputmode="numeric"></div>
+              </div>
+              <p class="mut" id="rr-group-note" style="margin:6px 0"></p>
               <table><tbody>
                 <tr><th style="width:140px">SPLIT HOOK</th><td style="word-break:break-all" id="rr-hook">–</td></tr>
                 <tr><th>BENEFICIARY</th><td style="word-break:break-all" id="rr-beneficiary">–</td></tr>
+                <tr><th>PROJECT ID</th><td id="rr-group">–</td></tr>
               </tbody></table>
               <div class="row" style="gap:8px">
                 <button id="rr-copy-hook" class="ghost" style="flex:0 1 auto">Copy hook address</button>
@@ -725,11 +721,13 @@
           <section>
             <h2>Your rewards</h2>
             <table>
-              <thead><tr><th>TOKEN</th><th>AMOUNT</th><th>AVAILABLE</th><th></th></tr></thead>
+              <thead><tr><th>WHO</th><th>TOKEN</th><th>FUNDED</th><th>AVAILABLE</th><th></th></tr></thead>
               <tbody id="rewards-list"></tbody>
             </table>
+            <p class="mut hide" id="rewards-tenure-note">Stake-age rewards pay only stake you still hold. Claim them
+              before unsticking; an allocation you exit before claiming stays in the pot.</p>
             <div class="row">
-              <div><label>CHECK ANOTHER REWARD TOKEN</label><input id="r-check" placeholder="0x…"></div>
+              <div><label for="r-check">CHECK ANOTHER REWARD TOKEN</label><input id="r-check" placeholder="0x…"></div>
             </div>
             <button id="r-add" class="ghost">Check</button>
           </section>
@@ -781,8 +779,8 @@
               <div id="pie"></div>
               <div style="flex:1 1 300px;min-width:0">
                 <div class="tabs" style="margin-bottom:10px">
-                  <div class="tab on" id="sort-longest">OLDEST</div>
-                  <div class="tab" id="sort-largest">BIGGEST</div>
+                  <button type="button" class="tab on" id="sort-longest" aria-pressed="true">OLDEST</button>
+                  <button type="button" class="tab" id="sort-largest" aria-pressed="false">BIGGEST</button>
                 </div>
                 <div class="table-scroll">
                   <table class="leaderboard-table">
@@ -804,14 +802,14 @@
     </div>
   </div>
 </main>
-<dialog id="connection-dialog">
-  <h2>Connection</h2>
+<dialog id="connection-dialog" aria-labelledby="connection-title">
+  <h2 id="connection-title">Connection</h2>
   <div class="row">
-    <div><label>RPC URL</label><input id="rpc"></div>
+    <div><label for="rpc">RPC URL</label><input id="rpc"></div>
   </div>
   <div class="row">
-    <div><label>DEPLOYER ADDRESS</label><input id="deployer"></div>
-    <div><label>ACCOUNT</label><input id="account"></div>
+    <div><label for="deployer">DEPLOYER ADDRESS</label><input id="deployer"></div>
+    <div><label for="account">ACCOUNT</label><input id="account"></div>
   </div>
   <div class="dlg-actions">
     <button id="connection-close" class="ghost">Close</button>
@@ -819,35 +817,36 @@
   </div>
 </dialog>
 
-<dialog id="create-dialog">
+<dialog id="create-dialog" aria-labelledby="create-title">
   <button id="create-close" class="dlg-x" aria-label="Close">✕</button>
-  <h2>Make a sticky token</h2>
+  <h2 id="create-title">Make a sticky token</h2>
   <div class="row">
     <div>
-      <label class="create-section-title">TOKEN TO MAKE STICKY</label><input id="d-token" placeholder="0x…">
+      <label for="d-token" class="create-section-title">TOKEN TO MAKE STICKY</label><input id="d-token" placeholder="0x…">
       <p class="hint hide" id="d-token-meta" style="display:flex;align-items:center;gap:6px;margin:5px 0 0"></p>
+      <p class="mut hint">Use a standard ERC-20 with 0–36 decimals. Rebasing and transfer-fee tokens are unsupported. Creating a Sticky project does not verify its underlying token's safety or remove that token's admin controls.</p>
     </div>
   </div>
   <div class="create-section">
-    <label class="create-section-title">OPTIONS</label>
+    <div class="create-section-title">OPTIONS</div>
     <label class="check"><input type="checkbox" id="d-custom-name"> Set custom token name and symbol</label>
     <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults — "Sticky &lt;name of the locked token&gt;" and STICKY&lt;SYMBOL&gt;.</p>
     <div class="row hide option-detail" id="d-name-row">
-      <div><label>NAME</label><input id="d-name" placeholder="Sticky ART"></div>
-      <div><label>SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
+      <div><label for="d-name">NAME</label><input id="d-name" placeholder="Sticky ART"></div>
+      <div><label for="d-symbol">SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
     </div>
     <label class="check"><input type="checkbox" id="d-add-reward"> Add stickiness bonus</label>
-    <p class="mut hint hide option-detail" id="d-reward-hint">Every unstick leaves some behind for those still sticking with it.</p>
+    <p class="mut hint hide option-detail" id="d-reward-hint">Partial unsticks leave some backing for the remaining holders.</p>
     <div class="hide option-detail" id="d-reward-wrap">
       <div class="preset-row">
-        <div class="preset" data-v="0">0%</div>
-        <div class="preset" data-v="5">5%</div>
-        <div class="preset on" data-v="10">10%</div>
-        <div class="preset" data-v="25">25%</div>
-        <div class="preset" data-v="custom">CUSTOM</div>
+        <button type="button" class="preset" data-v="0" aria-pressed="false">0%</button>
+        <button type="button" class="preset" data-v="5" aria-pressed="false">5%</button>
+        <button type="button" class="preset on" data-v="10" aria-pressed="true">10%</button>
+        <button type="button" class="preset" data-v="25" aria-pressed="false">25%</button>
+        <button type="button" class="preset" data-v="custom" aria-pressed="false">CUSTOM</button>
       </div>
       <div class="row hide" id="d-reward-custom-row">
-        <div><label>CUSTOM (%)</label><input id="d-reward" placeholder="10" value="10"></div>
+        <div><label for="d-reward">CUSTOM (%)</label><input id="d-reward" placeholder="10" value="10"></div>
       </div>
       <div id="d-ratchet"></div>
       <p class="mut hint" id="d-curve-note" style="margin-top:14px"></p>
@@ -865,12 +864,12 @@
       <label class="check" style="margin-top:10px"><input type="checkbox" id="d-add-granters"> Add trusted senders</label>
       <p class="mut hint hide option-detail" id="d-granters-hint">Who can stick tokens for anyone without asking. Useful for grant programs, rewards from admins, prize bots, etc — trusted not to clutter your sticks. Each holder can add trusted senders of their own later.</p>
       <div class="row hide option-detail" id="d-granters-row">
-        <div><label>TRUSTED SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
+        <div><label for="d-granters">TRUSTED SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
       </div>
     </details>
   </div>
   <div class="create-section">
-    <div style="max-width:240px"><label class="create-section-title">TRANSFERS</label>
+    <div style="max-width:240px"><label class="create-section-title" for="d-soulbound">TRANSFERS</label>
       <select id="d-soulbound">
         <option value="1" selected>Locked</option>
         <option value="0">Unlocked</option>
@@ -879,7 +878,7 @@
     <p class="mut" id="d-soulbound-hint" style="margin:6px 0 0"></p>
   </div>
   <div class="create-section deploy-section">
-    <label class="create-section-title">DEPLOY</label>
+    <div class="create-section-title">DEPLOY</div>
     <div class="chain-picker">
       <select id="d-environment" aria-label="Deployment environment">
         <option value="production">Production</option>
@@ -896,24 +895,26 @@
   </div>
 </dialog>
 
-<dialog id="fund-dialog">
+<dialog id="fund-dialog" aria-labelledby="fund-title">
   <button id="fund-close" class="dlg-x" aria-label="Close">✕</button>
-  <h2>Airdrop</h2>
+  <h2 id="fund-title">Airdrop</h2>
   <div class="row">
-    <div style="flex:0 0 200px;min-width:0"><label>FROM CHAIN</label>
-      <div class="dd" id="r-origin-dd">
-        <div class="dd-btn" id="r-origin-btn"></div>
-        <div class="dd-menu hide" id="r-origin-menu"></div>
-      </div>
+    <div style="flex:0 0 200px;min-width:0"><label for="r-origin">FROM CHAIN</label>
+      <select id="r-origin"></select>
     </div>
     <div id="r-token-wrap" style="flex:1;min-width:140px"><label for="r-token">AIRDROPPED TOKEN</label><input id="r-token" placeholder="0x… or ETH"></div>
   </div>
+  <div class="row">
+    <div><label for="r-min-weeks">MINIMUM STAKE AGE (WEEKS)</label><input id="r-min-weeks" placeholder="0 — everyone" inputmode="numeric"></div>
+    <div><label for="r-max-weeks">MAXIMUM STAKE AGE (WEEKS)</label><input id="r-max-weeks" placeholder="no limit" inputmode="numeric"></div>
+  </div>
+  <p class="mut" id="r-group-note" style="margin:4px 0 0"></p>
   <div id="fund-direct" class="fund-direct">
-    <div id="r-amount-wrap"><label>AMOUNT</label><input id="r-amount" placeholder="100"></div>
+    <div id="r-amount-wrap"><label for="r-amount">AMOUNT</label><input id="r-amount" placeholder="100"></div>
     <button id="fund">Send</button>
   </div>
   <div id="fund-bridge" class="hide">
-    <p class="mut" id="bridge-recipe">Bridge a supported Juicebox project token to this project's reward pocket. Once it arrives, claim and settle it into rewards here.</p>
+    <p class="mut" id="bridge-recipe">Bridge a supported Juicebox project token to this project's reward receiver for the chosen group. Once it arrives, claim and settle it into rewards here.</p>
     <label for="bridge-source-token">Token address on origin chain</label>
     <input id="bridge-source-token" placeholder="0x…" autocomplete="off">
     <label for="bridge-amount">Amount to bridge</label>
@@ -927,22 +928,23 @@
     <label for="bridge-reward-token">Reward token address on this chain</label>
     <input id="bridge-reward-token" placeholder="0x…" autocomplete="off">
     <table><tbody>
-      <tr><th style="width:150px">POCKET ADDRESS</th><td style="word-break:break-all" id="pocket-addr">–</td></tr>
-      <tr><th>UNSETTLED</th><td id="pocket-pending">–</td></tr>
+      <tr><th style="width:150px">RECEIVER ADDRESS</th><td style="word-break:break-all" id="receiver-addr">–</td></tr>
+      <tr><th>REWARDS</th><td id="receiver-group">–</td></tr>
+      <tr><th>UNSETTLED</th><td id="receiver-pending">–</td></tr>
     </tbody></table>
     <button id="settle" class="ghost">Settle arrivals into rewards</button>
   </div>
 </dialog>
 
-<dialog id="unstick-dialog">
+<dialog id="unstick-dialog" aria-labelledby="unstick-title">
   <button id="unstick-close" class="dlg-x" aria-label="Close">✕</button>
-  <h2>Unstick</h2>
+  <h2 id="unstick-title">Unstick</h2>
   <div style="position:relative">
-    <input id="unstake-amount" placeholder="5" style="padding-right:70px">
+    <input aria-label="Amount of Sticky tokens to unstick" inputmode="decimal" id="unstake-amount" placeholder="5" style="padding-right:70px">
     <span id="unstake-symbol" class="mut" style="position:absolute;right:10px;top:50%;transform:translateY(-50%)"></span>
   </div>
   <div style="text-align:right;margin-top:3px">
-    <span class="mut" id="unstake-max" style="font-size:12px;cursor:pointer">max</span>
+    <button type="button" class="text-button" id="unstake-max" style="font-size:12px">max</button>
   </div>
   <div class="mut" style="margin-top:8px" id="unstake-hint">newest tranche first | stickiness clock resets only at zero</div>
   <div class="mut" style="margin-top:6px" id="unstake-quote"></div>
@@ -951,38 +953,38 @@
   </div>
 </dialog>
 
-<dialog id="trust-dialog">
+<dialog id="trust-dialog" aria-labelledby="trust-title">
   <button id="trust-close" class="dlg-x" aria-label="Close">✕</button>
-  <h2>Trust a sender</h2>
+  <h2 id="trust-title">Trust a sender</h2>
   <p class="mut">A sender you trust can lock tokens into your streak for you — grants, airdrops, a friend. Everyone else stays blocked.</p>
-  <label>SENDER ADDRESS</label><input id="trust-addr" placeholder="0x…">
+  <label for="trust-addr">SENDER ADDRESS</label><input id="trust-addr" placeholder="0x…">
   <div class="dlg-actions">
     <button id="trust">Trust sender</button>
   </div>
 </dialog>
 
-<dialog id="autostick-dialog">
+<dialog id="autostick-dialog" aria-labelledby="as-dialog-title">
   <button id="as-close" class="dlg-x" aria-label="Close">✕</button>
   <h2 id="as-dialog-title">Turn on auto-stick</h2>
   <p class="mut" id="as-dialog-blurb"></p>
   <div class="row">
-    <div><label id="as-min-label">MINIMUM PER AUTO-STICK</label><input id="as-min" placeholder="1"></div>
+    <div><label for="as-min" id="as-min-label">MINIMUM PER AUTO-STICK</label><input id="as-min" placeholder="1"></div>
   </div>
-  <label>AT MOST ONCE EVERY</label>
+  <div>AT MOST ONCE EVERY</div>
   <div class="preset-row">
-    <div class="preset" data-as-cooldown="86400">DAY</div>
-    <div class="preset on" data-as-cooldown="604800">WEEK</div>
-    <div class="preset" data-as-cooldown="2592000">MONTH</div>
+    <button type="button" class="preset" data-as-cooldown="86400" aria-pressed="false">DAY</button>
+    <button type="button" class="preset on" data-as-cooldown="604800" aria-pressed="true">WEEK</button>
+    <button type="button" class="preset" data-as-cooldown="2592000" aria-pressed="false">MONTH</button>
   </div>
   <div id="as-allowance-wrap">
-    <label>TOKEN ALLOWANCE</label>
+    <div>TOKEN ALLOWANCE</div>
     <div class="preset-row">
-      <div class="preset on" data-as-allowance="unlimited">UNLIMITED</div>
-      <div class="preset" data-as-allowance="custom">CUSTOM CAP</div>
+      <button type="button" class="preset on" data-as-allowance="unlimited" aria-pressed="true">UNLIMITED</button>
+      <button type="button" class="preset" data-as-allowance="custom" aria-pressed="false">CUSTOM CAP</button>
     </div>
     <p class="mut hint" id="as-allowance-hint">An unlimited allowance lets auto-stick run hands-off forever. The contract can only ever pull rewards it just delivered to you, and only to stick them for you.</p>
     <div class="row hide" id="as-allowance-custom-row">
-      <div><label id="as-allowance-label">ALLOWANCE CAP</label><input id="as-allowance" placeholder="100"></div>
+      <div><label for="as-allowance" id="as-allowance-label">ALLOWANCE CAP</label><input id="as-allowance" placeholder="100"></div>
     </div>
   </div>
   <div class="dlg-actions">
@@ -990,7 +992,7 @@
   </div>
 </dialog>
 
-<dialog id="confirm-dialog">
+<dialog id="confirm-dialog" aria-labelledby="cd-title">
   <button id="cd-close" class="dlg-x" aria-label="Close">✕</button>
   <div class="cd-eyebrow">Transaction sequence</div>
   <h2 id="cd-title" class="cd-title">Confirm</h2>
@@ -998,7 +1000,7 @@
   <div id="cd-steps" class="cd-steps hide"></div>
   <div id="cd-warn" class="cd-warn"></div>
   <div id="cd-body"></div>
-  <div class="cd-audit-row"><span class="link" id="cd-audit">[copy tx audit prompt]</span></div>
+  <div class="cd-audit-row"><button type="button" class="link text-button" id="cd-audit">Copy transaction audit prompt</button></div>
   <div class="dlg-actions">
     <button id="cd-cancel" class="ghost">Cancel</button>
     <button id="cd-confirm">Confirm & send</button>
