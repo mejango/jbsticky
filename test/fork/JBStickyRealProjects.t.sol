@@ -218,7 +218,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         uint256 amount = _context.underlying.balanceOf(_alice) / 20;
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
         uint256 start = _hook.streakStartOf(_projectId, _alice);
-        vm.warp(vm.getBlockTimestamp() + 2 days);
+        vm.warp(vm.getBlockTimestamp() + 1 weeks);
         _stake({context: _context, projectId: _projectId, payer: _granter, beneficiary: _alice, amount: amount});
         vm.expectPartialRevert(JBStickyHook.JBStickyHook_SenderNotTrusted.selector);
         vm.prank(_bob);
@@ -232,6 +232,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
             });
         vm.prank(_alice);
         _hook.setTrustedSenderFor({projectId: _projectId, sender: _bob, trusted: true});
+        vm.warp(vm.getBlockTimestamp() + 1 weeks);
         _stake({context: _context, projectId: _projectId, payer: _bob, beneficiary: _alice, amount: amount});
         assertEq(_hook.streakStartOf(_projectId, _alice), start);
         assertEq(_hook.trancheCountOf(_projectId, _alice), 3);
@@ -425,7 +426,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         uint256 amount = walletBefore / 10;
         uint256 start = vm.getBlockTimestamp();
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
-        vm.warp(vm.getBlockTimestamp() + 2 days);
+        vm.warp(vm.getBlockTimestamp() + 1 weeks);
         _stake({context: _context, projectId: _projectId, payer: _alice, beneficiary: _alice, amount: amount});
         vm.warp(vm.getBlockTimestamp() + 1 days);
         _cashOut({
@@ -451,7 +452,7 @@ abstract contract JBStickyRealProjectLifecycle is JBStickyRealProjectFork {
         assertEq(_backing(), 0);
         assertEq(_token.totalSupply(), 0);
         assertEq(_hook.streakStartOf(_projectId, _alice), 0);
-        assertEq(_hook.longestStreakOf(_projectId, _alice), 3 days);
+        assertEq(_hook.longestStreakOf(_projectId, _alice), 1 weeks + 1 days);
         _assertPosition(_alice);
     }
 
