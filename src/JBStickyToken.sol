@@ -267,8 +267,12 @@ contract JBStickyToken is ERC20Votes, IJBActiveVotes, IJBStickyToken, IJBToken {
             }
         } else if (from != address(0) && value != 0) {
             // Every positive burn consumes stake accounting, including voluntary burns without a cash out callback.
-            // Mints and zero-value burns skip this path; the pay callback records minted tranches.
+            // Zero-value burns skip this path.
             HOOK.recordBurn({projectId: PROJECT_ID, holder: from, amount: value});
+        } else if (from == address(0) && value != 0) {
+            // The pay callback records minted tranches; until it runs, the hook flags the payment as in progress so
+            // no tenure denominator counts these shares before they have a tranche.
+            HOOK.recordMint(PROJECT_ID);
         }
 
         // Self-delegate first-time receivers so voting power always tracks staked balance.

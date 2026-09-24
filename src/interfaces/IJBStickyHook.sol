@@ -102,6 +102,13 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @return isGranter Whether the address is a project granter.
     function isGranterOf(uint256 projectId, address granter) external view returns (bool isGranter);
 
+    /// @notice Whether a payment to a project has minted shares this hook has not yet recorded.
+    /// @dev Set by the registered token on every mint and cleared by the terminal's after-pay callback, so the
+    /// distributor never reads a tenure denominator while the epoch buckets lag the token's supply.
+    /// @param projectId The ID of the sticky project to check.
+    /// @return isPaying Whether a payment's minted shares are still waiting for their tranche.
+    function isPayingFor(uint256 projectId) external view returns (bool isPaying);
+
     /// @notice Whether a holder allows a sender to add stakes to their position.
     /// @param projectId The ID of the sticky project to check.
     /// @param holder The holder whose position would be added to.
@@ -209,6 +216,12 @@ interface IJBStickyHook is IJBRulesetDataHook, IJBPayHook, IJBCashOutHook {
     /// @param holder The holder whose tokens were burned.
     /// @param amount The number of tokens burned, as a fixed point number with 18 decimals.
     function recordBurn(uint256 projectId, address holder, uint256 amount) external;
+
+    /// @notice Counts a mint whose tranche this hook has not yet recorded, flagging the project's payment as in
+    /// progress until the terminal's after-pay callback records it.
+    /// @dev Only the registered sticky token can report mints.
+    /// @param projectId The ID of the sticky project whose token was minted.
+    function recordMint(uint256 projectId) external;
 
     /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
     /// tranches are consumed and the moved tokens join the receiver's newest tranche of the current epoch, or a fresh

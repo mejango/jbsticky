@@ -103,6 +103,11 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     /// @notice The most tranches returned by a bounded query, limiting RPC response size.
     uint256 internal constant _MAX_TRANCHE_PAGE = 256;
 
+    /// @notice The seed of each project's transient slot counting payments whose minted shares are not yet recorded.
+    /// @dev Solidity 0.8.28 gives the transient data location to value types only, so per-project counters live in
+    /// keyed slots read with `tload` and written with `tstore`.
+    bytes32 internal constant _PAYING_SLOT_SEED = keccak256("JBStickyHook.payingOf");
+
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
@@ -337,6 +342,9 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         // Record the stake in the beneficiary's newest tranche, starting their streak if their balance was zero.
         uint256 stakedBalance = _addTo({projectId: context.projectId, holder: context.beneficiary, count: count});
 
+        // The minted shares now have a tranche, so the buckets agree with the supply again for this payment.
+        _settlePayingFor(context.projectId);
+
         // Publish the authenticated deposit and resulting balance for position histories.
         // All preceding external calls are reads under STATICCALL; position accounting makes no external calls.
         // forge-lint: disable-next-item(reentrancy-events)
@@ -374,6 +382,22 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         emit Unstaked({
             projectId: projectId, holder: holder, count: amount, stakedBalance: stakedBalance, caller: msg.sender
         });
+    }
+
+    /// @notice Counts a mint whose tranche this hook has not yet recorded, flagging the project's payment as in
+    /// progress until the terminal's after-pay callback records it.
+    /// @dev Can only be called by the project's registered sticky token, which mints only when a terminal pays the
+    /// project. The count lives in transient storage, so a payment that reverts leaves no flag behind.
+    /// @param projectId The ID of the sticky project whose token was minted.
+    function recordMint(uint256 projectId) external override {
+        // Only the registered share token can report a mint as part of its authenticated balance update.
+        if (msg.sender != tokenOf[projectId]) {
+            // Reject fabricated mints that would block tenure funding for a project without a payment in flight.
+            revert JBStickyHook_CallerNotToken({caller: msg.sender, token: tokenOf[projectId]});
+        }
+
+        // Nested payments to the same project each add one, and each after-pay callback removes one.
+        _setPayingCountOf({projectId: projectId, count: _payingCountOf(projectId) + 1});
     }
 
     /// @notice Moves staked accounting between holders for a transferable sticky token: the sender's newest
@@ -590,6 +614,15 @@ contract JBStickyHook is ERC165, IJBStickyHook {
     function hasMintPermissionFor(uint256, JBRuleset memory, address) external pure override returns (bool permitted) {
         // Unbacked discretionary issuance would dilute holders, so this hook never grants mint permission.
         return false;
+    }
+
+    /// @notice Whether a payment to a project has minted shares this hook has not yet recorded.
+    /// @dev The terminal mints before it calls `afterPayRecordedWith`, so during that gap the token's supply exceeds
+    /// the sum of the project's epoch buckets. The distributor refuses to read a tenure denominator while this is set.
+    /// @param projectId The ID of the sticky project to check.
+    /// @return isPaying Whether a payment's minted shares are still waiting for their tranche.
+    function isPayingFor(uint256 projectId) external view override returns (bool isPaying) {
+        return _payingCountOf(projectId) != 0;
     }
 
     /// @notice The longest streak a holder has ever had, including their active streak.
@@ -952,6 +985,29 @@ contract JBStickyHook is ERC165, IJBStickyHook {
         }
     }
 
+    /// @notice Writes a project's count of payments whose minted shares are not yet recorded.
+    /// @param projectId The ID of the sticky project.
+    /// @param count The number of payments in flight.
+    function _setPayingCountOf(uint256 projectId, uint256 count) internal {
+        bytes32 slot = _payingSlotOf(projectId);
+
+        // Transient storage resets at the end of the transaction, so a reverted payment leaves nothing behind.
+        // Solidity has no keyed transient variables, so the write goes straight to the slot.
+        // forge-lint: disable-next-item(inline-assembly)
+        assembly ("memory-safe") {
+            tstore(slot, count)
+        }
+    }
+
+    /// @notice Removes one payment from a project's count of unrecorded mints once its tranche is recorded.
+    /// @param projectId The ID of the sticky project.
+    function _settlePayingFor(uint256 projectId) internal {
+        uint256 paying = _payingCountOf(projectId);
+
+        // Nothing is cleared when no mint was counted in this transaction, so a callback on its own cannot underflow.
+        if (paying != 0) _setPayingCountOf({projectId: projectId, count: paying - 1});
+    }
+
     //*********************************************************************//
     // ----------------------- internal views ---------------------------- //
     //*********************************************************************//
@@ -982,6 +1038,30 @@ contract JBStickyHook is ERC165, IJBStickyHook {
 
         // Express gross backing in the payment's accounting units; callers separately exclude orphaned funds.
         return terminal.currentSurplusOf({projectId: projectId, tokens: tokens, decimals: decimals, currency: currency});
+    }
+
+    /// @notice Reads a project's count of payments whose minted shares are not yet recorded.
+    /// @param projectId The ID of the sticky project.
+    /// @return count The number of payments in flight.
+    function _payingCountOf(uint256 projectId) internal view returns (uint256 count) {
+        bytes32 slot = _payingSlotOf(projectId);
+
+        // The slot is keyed by project, so payments to other projects never appear in this count.
+        // Solidity has no keyed transient variables, so the read comes straight from the slot.
+        // forge-lint: disable-next-item(inline-assembly)
+        assembly ("memory-safe") {
+            count := tload(slot)
+        }
+    }
+
+    /// @notice The transient slot counting a project's payments whose minted shares are not yet recorded.
+    /// @param projectId The ID of the sticky project.
+    /// @return slot The project's keyed transient slot.
+    function _payingSlotOf(uint256 projectId) internal pure returns (bytes32 slot) {
+        // Fixed-width encoding under a contract-specific seed keeps every project's slot distinct. The hash runs once
+        // per mint and once per callback, so an assembly hash would save little for the readability it costs.
+        // forge-lint: disable-next-line(asm-keccak256)
+        return keccak256(abi.encode(_PAYING_SLOT_SEED, projectId));
     }
 
     /// @notice Copies a bounded range of active tranches without exposing logically discarded entries.

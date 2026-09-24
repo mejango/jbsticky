@@ -54,6 +54,10 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @notice Thrown when the native ETH sent with a split does not match the split's amount.
     error JBStickyDistributor_NativeAmountMismatch(uint256 msgValue, uint256 contextAmount);
 
+    /// @notice Thrown when a tenure denominator is read while a payment's minted shares have no tranche yet, since the
+    /// hook's buckets would not yet include them.
+    error JBStickyDistributor_PaymentInProgress(address hook, uint256 projectId);
+
     /// @notice Thrown when native ETH is sent with a split for an ERC-20 token.
     error JBStickyDistributor_TokenMismatch(address token, address expectedToken, uint256 msgValue);
 
@@ -837,16 +841,24 @@ contract JBStickyDistributor is JBDistributor, IJBStickyDistributor {
     /// @notice The total stake still held in tranches created within a group's window for a round.
     /// @dev An unbounded window is the token's supply less every bucket newer than the window, so its cost grows
     /// with `minWeeks` rather than the project's age. A bounded window sums its own buckets. Both walks are capped
-    /// by `MAX_CRITERIA_WEEKS` plus the epochs elapsed since the round started.
+    /// by `MAX_CRITERIA_WEEKS` plus the epochs elapsed since the round started. Reverts while a payment to the
+    /// project is in progress: the terminal mints before the hook records the tranche, so the buckets lag the supply
+    /// until the after-pay callback runs, and a denominator read in that gap would count shares without a tranche.
     /// @param hook The sticky token.
     /// @param groupId The tenure group whose window bounds the sum.
     /// @param round The reward round.
     /// @return amount The window's total stake.
     function _windowTotalStakeOf(address hook, uint256 groupId, uint256 round) internal view returns (uint256 amount) {
+        uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
+
+        // Only an underlying token with transfer callbacks can reach this read mid-payment; refuse it rather than
+        // record a denominator the pot's holders could never fully claim.
+        if (STICKY_HOOK.isPayingFor(projectId)) {
+            revert JBStickyDistributor_PaymentInProgress({hook: hook, projectId: projectId});
+        }
+
         (uint256 lo, uint256 hi, bool isEmpty) = _windowOf({groupId: groupId, round: round});
         if (isEmpty) return 0;
-
-        uint256 projectId = IJBStickyToken(hook).PROJECT_ID();
 
         // Bounded windows sum exactly their buckets.
         if (groupId % CRITERIA_BASE != 0) {
