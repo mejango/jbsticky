@@ -316,10 +316,19 @@ const getLogs = (address, topics) => window.__DEMO_RPC
 const blockTimestamps = {};
 async function blockTimestamp(blockNumber) {
   if (!(blockNumber in blockTimestamps)) {
-    const block = await rpc("eth_getBlockByNumber", [blockNumber, false]);
-    blockTimestamps[blockNumber] = Number(BigInt(block.timestamp));
+    blockTimestamps[blockNumber] = rpc("eth_getBlockByNumber", [blockNumber, false]).then((block) => Number(BigInt(block.timestamp)));
+    blockTimestamps[blockNumber].catch(() => delete blockTimestamps[blockNumber]);
   }
   return blockTimestamps[blockNumber];
+}
+// Timestamps for many logs, one read per distinct block, a few at a time.
+async function attachTimestamps(logs, concurrency = 6) {
+  const blocks = [...new Set(logs.map((log) => log.blockNumber))];
+  let next = 0;
+  const worker = async () => { while (next < blocks.length) await blockTimestamp(blocks[next++]); };
+  await Promise.all(Array.from({ length: Math.min(concurrency, blocks.length) }, worker));
+  for (const log of logs) log.ts = await blockTimestamp(log.blockNumber);
+  return logs;
 }
 
 async function ensureWalletChain(chainId) {
@@ -489,6 +498,158 @@ async function projectChainIds(projectId) {
     if (Array.isArray(chains) && chains.length) return chains.map(Number).filter(chainById);
   } catch {}
   return ctx.chainId ? [ctx.chainId] : [];
+}
+
+// ------------------------------------------------------------ sibling chains
+// A multichain launch gets a different project ID on each chain, but every chain's projectUri carries the
+// same launchId. Siblings are found from each same-environment chain's own DeploySticky events, scanned from
+// that chain's deployment block, and kept only when the uri's launchId, the cash out tax and the transfer
+// mode all match. Results are cached for the session; the other environment's chains are never scanned.
+const chainRuntimeCache = new Map();
+function chainRuntime(chainId) {
+  const key = Number(chainId);
+  if (!chainRuntimeCache.has(key)) {
+    const pending = (async () => {
+      const deployment = stickyDeploymentFor(key);
+      if (!deployment.rpcUrl || !/^0x[0-9a-fA-F]{40}$/.test(deployment.deployer || "")) throw new Error("Sticky is not configured on this chain");
+      const [hook, terminal, controller, tokens] = await Promise.all([SEL.HOOK, SEL.TERMINAL, SEL.CONTROLLER, SEL.TOKENS]
+        .map((selector) => viewAt(deployment, deployment.deployer, selector).then(decAddress)));
+      const store = decAddress(await viewAt(deployment, terminal, SEL.STORE));
+      return { ...deployment, chainId: key, hook, terminal, controller, tokens, store };
+    })();
+    pending.catch(() => chainRuntimeCache.delete(key));
+    chainRuntimeCache.set(key, pending);
+  }
+  return chainRuntimeCache.get(key);
+}
+
+// Every Sticky launch on a chain: project ID, cash out tax and transfer mode from DeploySticky.
+const deployedCache = new Map();
+function deployedProjectsOn(chainId) {
+  const key = Number(chainId);
+  if (!deployedCache.has(key)) {
+    const pending = (async () => {
+      const runtime = await chainRuntime(key);
+      const logs = await StickyRuntime.logs((method, params) => rpcAt(runtime.rpcUrl, method, params),
+        { address: runtime.deployer, topics: [TOPIC.DeploySticky], fromBlock: runtime.fromBlock, toBlock: "latest" });
+      return logs.map((log) => ({ projectId: decUint(log.topics[1]), tax: decUint(log.data, 1), soulbound: decUint(log.data, 2) === 1n }));
+    })();
+    pending.catch(() => deployedCache.delete(key));
+    deployedCache.set(key, pending);
+  }
+  return deployedCache.get(key);
+}
+
+const launchIdCache = new Map();
+function launchIdOf(runtime, projectId) {
+  const key = `${runtime.chainId}:${projectId}`;
+  if (!launchIdCache.has(key)) {
+    const pending = viewAt(runtime, runtime.controller, SEL.uriOf, word(projectId)).then((uri) => {
+      const metadata = parseStickyProjectUri(decString(uri));
+      return metadata?.protocol === "Sticky" && typeof metadata.launchId === "string" ? metadata.launchId : null;
+    });
+    pending.catch(() => launchIdCache.delete(key));
+    launchIdCache.set(key, pending);
+  }
+  return launchIdCache.get(key);
+}
+
+// The first launch on a chain that shares this launch's id and settings. First, so a later copy of the uri
+// cannot displace the real sibling.
+async function siblingOn(chainId, launchId, info) {
+  const runtime = await chainRuntime(chainId);
+  for (const deployed of await deployedProjectsOn(chainId)) {
+    if (deployed.tax !== BigInt(info.reward) || deployed.soulbound !== Boolean(info.soulbound)) continue;
+    if (await launchIdOf(runtime, deployed.projectId) === launchId) return deployed.projectId;
+  }
+  return null;
+}
+
+// Backing and supply of one project on one chain, read at one block.
+async function chainBacking(runtime, projectId) {
+  const block = await rpcAt(runtime.rpcUrl, "eth_blockNumber", []);
+  const read = (to, data) => rpcAt(runtime.rpcUrl, "eth_call", [{ to, data }, block]);
+  const stakedToken = decAddress(await read(runtime.deployer, SEL.stakedTokenOf + word(projectId)));
+  const stToken = decAddress(await read(runtime.tokens, SEL.tokenOf + word(projectId)));
+  const [raw, supply, saved, decimals, symbol] = await Promise.all([
+    read(runtime.store, SEL.storeBalanceOf + encAddress(runtime.terminal) + word(projectId) + encAddress(stakedToken)).then(decUint),
+    read(stToken, SEL.totalSupply).then(decUint),
+    read(runtime.hook, SEL.orphanedBalanceOf + word(projectId)).then(decUint),
+    read(stakedToken, SEL.decimals).then((hex) => Number(decUint(hex))),
+    read(stakedToken, SEL.symbol).then(decString),
+  ]);
+  const orphaned = supply === 0n ? raw : saved;
+  return { stakedToken, stToken, supply, backing: raw > orphaned ? raw - orphaned : 0n, decimals, symbol };
+}
+
+const siblingCache = new Map();
+function launchSiblings(projectId, info) {
+  const key = `${ctx.chainId}:${projectId}`;
+  if (!siblingCache.has(key)) {
+    const pending = (async () => {
+      const here = await chainRuntime(ctx.chainId);
+      const launchId = await launchIdOf(here, projectId);
+      const self = { chainId: ctx.chainId, projectId: BigInt(projectId), self: true };
+      if (!launchId) return [self];
+      const environment = chainById(ctx.chainId)?.environment;
+      const others = chainsForEnvironment(environment)
+        .filter((chain) => chain.chainId !== ctx.chainId && stickyDeploymentFor(chain.chainId).deployer);
+      const found = await Promise.all(others.map(async (chain) => {
+        try {
+          const sibling = await siblingOn(chain.chainId, launchId, info);
+          return sibling === null ? null : { chainId: chain.chainId, projectId: sibling };
+        } catch (error) {
+          return { chainId: chain.chainId, error: error.message };
+        }
+      }));
+      return [self, ...found.filter(Boolean)];
+    })();
+    pending.catch(() => siblingCache.delete(key));
+    siblingCache.set(key, pending);
+  }
+  return siblingCache.get(key);
+}
+
+// Per-chain rows plus totals. Backing totals only add up when every chain backs with the same token symbol
+// and decimals; otherwise each chain stands alone.
+function siblingTotals(rows) {
+  const ok = rows.filter((row) => row.backing);
+  const supply = ok.reduce((sum, row) => sum + row.backing.supply, 0n);
+  const first = ok[0]?.backing;
+  const same = first && ok.every((row) => row.backing.symbol === first.symbol && row.backing.decimals === first.decimals);
+  return { supply, backing: same ? ok.reduce((sum, row) => sum + row.backing.backing, 0n) : null, decimals: first?.decimals, symbol: first?.symbol, complete: ok.length === rows.length };
+}
+
+async function renderSiblings(projectId, info, current) {
+  const section = $("p-chains-card");
+  let siblings;
+  try { siblings = await launchSiblings(projectId, info); } catch { siblings = [{ chainId: ctx.chainId, projectId: BigInt(projectId), self: true }]; }
+  if (!current()) return;
+  const planned = (await projectChainIds(projectId)).filter((chainId) => chainById(chainId)?.environment === chainById(ctx.chainId)?.environment);
+  if (!current()) return;
+  const missing = planned.filter((chainId) => !siblings.some((row) => row.chainId === chainId));
+  if (siblings.length < 2 && !missing.length) { section.classList.add("hide"); return; }
+  const rows = await Promise.all(siblings.map(async (row) => {
+    if (row.error) return row;
+    try { return { ...row, backing: await chainBacking(await chainRuntime(row.chainId), row.projectId) }; }
+    catch (error) { return { ...row, error: error.message }; }
+  }));
+  if (!current()) return;
+  const totals = siblingTotals(rows);
+  const cell = (row) => row.backing
+    ? `<td>${formatUnits(row.backing.backing, row.backing.decimals)} ${esc(row.backing.symbol)}</td><td>${formatUnits(row.backing.supply, 18)} ${esc(info.stSymbol)}</td>`
+    : `<td colspan="2" class="mut">${esc(row.error ? "Could not read this chain." : "Not found yet.")}</td>`;
+  const link = (row) => row.self
+    ? `${esc(chainById(row.chainId)?.name || row.chainId)} <span class="mut">#${row.projectId} (this page)</span>`
+    : `<a class="link" href="?chain=${row.chainId}#/project/${row.projectId}">${esc(chainById(row.chainId)?.name || row.chainId)} #${row.projectId}</a>`;
+  $("p-chains").innerHTML = rows.map((row) => `<tr><td>${row.projectId === undefined ? esc(chainById(row.chainId)?.name || row.chainId) : link(row)}</td>${cell(row)}</tr>`).join("")
+    + missing.map((chainId) => `<tr><td>${esc(chainById(chainId)?.name || chainId)}</td><td colspan="2" class="mut">Planned at launch. Not deployed yet.</td></tr>`).join("")
+    + `<tr class="total"><td>Total</td><td>${totals.backing === null ? "Backed by different tokens" : `${formatUnits(totals.backing, totals.decimals)} ${esc(totals.symbol)}`}</td>`
+    + `<td>${formatUnits(totals.supply, 18)} ${esc(info.stSymbol)}</td></tr>`;
+  $("p-chains-note").textContent = totals.complete
+    ? "Each chain has its own project ID. Found by the launch ID every chain's project records."
+    : "Some chains could not be read. Totals cover the chains shown.";
+  section.classList.remove("hide");
 }
 
 function renderProjectChains(chainIds) {
@@ -704,28 +865,39 @@ async function hookLogs(projectId) {
     [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded],
     projectTopic,
   ]);
-  for (const log of logs) log.ts = await blockTimestamp(log.blockNumber);
-  return logs;
+  return attachTimestamps(logs);
 }
 
-// Per-holder rows for a project: staked balance, live current streak, longest.
-async function holderRows(projectId, logs) {
-  const stakedLogs = logs.filter((log) => log.topics[0] === TOPIC.Staked);
-  const holders = [...new Set(stakedLogs.map((log) => decAddress(log.topics[2])))];
-  const now = Math.floor(Date.now() / 1000);
-  const idArg = word(projectId);
-  return Promise.all(
-    holders.map(async (holder) => {
-      const args = idArg + encAddress(holder);
-      const [staked, streakStart, longest] = await Promise.all([
-        view(ctx.hook, SEL.stakedBalanceOf, args).then(decUint),
-        view(ctx.hook, SEL.streakStartOf, args).then(decUint),
-        view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
-      ]);
-      const current = streakStart === 0n ? 0 : Math.max(0, now - Number(streakStart));
-      return { holder, staked, current, longest: Math.max(Number(longest), current) };
-    }),
-  );
+// Per-holder rows for a project, from the hook's own events: every Staked and Unstaked carries the holder's
+// resulting balance, StreakStarted marks the streak's start and StreakEnded its length. No per-holder reads,
+// so the list costs one bounded log scan however many holders there are. The visible page is re-read from
+// the hook (verifyHolderPage) so a gap in the scan cannot misstate a balance shown.
+function holderRows(projectId, logs, now = Math.floor(Date.now() / 1000)) {
+  const rows = new Map();
+  for (const log of logs) {
+    if (decUint(log.topics[1]) !== BigInt(projectId)) continue;
+    const holder = decAddress(log.topics[2]);
+    const row = rows.get(holder) || { holder, staked: 0n, start: 0, longest: 0 };
+    const topic = log.topics[0];
+    if (topic === TOPIC.Staked) row.staked = decUint(log.data, 2);
+    else if (topic === TOPIC.Unstaked) row.staked = decUint(log.data, 1);
+    else if (topic === TOPIC.StreakStarted) row.start = log.ts;
+    else if (topic === TOPIC.StreakEnded) { row.start = 0; row.longest = Math.max(row.longest, Number(decUint(log.data, 0))); }
+    rows.set(holder, row);
+  }
+  return [...rows.values()].map(({ holder, staked, start, longest }) => {
+    const current = start ? Math.max(0, now - start) : 0;
+    return { holder, staked, current, longest: Math.max(longest, current) };
+  });
+}
+
+// Re-read the shown holders' balances from the hook at one block.
+async function verifyHolderPage(projectId, rows) {
+  const block = await rpc("eth_blockNumber", []);
+  return Promise.all(rows.map(async (row) => {
+    const staked = decUint(await rpc("eth_call", [{ to: ctx.hook, data: SEL.stakedBalanceOf + word(projectId) + encAddress(row.holder) }, block]));
+    return staked === row.staked ? row : { ...row, staked };
+  }));
 }
 
 // Decode hook logs into activity cards, newest first. Each card carries the stuck token's logo.
@@ -1400,7 +1572,7 @@ async function renderHome() {
         try {
           const info = await projectInfo(id);
           const projectLogs = logs.filter((log) => decUint(log.topics[1]) === id);
-          const [rows, pool] = await Promise.all([holderRows(id, projectLogs), poolBacking(id, info)]);
+          const [rows, pool] = [holderRows(id, projectLogs), await poolBacking(id, info)];
           return { id, info, pool, totalStaked: pool.supply, sticks: rows.filter((r) => r.staked > 0n).length };
         } catch {
           return null;
@@ -1468,10 +1640,8 @@ async function renderProject(projectId) {
 
   const logs = await hookLogs(projectId);
   if (!current()) return;
-  const [rows, pool] = await Promise.all([
-    holderRows(projectId, logs),
-    poolBacking(projectId, info),
-  ]);
+  const rows = holderRows(projectId, logs);
+  const pool = await poolBacking(projectId, info);
   if (!current()) return;
   const totalStaked = pool.supply;
   ctx.pool = pool;
@@ -1501,6 +1671,7 @@ async function renderProject(projectId) {
   const projectChains = await projectChainIds(projectId);
   if (!current()) return;
   renderProjectChains(projectChains);
+  renderSiblings(projectId, info, current).catch(() => {});
 
   // OVERVIEW: chart + my position.
   const chart = chartSvg(logs, info, projectId);
@@ -1575,7 +1746,7 @@ async function renderProject(projectId) {
 
   const pie = pieSvg(active, info.stSymbol, totalStaked);
   $("pie").innerHTML = pie.svg;
-  ctx.board = { rows: active, symbol: info.stSymbol, total: totalStaked };
+  ctx.board = { rows: active, symbol: info.stSymbol, total: totalStaked, projectId, page: 0 };
   renderBoard();
   pie.bind?.($("pie"));
 
@@ -5043,25 +5214,48 @@ $("confirm-dialog").onclick = (event) => {
   if (event.target === $("confirm-dialog")) settleConfirm(false);
 };
 let boardSort = "longest";
+const BOARD_PAGE = 20;
+let boardSequence = 0;
 function renderBoard() {
   if (!ctx.board) return;
-  const { rows, symbol, total } = ctx.board;
+  const sequence = ++boardSequence;
+  const { rows, symbol, total, projectId } = ctx.board;
   const ranked = [...rows].sort((a, b) => boardSort === "largest"
     ? (b.staked > a.staked ? 1 : b.staked < a.staked ? -1 : b.current - a.current)
     : (b.current - a.current || (b.staked > a.staked ? 1 : -1)));
-  $("leaderboard").innerHTML = ranked.length
-    ? ranked.slice(0, 20).map((row, i) => {
-        const self = row.holder.toLowerCase() === (account() || "").toLowerCase() ? " (you)" : "";
-        const share = total > 0n ? Number(row.staked * 10_000n / total) / 100 : 0;
-        return `<tr data-owner="${esc(row.holder.toLowerCase())}"><td>${i + 1}</td><td class="addr">${addressLabel(row.holder)}${self}</td>` +
-          `<td>${share.toFixed(1)}%</td><td>${formatUnits(row.staked, 18)} ${esc(symbol)}</td>` +
-          `<td>${formatDuration(row.current)}</td></tr>`;
-      }).join("")
-    : `<tr><td colspan="5" class="mut">nobody is stuck yet</td></tr>`;
-  hydrateEns($("leaderboard")).catch(() => {});
+  const pages = Math.max(1, Math.ceil(ranked.length / BOARD_PAGE));
+  const page = Math.min(ctx.board.page || 0, pages - 1);
+  ctx.board.page = page;
+  const shown = ranked.slice(page * BOARD_PAGE, (page + 1) * BOARD_PAGE);
+  const draw = (list) => {
+    $("leaderboard").innerHTML = list.length
+      ? list.map((row, i) => {
+          const self = row.holder.toLowerCase() === (account() || "").toLowerCase() ? " (you)" : "";
+          const share = total > 0n ? Number(row.staked * 10_000n / total) / 100 : 0;
+          return `<tr data-owner="${esc(row.holder.toLowerCase())}"><td>${page * BOARD_PAGE + i + 1}</td><td class="addr">${addressLabel(row.holder)}${self}</td>` +
+            `<td>${share.toFixed(1)}%</td><td>${formatUnits(row.staked, 18)} ${esc(symbol)}</td>` +
+            `<td>${formatDuration(row.current)}</td></tr>`;
+        }).join("")
+      : `<tr><td colspan="5" class="mut">Nobody is stuck yet.</td></tr>`;
+    hydrateEns($("leaderboard")).catch(() => {});
+  };
+  draw(shown);
+  $("board-pages").classList.toggle("hide", pages <= 1);
+  $("board-page").textContent = `${page * BOARD_PAGE + 1}–${page * BOARD_PAGE + shown.length} of ${ranked.length} holders`;
+  $("board-prev").disabled = page === 0;
+  $("board-next").disabled = page >= pages - 1;
+  // The page on screen is checked against the hook; a corrected balance replaces the logged one.
+  if (projectId !== undefined && shown.length) {
+    verifyHolderPage(projectId, shown).then((checked) => {
+      if (sequence === boardSequence && checked.some((row, i) => row.staked !== shown[i].staked)) draw(checked);
+    }).catch(() => {});
+  }
 }
+$("board-prev").onclick = () => { if (ctx.board) { ctx.board.page = Math.max(0, ctx.board.page - 1); renderBoard(); } };
+$("board-next").onclick = () => { if (ctx.board) { ctx.board.page += 1; renderBoard(); } };
 $("sort-longest").onclick = () => {
   boardSort = "longest";
+  if (ctx.board) ctx.board.page = 0;
   $("sort-longest").classList.add("on");
   $("sort-largest").classList.remove("on");
   $("sort-longest").setAttribute("aria-pressed", "true");
@@ -5070,6 +5264,7 @@ $("sort-longest").onclick = () => {
 };
 $("sort-largest").onclick = () => {
   boardSort = "largest";
+  if (ctx.board) ctx.board.page = 0;
   $("sort-largest").classList.add("on");
   $("sort-longest").classList.remove("on");
   $("sort-longest").setAttribute("aria-pressed", "false");
@@ -5195,17 +5390,31 @@ function buildDemoData() {
     byToken[p.staked.toLowerCase()] = { p, kind: "staked" };
     byToken[p.sticky.toLowerCase()] = { p, kind: "sticky" };
   }
-  // Flatten stakes into hook logs (Staked), newest last; synthetic block numbers map to timestamps.
+  // Flatten stakes into hook logs shaped like the hook's own: Staked(payer, count, stakedBalance, caller), a
+  // StreakStarted at each holder's first stake, and a StreakEnded for an earlier record streak. Newest last;
+  // synthetic block numbers map to timestamps.
   const logs = [];
   const blockTs = {};
   let bn = 0x1000;
   for (const p of Object.values(projects)) {
+    const balances = new Map();
+    const topics = (topic, holder) => [topic, "0x" + word(p.id), "0x" + encAddress(holder)];
+    for (const h of p.holders) {
+      if (h.longest > now - h.start) {
+        const block = "0x" + (bn++).toString(16);
+        blockTs[block] = h.start - day;
+        logs.push({ topics: topics(TOPIC.StreakEnded, h.addr), data: "0x" + word(h.longest) + encAddress(h.addr), blockNumber: block });
+      }
+    }
     for (const s of p.stakes.sort((a, b) => a.ts - b.ts)) {
       const block = "0x" + (bn++).toString(16);
       blockTs[block] = s.ts;
+      const key = s.holder.toLowerCase();
+      if (!balances.has(key)) logs.push({ topics: topics(TOPIC.StreakStarted, s.holder), data: "0x" + encAddress(s.holder), blockNumber: block });
+      balances.set(key, (balances.get(key) || 0n) + s.amount);
       logs.push({
-        topics: [TOPIC.Staked, "0x" + word(p.id), "0x" + encAddress(s.holder)],
-        data: "0x" + encAddress(s.payer) + word(s.amount),
+        topics: topics(TOPIC.Staked, s.holder),
+        data: "0x" + encAddress(s.payer) + word(s.amount) + word(balances.get(key)) + encAddress(s.payer),
         blockNumber: block,
       });
     }

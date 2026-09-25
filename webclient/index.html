@@ -431,6 +431,9 @@
     border: 1px solid #eccfc6; background: #fdf1ec; color: var(--err); border-radius: 6px;
     padding: 10px 12px; font-size: 13px; margin-bottom: 4px;
   }
+  .chains-table tr.total td { font-weight: 600; border-top: 1px solid var(--line); }
+  .board-pages { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; font-size: 13px; }
+  .board-pages button { margin: 0; padding: 4px 10px; }
   .reward-list { display: grid; gap: 10px; margin: 8px 0 12px; }
   .reward-card { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
   .reward-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; }
@@ -733,6 +736,16 @@
             <h2>Details</h2>
             <div id="token-info" class="token-summary"></div>
           </section>
+          <section id="p-chains-card" class="hide">
+            <h2>Chains</h2>
+            <div class="table-scroll">
+              <table class="chains-table">
+                <thead><tr><th>CHAIN</th><th>BACKING</th><th>SUPPLY</th></tr></thead>
+                <tbody id="p-chains"></tbody>
+              </table>
+            </div>
+            <p class="mut" id="p-chains-note"></p>
+          </section>
         </div>
 
         <div id="tab-rewards" class="hide">
@@ -832,6 +845,11 @@
                     <thead><tr><th>#</th><th>ACCOUNT</th><th>%</th><th>STUCK</th><th>AGE</th></tr></thead>
                     <tbody id="leaderboard"></tbody>
                   </table>
+                </div>
+                <div id="board-pages" class="board-pages hide">
+                  <button type="button" class="ghost" id="board-prev">Previous</button>
+                  <span class="mut" id="board-page"></span>
+                  <button type="button" class="ghost" id="board-next">Next</button>
                 </div>
               </div>
             </div>
