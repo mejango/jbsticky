@@ -5112,8 +5112,6 @@ function renderCurve() {
   const basisPoints = rewardBasisPoints();
   $("d-reward-error")?.classList.toggle("hide", basisPoints !== null);
   const r = Number(basisPoints ?? 0n) / 10000;
-  const note = $("d-curve-note");
-  if (note) note.textContent = r > 0 ? "Unsticks also pay the Juicebox cash out fee, shown before you confirm." : "";
   renderBonusSplit(r);
 }
 
