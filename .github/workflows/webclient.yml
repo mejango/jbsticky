@@ -27,10 +27,38 @@ jobs:
           node --test webclient/test/*.test.cjs
       - name: Build an explicit demo
         run: STICKY_DEMO=true python webclient/build-config.py
+      # Shape only: these addresses and blocks change with a redeploy.
+      - name: Build a live config for all 8 chains
+        env:
+          STICKY_DEPLOYER: '0x2D31Dd23AEEB021669e18070a46Af34D856b2E29'
+          STICKY_DISTRIBUTOR: '0x9862B5aad5a139271BE57Fc82fCEd9146ADd0D0f'
+          STICKY_REWARD_RECEIVER_FACTORY: '0x56C0BffC3fe135719C22541B11C15157142fAde0'
+          STICKY_AUTOSTICK_ADAPTER: '0xc6f0B98534d6a3884A823C8717C9312d2a7782E5'
+          STICKY_FROM_BLOCK_1: '26050872'
+          STICKY_FROM_BLOCK_10: '157348556'
+          STICKY_FROM_BLOCK_8453: '51753271'
+          STICKY_FROM_BLOCK_42161: '508606326'
+          STICKY_FROM_BLOCK_11155111: '11775580'
+          STICKY_FROM_BLOCK_11155420: '49246507'
+          STICKY_FROM_BLOCK_84532: '47263633'
+          STICKY_FROM_BLOCK_421614: '312407563'
+        run: |
+          python webclient/build-config.py
+          python - <<'PY'
+          import json, os
+          source = open("webclient/config.js", encoding="utf-8").read()
+          config = json.loads(source.split("window.STICKY_CONFIG = ", 1)[1].rstrip(";\n"))
+          assert config["demoMode"] is False
+          chains = config["chains"]
+          assert sorted(chains, key=int) == ["1", "10", "8453", "42161", "84532", "421614", "11155111", "11155420"], chains
+          for chain_id, entry in chains.items():
+              assert entry["deployer"] == os.environ["STICKY_DEPLOYER"], chain_id
+              assert entry["fromBlock"] == os.environ[f"STICKY_FROM_BLOCK_{chain_id}"], chain_id
+          PY
       - name: Verify production entry point
         run: |
           PORT=8788 python webclient/serve.py &
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
-          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:8788/healthz
+          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:8788/healthz | grep -q '"mode":"live"'
           curl --fail http://127.0.0.1:8788/ > /dev/null

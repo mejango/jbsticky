@@ -21,7 +21,9 @@ The generator writes next to itself regardless of the working directory. It does
 not automatically load `.env`; source an appropriately filled file or set the
 variables through the hosting platform. Restart the server after changing files.
 Existing local `config.js` files are ignored by Git and are changed only when the
-generator is explicitly run.
+generator is explicitly run. Fixtures in a hand-written config (`demoHome*`,
+`demoChartHistory`, `*Overrides`) show only in demo mode or in a `localMode: true`
+config on localhost; a live page drops them.
 
 ## Production configuration
 
@@ -130,8 +132,9 @@ for script in webclient/*.js; do node --check "$script"; done
 node --test webclient/test/*.test.cjs
 ```
 
-The separate `webclient` GitHub workflow runs these gates and starts the real
-production HTTP entry point with an explicit demo config. Contract tests remain
+The separate `webclient` GitHub workflow runs these gates, builds the explicit demo,
+builds a live config for all 8 chains and checks each has a deployer and starting
+block, then starts the real production HTTP entry point with that live config. Contract tests remain
 under `forge test`; they do not broadcast transactions.
 
 Server libraries: [Waitress](https://docs.pylonsproject.org/projects/waitress/en/latest/)

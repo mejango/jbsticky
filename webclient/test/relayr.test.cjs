@@ -172,6 +172,15 @@ test("partial status stays pending and foreign status requests never become evid
   f.status.transactions = [{ tx_uuid: ID2, request: f.ordered[0] }];
   await assert.rejects(clientFor(async () => response(f.status)).fetchStatus(f.bound), /differs/);
 });
+test("the configured Relayr URL replaces the default API", async () => {
+  const f = quoteFixture(); f.status.transactions = [];
+  const urls = [];
+  const fetch = async (url) => { urls.push(url); return response(f.status); };
+  const rpc = async () => { throw Error("unexpected RPC"); };
+  await R.createClient({ fetch, rpc, apiUrl: "https://relayr.example/" }).fetchStatus(f.bound);
+  await R.createClient({ fetch, rpc, apiUrl: undefined }).fetchStatus(f.bound);
+  assert.deepEqual(urls, ["https://relayr.example/v1/bundle/" + BUNDLE, "https://api.relayr.ba5ed.com/v1/bundle/" + BUNDLE]);
+});
 test("status label cannot prove execution and contradictory or malformed hashes are rejected", () => {
   assert.equal(R.destinationHash({ status: { state: "Success" } }), null);
   assert.equal(R.destinationHash({ status: { data: { hash: HASH } } }), HASH);

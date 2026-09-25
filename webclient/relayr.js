@@ -209,13 +209,14 @@
   function createClient(options = {}) {
     const fetcher = options.fetch || globalThis.fetch;
     const rpc = options.rpc;
+    const api = (options.apiUrl || API).replace(/\/+$/, "");
     const safe = options.safe || globalThis.StickyTxSafe || (typeof module === "object" && module.exports ? require("./tx-safe.js") : null);
     if (typeof fetcher !== "function" || typeof rpc !== "function") fail("Relayr requires fetch and a chain-specific RPC reader.");
     async function request(path, init = {}) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), init.method === "POST" ? 45000 : 15000);
       try {
-        const response = await fetcher(API + path, { ...init, signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error" });
+        const response = await fetcher(api + path, { ...init, signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error" });
         if (!response.ok) fail(`Relayr HTTP ${response.status}. Keep the saved deployment for recovery.`);
         return await response.json();
       } catch (error) {

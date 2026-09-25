@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,16 @@ build = module("sticky_build", ROOT / "build-config.py")
 server = module("sticky_server", ROOT / "serve.py")
 DEPLOYER = "0x" + "12" * 20
 OTHER = "0x" + "34" * 20
+# The 8-chain deployment shape. Addresses change on redeploy; these tests check shape only.
+FROM_BLOCKS = {1: "26050872", 10: "157348556", 8453: "51753271", 42161: "508606326",
+               11155111: "11775580", 11155420: "49246507", 84532: "47263633", 421614: "312407563"}
+LIVE_ENV = {
+    "STICKY_DEPLOYER": "0x2D31Dd23AEEB021669e18070a46Af34D856b2E29",
+    "STICKY_DISTRIBUTOR": "0x9862B5aad5a139271BE57Fc82fCEd9146ADd0D0f",
+    "STICKY_REWARD_RECEIVER_FACTORY": "0x56C0BffC3fe135719C22541B11C15157142fAde0",
+    "STICKY_AUTOSTICK_ADAPTER": "0xc6f0B98534d6a3884A823C8717C9312d2a7782E5",
+    **{f"STICKY_FROM_BLOCK_{chain_id}": block for chain_id, block in FROM_BLOCKS.items()},
+}
 
 
 class ConfigTests(unittest.TestCase):
@@ -53,6 +64,27 @@ class ConfigTests(unittest.TestCase):
         for field in ("rpcUrl", "distributor", "rewardReceiverFactory", "autoStickAdapter"):
             self.assertEqual(config[field], config["chains"]["8453"][field])
         self.assertNotIn("deployer", config["chains"]["1"])
+
+    def test_live_configuration_covers_all_eight_chains_without_fixtures(self):
+        config = build.build_config(LIVE_ENV)
+        self.assertIs(config["demoMode"], False)
+        self.assertEqual(set(config["chains"]), {str(chain_id) for chain_id in FROM_BLOCKS})
+        for chain_id, block in FROM_BLOCKS.items():
+            entry = config["chains"][str(chain_id)]
+            with self.subTest(chain=chain_id):
+                self.assertEqual(entry["fromBlock"], block)
+                for field, variable in (("deployer", "STICKY_DEPLOYER"), ("distributor", "STICKY_DISTRIBUTOR"),
+                                        ("rewardReceiverFactory", "STICKY_REWARD_RECEIVER_FACTORY"),
+                                        ("autoStickAdapter", "STICKY_AUTOSTICK_ADAPTER")):
+                    self.assertEqual(entry[field], LIVE_ENV[variable])
+        self.assertFalse([key for key in config if key != "demoMode" and (key.startswith("demo") or key.endswith("Overrides"))])
+
+    def test_app_fallback_rpcs_match_build_config(self):
+        source = (ROOT / "app.js").read_text(encoding="utf-8")
+        origins = source[source.index("const ORIGINS = ["):source.index("const chainById")]
+        found = {int(chain_id.replace("_", "")): url
+                 for chain_id, url in re.findall(r'chainId: ([0-9_]+),.*?rpcUrl: "([^"]+)"', origins)}
+        self.assertEqual(found, build.PUBLIC_RPC)
 
     def test_rpc_override_takes_precedence_over_dwellir(self):
         config = build.build_config({"STICKY_DEPLOYER": DEPLOYER, "NEXT_PUBLIC_DWELLIR_API_KEY": "public-key",

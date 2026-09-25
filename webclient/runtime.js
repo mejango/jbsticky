@@ -32,6 +32,15 @@
     }
     return { ...entry, ...result };
   }
+  // Fixtures belong to the explicit demo and a local-mode loopback config. A live page never shows them.
+  const FIXTURES = ["demoHomeStickiest", "demoHomeAirdrops", "demoChartHistory", "usdPriceOverrides", "logoOverrides", "projectNameOverrides", "projectChainOverrides"];
+  function withoutFixtures(config, hostname) {
+    const local = config.localMode === true && ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+    if (config.demoMode === true || local) return config;
+    const result = { ...config };
+    for (const key of FIXTURES) delete result[key];
+    return result;
+  }
   async function jsonRpc(url, method, params, options = {}) {
     const fetcher = options.fetch || globalThis.fetch;
     if (!url || typeof url !== "string") throw new Error("No RPC is configured for this chain.");
@@ -93,5 +102,5 @@
       return block < 0n ? -1 : block > 0n ? 1 : Number(BigInt(a.logIndex) - BigInt(b.logIndex));
     });
   }
-  return { address, assetUrl, deployment, jsonRpc, logs };
+  return { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs };
 });

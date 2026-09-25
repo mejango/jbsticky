@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { address, assetUrl, deployment, jsonRpc, logs } = require("../runtime.js");
+const { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs } = require("../runtime.js");
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../app.js'), 'utf8');
@@ -29,6 +29,16 @@ test("a generated default deployment never enables an unconfigured chain", () =>
   assert.equal(deployment({...config,chains:{10:{deployer:'op'}}},10).deployer,'op');
   assert.equal(deployment({deployer:'legacy',chains:{}},10).deployer,'legacy');
   assert.equal(deployment({deployer:'legacy',chains:{10:{deployer:''}}},10).deployer,'');
+});
+test("live configs drop demo fixtures; demo and local-mode loopback configs keep them", () => {
+  const fixtures = {demoHomeStickiest:[{id:41}],demoHomeAirdrops:[{}],demoChartHistory:[{}],usdPriceOverrides:{a:'1'},
+    logoOverrides:{a:'x.png'},projectNameOverrides:{1:'X'},projectChainOverrides:{1:[1]}};
+  const live = withoutFixtures({deployer:'main',chains:{1:{}},...fixtures}, 'sticky.center');
+  assert.deepEqual(live, {deployer:'main',chains:{1:{}}});
+  assert.deepEqual(withoutFixtures({demoMode:true,...fixtures}, 'sticky.center'), {demoMode:true,...fixtures});
+  assert.deepEqual(withoutFixtures({localMode:true,...fixtures}, '127.0.0.1'), {localMode:true,...fixtures});
+  assert.equal(withoutFixtures({localMode:true,...fixtures}, 'sticky.center').demoHomeStickiest, undefined);
+  assert.equal(withoutFixtures({localMode:'true',...fixtures}, 'localhost').logoOverrides, undefined);
 });
 test("RPC rejects HTTP, malformed and missing-result responses while preserving reverts", async () => {
   const fetch = body => async () => ({ ok: true, json: async () => body });

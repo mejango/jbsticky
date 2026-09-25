@@ -210,7 +210,9 @@ async function rpc(method, params) {
 }
 
 // Match Juicescan's ENS behavior: reverse-resolve every account against Ethereum mainnet's Universal Resolver,
-// independently of the chain the sticky project lives on. Results (including misses) are cached per address.
+// independently of the production chain the sticky project lives on. Results (including misses) are cached per address.
+// Testnet pages skip ENS and handles: mainnet names don't describe testnet accounts or projects.
+const ensAvailable = () => chainById(ctx.chainId)?.environment !== "testnet";
 const ENS_RPC_URL = window.STICKY_CONFIG?.ensRpc || "https://ethereum-rpc.publicnode.com";
 const ENS_UNIVERSAL_RESOLVER = "0xeeeeeeee14d718c2b47d9923deab1335e144eeee";
 const ensNameCache = new Map();
@@ -229,7 +231,7 @@ function ensReverseData(address) {
 
 function reverseEns(address) {
   const key = String(address || "").toLowerCase();
-  if (!/^0x[0-9a-f]{40}$/.test(key)) return Promise.resolve(null);
+  if (!ensAvailable() || !/^0x[0-9a-f]{40}$/.test(key)) return Promise.resolve(null);
   if (!ensNameCache.has(key)) {
     ensNameCache.set(key, (async () => {
       try {
@@ -253,6 +255,7 @@ const projectHandleCache = new Map();
 const handleRouteCache = new Map();
 
 function verifiedHandleOf(projectId) {
+  if (!ensAvailable()) return Promise.resolve(null);
   const key = `${ctx.chainId}:${projectId}`;
   if (!projectHandleCache.has(key)) {
     projectHandleCache.set(key, (async () => {
@@ -1952,11 +1955,11 @@ const CHAIN_ICON_SVG = {
   arb: `<svg viewBox="0 0 24 24" width="15" height="15"><circle cx="12" cy="12" r="12" fill="#2D374B"/><path d="M12 6l4.8 11h-2.4L12 11.2 9.6 17H7.2z" fill="#28A0F0"/><path d="M12 6l-1.05 2.45L12 11.2l1.05-2.75z" fill="#fff"/></svg>`,
 };
 const ORIGINS = [
-  { key: "ethereum", chainId: 1, label: "ETHEREUM", name: "Ethereum", icon: "eth", environment: "production", rpcUrl: "https://eth.merkle.io", explorer: "https://etherscan.io" },
+  { key: "ethereum", chainId: 1, label: "ETHEREUM", name: "Ethereum", icon: "eth", environment: "production", rpcUrl: "https://ethereum-rpc.publicnode.com", explorer: "https://etherscan.io" },
   { key: "optimism", chainId: 10, label: "OPTIMISM", name: "OP Mainnet", icon: "op", environment: "production", rpcUrl: "https://mainnet.optimism.io", explorer: "https://optimistic.etherscan.io" },
   { key: "base", chainId: 8453, label: "BASE", name: "Base", icon: "base", environment: "production", rpcUrl: "https://mainnet.base.org", explorer: "https://basescan.org" },
   { key: "arbitrum", chainId: 42_161, label: "ARBITRUM", name: "Arbitrum One", icon: "arb", environment: "production", rpcUrl: "https://arb1.arbitrum.io/rpc", explorer: "https://arbiscan.io" },
-  { key: "ethereum-sepolia", chainId: 11_155_111, label: "ETH SEPOLIA", name: "Ethereum Sepolia", icon: "eth", environment: "testnet", rpcUrl: "https://sepolia.drpc.org", explorer: "https://sepolia.etherscan.io" },
+  { key: "ethereum-sepolia", chainId: 11_155_111, label: "ETH SEPOLIA", name: "Ethereum Sepolia", icon: "eth", environment: "testnet", rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com", explorer: "https://sepolia.etherscan.io" },
   { key: "optimism-sepolia", chainId: 11_155_420, label: "OP SEPOLIA", name: "OP Sepolia", icon: "op", environment: "testnet", rpcUrl: "https://sepolia.optimism.io", explorer: "https://sepolia-optimism.etherscan.io" },
   { key: "base-sepolia", chainId: 84_532, label: "BASE SEPOLIA", name: "Base Sepolia", icon: "base", environment: "testnet", rpcUrl: "https://sepolia.base.org", explorer: "https://sepolia.basescan.org" },
   { key: "arbitrum-sepolia", chainId: 421_614, label: "ARB SEPOLIA", name: "Arbitrum Sepolia", icon: "arb", environment: "testnet", rpcUrl: "https://sepolia-rollup.arbitrum.io/rpc", explorer: "https://sepolia.arbiscan.io" },
@@ -3678,7 +3681,7 @@ function stickyLaunchStore() {
   return stickyLaunchStoreInstance ||= StickyLaunch.createStore(localStorage);
 }
 function stickyLaunchRelayr() {
-  return StickyRelayr.createClient({ rpc: (chainId, method, params) => {
+  return StickyRelayr.createClient({ apiUrl: window.STICKY_CONFIG?.relayrUrl, rpc: (chainId, method, params) => {
     const saved = stickyLaunchStore().load();
     const target = saved?.targets.find((item) => item.chainId === Number(chainId));
     const rpcUrl = target?.rpcUrl || saved?.fundingRpcs[chainId];
@@ -4541,7 +4544,7 @@ $("create-toggle").onclick = () => {
   soulboundHint();
   dTokenResolved = null;
   setTokenMeta("");
-  selectCreateEnvironment("production");
+  selectCreateEnvironment(chainById(ctx.chainId)?.environment || "production");
   $("create-dialog").showModal();
 };
 $("create-close").onclick = () => $("create-dialog").close();
@@ -4866,6 +4869,7 @@ if (config.demoMode) {
   $("demo-notice").classList.remove("hide");
   guard(loadDeployer)();
 } else {
+  window.STICKY_CONFIG = StickyRuntime.withoutFixtures(config, location.hostname);
   const selectedId = Number(new URL(location.href).searchParams.get("chain") || config.defaultChainId || 1);
   const selected = chainById(selectedId);
   const chainConfig = StickyRuntime.deployment(config, selectedId);
@@ -4874,12 +4878,17 @@ if (config.demoMode) {
   $("deployer").value = chainConfig.deployer || "";
   if (config.account && config.localMode === true && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("account").value = config.account;
   const picker = $("site-chain");
-  picker.replaceChildren(...ORIGINS.filter(chain => StickyRuntime.deployment(config, chain.chainId).deployer).map(chain => {
-    const option = document.createElement("option");
-    option.value = String(chain.chainId);
-    option.textContent = chain.name;
-    return option;
-  }));
+  picker.replaceChildren(...[["production", "Production"], ["testnet", "Testnets"]].map(([environment, label]) => {
+    const group = document.createElement("optgroup");
+    group.label = label;
+    group.append(...chainsForEnvironment(environment).filter(chain => StickyRuntime.deployment(config, chain.chainId).deployer).map(chain => {
+      const option = document.createElement("option");
+      option.value = String(chain.chainId);
+      option.textContent = chain.name;
+      return option;
+    }));
+    return group;
+  }).filter(group => group.children.length));
   if (picker.options.length) {
     picker.value = String(selectedId);
     picker.classList.remove("hide");
