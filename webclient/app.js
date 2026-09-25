@@ -4453,7 +4453,7 @@ function renderCurve() {
     note.textContent = r === 1
       ? "At 100%, unsticking returns no underlying tokens. This setting is permanent."
       : r > 0
-        ? `For a small unstick when each sticky token is backed by one${sym}, 100${sym} returns approximately ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. The actual reclaim depends on backing, supply and fee eligibility; review the live quote before unsticking.`
+        ? `Example: if each sticky token is backed by 1${sym}, unsticking 100 returns about ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. Unsticking a large share of the supply returns a different amount, so the unstick screen always shows the exact amount before you confirm.`
         : "No cash out tax: unsticks return a proportional share of the pool. Donations can increase backing.";
   }
   $("d-fee-details")?.classList.toggle("hide", r === 0);

@@ -836,7 +836,7 @@
       <div><label for="d-symbol">SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
     </div>
     <label class="check"><input type="checkbox" id="d-add-reward"> Add stickiness bonus</label>
-    <p class="mut hint hide option-detail" id="d-reward-hint">Partial unsticks leave some backing for the remaining holders.</p>
+    <p class="mut hint hide option-detail" id="d-reward-hint">When someone unsticks, part of what they would get back stays behind for everyone still stuck. The percentage sets that part.</p>
     <div class="hide option-detail" id="d-reward-wrap">
       <div class="preset-row">
         <button type="button" class="preset" data-v="0" aria-pressed="false">0%</button>
@@ -862,7 +862,7 @@
     <details id="d-extras" style="margin-top:14px">
       <summary style="cursor:pointer;color:var(--muted);font-size:12px;letter-spacing:.5px">Extras</summary>
       <label class="check" style="margin-top:10px"><input type="checkbox" id="d-add-granters"> Add trusted senders</label>
-      <p class="mut hint hide option-detail" id="d-granters-hint">Who can stick tokens for anyone without asking. Useful for grant programs, rewards from admins, prize bots, etc — trusted not to clutter your sticks. Each holder can add trusted senders of their own later.</p>
+      <p class="mut hint hide option-detail" id="d-granters-hint">By default, only each holder can add to their own stick. Trusted senders can stick tokens for any holder without asking, which suits grant programs, admin rewards and prize bots. Leave this off if you have none. The auto-stick helper is always trusted, and it only acts for holders who turn it on. Holders can also trust senders of their own later.</p>
       <div class="row hide option-detail" id="d-granters-row">
         <div><label for="d-granters">TRUSTED SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
       </div>
