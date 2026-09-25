@@ -14,6 +14,7 @@ import {JBBeforePayRecordedContext} from "@bananapus/core-v6/src/structs/JBBefor
 import {JBCashOutHookSpecification} from "@bananapus/core-v6/src/structs/JBCashOutHookSpecification.sol";
 import {JBPayHookSpecification} from "@bananapus/core-v6/src/structs/JBPayHookSpecification.sol";
 import {JBRuleset} from "@bananapus/core-v6/src/structs/JBRuleset.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -35,7 +36,7 @@ import {StickyTranche} from "./structs/StickyTranche.sol";
 /// checkpoints.
 // Callbacks are payable to implement the core interfaces, but both explicitly reject ETH.
 // slither-disable-next-line locked-ether
-contract StickyHook is ERC165, IStickyHook {
+contract StickyHook is ERC165, ERC2771Context, IStickyHook {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
@@ -205,9 +206,10 @@ contract StickyHook is ERC165, IStickyHook {
     /// @notice Binds position accounting to the trusted project directory and sticky deployer.
     /// @param directory The directory of terminals and controllers for projects.
     /// @param deployer The address allowed to set a project's granters, once, at launch.
+    /// @param trustedForwarder A trusted forwarder of transactions to this contract.
     // The Sticky deployer creates its hook with its own nonzero address as the immutable registrar.
     // forge-lint: disable-next-line(missing-zero-check)
-    constructor(IJBDirectory directory, address deployer) {
+    constructor(IJBDirectory directory, address deployer, address trustedForwarder) ERC2771Context(trustedForwarder) {
         // Use the project's directory to authenticate terminal callbacks against its registered terminals.
         DIRECTORY = directory;
 
@@ -479,10 +481,10 @@ contract StickyHook is ERC165, IStickyHook {
     /// @param trusted Whether the sender should be trusted.
     function setTrustedSenderFor(uint256 projectId, address sender, bool trusted) external override {
         // Scope consent to the caller's own position; this never grants access to their underlying tokens.
-        isTrustedSenderOf[projectId][msg.sender][sender] = trusted;
+        isTrustedSenderOf[projectId][_msgSender()][sender] = trusted;
 
         // Let holders and senders track whether beneficiary consent has been granted or revoked.
-        emit SetTrustedSender({projectId: projectId, holder: msg.sender, sender: sender, trusted: trusted});
+        emit SetTrustedSender({projectId: projectId, holder: _msgSender(), sender: sender, trusted: trusted});
     }
 
     //*********************************************************************//

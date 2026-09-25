@@ -16,6 +16,7 @@ import {JBRulesetConfig} from "@bananapus/core-v6/src/structs/JBRulesetConfig.so
 import {JBRulesetMetadata} from "@bananapus/core-v6/src/structs/JBRulesetMetadata.sol";
 import {JBSplitGroup} from "@bananapus/core-v6/src/structs/JBSplitGroup.sol";
 import {JBTerminalConfig} from "@bananapus/core-v6/src/structs/JBTerminalConfig.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
@@ -32,7 +33,7 @@ import {IStickyHook} from "./interfaces/IStickyHook.sol";
 /// terminals, metadata, token or ownership, or withdraw project funds.
 /// @dev Each share token is deployed with CREATE2 under a salt bound to the launcher and the launch configuration, so
 /// no other launcher can occupy an address a launcher, or a receiver prefunded for it, predicted.
-contract StickyDeployer is IERC721Receiver, IStickyDeployer {
+contract StickyDeployer is ERC2771Context, IERC721Receiver, IStickyDeployer {
     //*********************************************************************//
     // --------------------------- custom errors ------------------------- //
     //*********************************************************************//
@@ -104,7 +105,13 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
     /// @notice Binds every launched project to the same controller, terminal and position-accounting hook.
     /// @param controller The controller used to launch and manage sticky projects.
     /// @param terminal The terminal sticky projects accept their staked token through.
-    constructor(IJBController controller, IJBTerminal terminal) {
+    constructor(
+        IJBController controller,
+        IJBTerminal terminal
+    )
+        // Accept the same meta-transaction forwarder as core, so a sponsor can relay launches for their signer.
+        ERC2771Context(ERC2771Context(address(controller)).trustedForwarder())
+    {
         // Locate the registry where the controller will register each project's issuance feed.
         address controllerPrices = address(controller.PRICES());
 
@@ -128,7 +135,9 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
         TOKENS = controller.TOKENS();
 
         // Share one accounting hook across projects, with this deployer authorized to bind tokens and granters.
-        HOOK = new StickyHook({directory: controller.DIRECTORY(), deployer: address(this)});
+        HOOK = new StickyHook({
+            directory: controller.DIRECTORY(), deployer: address(this), trustedForwarder: trustedForwarder()
+        });
     }
 
     //*********************************************************************//
@@ -137,7 +146,8 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
 
     /// @notice Deploys a sticky project for a token.
     /// @dev The `msg.value` must equal the project creation fee required by `JBProjects`. The share token lands at
-    /// `predictStickyTokenOf(msg.sender, projectId, ...)` for the same arguments, where `projectId` is the ID the
+    /// `predictStickyTokenOf(launcher, projectId, ...)` for the same arguments, where `launcher` is the caller (the
+    /// signer, for a call relayed by the trusted forwarder), where `projectId` is the ID the
     /// launch receives.
     /// @param stakedToken The token the project accepts for staking. Cannot be the share token of another project
     /// launched by this deployer.
@@ -270,7 +280,7 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
         address previousPayer = originalPayer;
 
         // Expose the resolved launcher so the controller attributes creation-fee tokens to the account funding them.
-        originalPayer = JBPayerTrackerLib.resolve(msg.sender);
+        originalPayer = JBPayerTrackerLib.resolve(_msgSender());
 
         // Forward the creation fee and retain the project NFT here, with no operation to alter its policy or owner.
         projectId = CONTROLLER.launchProjectFor{value: msg.value}({
@@ -281,6 +291,8 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
             memo: "Sticky"
         });
         // Each nested launch attributes its own fee, then restores the outer launch's payer before returning.
+        // The payer is a launch-scoped value read through its getter, not an access-control setting.
+        // forge-lint: disable-next-item(missing-events-access-control)
         // slither-disable-next-line reentrancy-eth
         originalPayer = previousPayer;
 
@@ -288,7 +300,7 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
         // launcher can produce for this configuration.
         IJBToken token = new StickyToken{
             salt: _stickyTokenSaltOf({
-                launcher: msg.sender,
+                launcher: _msgSender(),
                 stakedToken: stakedToken,
                 name: name,
                 symbol: symbol,
@@ -338,7 +350,7 @@ contract StickyDeployer is IERC721Receiver, IStickyDeployer {
             token: token,
             cashOutTaxRate: cashOutTaxRate,
             soulbound: soulbound,
-            caller: msg.sender
+            caller: _msgSender()
         });
     }
 

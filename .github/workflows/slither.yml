@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Bananapus/nana-distributor-v6
-          ref: 79af754e642b648347aba0c7df8a3398215e74a5
+          ref: 44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5
           path: nana-distributor-v6
       - uses: actions/setup-node@v4
         with:

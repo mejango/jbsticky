@@ -8,7 +8,7 @@ Use Node 22.23.1, Foundry v1.8.1, and the committed npm lockfile. CI reproduces 
 
 ```text
 nana-core-v6/                 # feff600654aee6fb1747dded692f18068b2230a6
-nana-distributor-v6/          # 79af754e642b648347aba0c7df8a3398215e74a5
+nana-distributor-v6/          # 44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5
 extensions/Sticky/
 ```
 

@@ -388,6 +388,8 @@ contract StickyAutoStickUnitTest is Test {
     /// @notice The mocked Sticky factory address.
     // forge-lint: disable-next-line(function-init-state)
     address internal _deployer = makeAddr("deployer");
+    // forge-lint: disable-next-line(function-init-state)
+    address internal _forwarder = makeAddr("forwarder");
 
     /// @notice The stub distributor delivering rewards.
     StubDistributor internal _distributor;
@@ -1295,6 +1297,7 @@ contract StickyAutoStickUnitTest is Test {
         vm.mockCall(_deployer, abi.encodeCall(IStickyDeployer.HOOK, ()), abi.encode(_hook));
         vm.mockCall(_deployer, abi.encodeCall(IStickyDeployer.TOKENS, ()), abi.encode(_tokens));
         vm.mockCall(_deployer, abi.encodeCall(IStickyDeployer.TERMINAL, ()), abi.encode(address(_terminal)));
+        vm.mockCall(_deployer, abi.encodeWithSignature("trustedForwarder()"), abi.encode(_forwarder));
         _adapter = new StickyAutoStick({
             deployer: IStickyDeployer(_deployer), distributor: IStickyDistributor(address(_distributor))
         });

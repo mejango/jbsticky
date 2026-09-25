@@ -65,6 +65,9 @@ contract StickyDeploymentTest is TestBaseWorkflow {
             _deployment.DETERMINISTIC_FACTORY(),
             hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
         );
+        // Stand in for the core forwarder contract, which verification requires to have code.
+        // forge-lint: disable-next-line(literal-instead-of-constant)
+        vm.etch(trustedForwarder(), hex"00");
     }
 
     function test_cleanDeploymentAndRepeatPreserveEveryAddressAndOriginalTimestamp() public {
@@ -313,6 +316,7 @@ contract StickyDeploymentTest is TestBaseWorkflow {
     }
 
     function test_rejectsWrongCanonicalFactoryRuntime() public {
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         vm.etch(_deployment.DETERMINISTIC_FACTORY(), hex"00");
         vm.expectPartialRevert(StickyDeployment.StickyDeployment_RuntimeMismatch.selector);
         // forge-lint: disable-next-line(unused-return)
