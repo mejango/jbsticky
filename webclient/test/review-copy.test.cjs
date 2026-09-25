@@ -11,7 +11,7 @@ const end = source.indexOf("\nfunction renderConfirmSteps", begin);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const context = vm.createContext({ esc });
 vm.runInContext(source.slice(begin, end) + "\nthis.transactionsLeft = transactionsLeft;", context);
-const ADAPTER = "0xc6f0B98534d6a3884A823C8717C9312d2a7782E5";
+const ADAPTER = "0x9B091e21d25c424De67751F4b6Ae8494351218C5";
 
 test("the review counts what is left in plain words", () => {
   assert.equal(context.transactionsLeft(1), "1 transaction left");

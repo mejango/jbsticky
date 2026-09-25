@@ -9,7 +9,7 @@ const StickyLaunchPlan = require("../launch-plan.js");
 const source = fs.readFileSync(require.resolve("../app.js"), "utf8");
 const slice = (from, to) => { const begin = source.indexOf(from); const end = source.indexOf(to, begin); assert.ok(begin >= 0 && end > begin, from); return source.slice(begin, end); };
 const OWNER = "0x042F619EED558723252593DB0375fC34306f203A";
-const DEPLOYER = "0x2D31Dd23AEEB021669e18070a46Af34D856b2E29";
+const DEPLOYER = "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9";
 const targets = (ids) => ids.map((chainId) => ({ chainId, deployer: DEPLOYER, rpcUrl: `https://rpc/${chainId}` }));
 const listing = (ids) => ({ calls: ids.map((chainId) => ({ chainId, to: DEPLOYER, data: "0x00d5ce37" })), owner: OWNER, name: "Sticky T", symbol: "STICKYT",
   stakedToken: "0x" + "5".repeat(40), stakedTokenSymbol: "T", cashOutTaxRate: 0n, soulbound: false, launchId: "l", projectUri: "data:," });
@@ -56,7 +56,7 @@ test("without a Center URL, launches are self-paid and not listed", async () => 
 });
 
 test("a chain without the AutoStick helper is shown as unavailable with its reason", () => {
-  const configs = { 84532: { deployer: DEPLOYER, autoStickAdapter: "0xc6f0B98534d6a3884A823C8717C9312d2a7782E5" }, 11155420: { deployer: DEPLOYER }, 421614: {} };
+  const configs = { 84532: { deployer: DEPLOYER, autoStickAdapter: "0x9B091e21d25c424De67751F4b6Ae8494351218C5" }, 11155420: { deployer: DEPLOYER }, 421614: {} };
   const context = vm.createContext({ window: { STICKY_CONFIG: { demoMode: false } }, StickyLaunchPlan, stickyDeploymentFor: (chainId) => configs[chainId] });
   vm.runInContext(slice("function launchChainBlocker(", "\nfunction renderCreateChains"), context);
   assert.equal(context.launchChainBlocker({ chainId: 84532 }), "");

@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const C = require("../center-intents.js");
 const R = require("../relayr.js");
 const OWNER = "0x042F619EED558723252593DB0375fC34306f203A";
-const DEPLOYER = "0x2d31dd23aeeb021669e18070a46af34d856b2e29";
+const DEPLOYER = "0xda38ec48b5b1d186b02ba99f297e95153bee33a9";
 const INTENT = "0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b";
 const SIGNATURE = "0x" + "ab".repeat(65);
 const listing = (overrides = {}) => C.buildEnvelope({
@@ -13,7 +13,7 @@ const listing = (overrides = {}) => C.buildEnvelope({
   cashOutTaxRate: 1000n, soulbound: false, launchId: "abc", projectUri: "data:application/json,{}", ...overrides,
 });
 // What Center's normalizeEnvelope returns: `to` checksummed, everything else as sent.
-const centerNormalized = (envelope) => ({ ...envelope, deploymentCalls: envelope.deploymentCalls.map((call) => ({ ...call, to: "0x2D31Dd23AEEB021669e18070a46Af34D856b2E29" })) });
+const centerNormalized = (envelope) => ({ ...envelope, deploymentCalls: envelope.deploymentCalls.map((call) => ({ ...call, to: "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9" })) });
 const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
 function center(routes) {
   const calls = [];
@@ -46,7 +46,7 @@ test("the envelope is sticky.center/deploy.v1 for deployment version 6, sorted b
 });
 test("the content hash matches Center's keccak256 of canonical JSON (vector from viem)", () => {
   const hash = R.keccak256(C.utf8Hex(C.canonicalJson(centerNormalized(listing()))));
-  assert.equal(hash, "0xa5283bdac708408d7f550f811d469b1b6a989743bffed533f5f127d1009f7c00");
+  assert.equal(hash, "0xf9d00ba55aa7a79c95f4fef8f73ed77316caa67b93649f659dc4b6150f24b821");
   assert.equal(C.signingMessage(hash), `Juice Central project intent\nVersion: 1\nContent hash: ${hash}`);
 });
 test("publishing signs only Center's message for exactly this envelope, then posts it with the signature", async () => {
