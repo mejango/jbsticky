@@ -53,6 +53,10 @@ const SEL = {
   ROUND_DURATION: "0x6641ea08",
   VESTING_ROUNDS: "0xaf29da14",
   getPastVotes: "0x3a46b1a8",
+  previewCashOutFrom: "0x4aa71dbc",
+  feeFreeSurplusOf: "0xc66d192b",
+  FEELESS_ADDRESSES: "0x659a2047",
+  isFeelessFor: "0x8717d7c2",
   stakedBalanceThroughEpochOf: "0x0fdcc877",
   DISTRIBUTOR: "0x9c26149f",
   predictReceiverOf: "0x330b5eea",
@@ -3498,17 +3502,36 @@ async function stake() {
 }
 
 const MAX_TAX = 10000n;
-const PROTOCOL_FEE = 25n; // out of 1000; charged on reclaims whenever the bonus is nonzero
-// The cash-out curve: what unsticking `count` reclaims right now, before the protocol fee.
-// A lone unstick pays the full bonus; bigger group exits pay proportionally less; a
-// full-supply exit takes the whole pool.
-function curveReclaim(pool, count) {
-  if (count === 0n || pool.supply === 0n || pool.reward === MAX_TAX) return 0n;
-  if (count >= pool.supply) return pool.sigma;
-  const base = (pool.sigma * count) / pool.supply;
-  return (base * ((MAX_TAX - pool.reward) + (pool.reward * count) / pool.supply)) / MAX_TAX;
+// What unsticking `count` pays `holder`, read from the terminal's own views at one block:
+// previewCashOutFrom gives the gross reclaim and the tax it applies; the fee then follows the terminal's
+// rule. A feeless beneficiary pays none. Positive tax pays the fee on the whole reclaim; zero tax pays it
+// only on the part covered by feeFreeSurplusOf. The fee is JBFees.standardFeeAmountFrom (amount / 40,
+// JBConstants.STANDARD_FEE of 25 per 1,000), a compile-time constant with no view to read.
+// The unstick dialog and the final review both call this, so the quote shown is the minimum sent.
+async function unstickQuote(projectId, info, holder, count) {
+  const block = await rpc("eth_blockNumber", []);
+  if (!/^0x[0-9a-fA-F]+$/.test(block || "")) throw new Error("The RPC returned an invalid block for the unstick quote.");
+  const read = (to, data) => rpc("eth_call", [{ from: holder, to, data }, block]);
+  const [preview, feeFree, feelessRegistry] = await Promise.all([
+    read(ctx.terminal, SEL.previewCashOutFrom + encode(
+      ["address", "uint256", "uint256", "address", "address", "bytes"],
+      [holder, projectId, count, info.stakedToken, holder, "0x"],
+    )),
+    read(ctx.terminal, SEL.feeFreeSurplusOf + word(projectId) + encAddress(info.stakedToken)).then(decUint),
+    read(ctx.terminal, SEL.FEELESS_ADDRESSES).then(decAddress),
+  ]);
+  // JBRuleset is nine static words; then reclaimAmount, cashOutTaxRate, and an empty hook list.
+  if (!/^0x(?:[0-9a-fA-F]{64}){13}$/.test(preview || "") || decUint(preview, 11) !== 384n || decUint(preview, 12) !== 0n) {
+    throw new Error("the terminal did not return a valid unstick quote");
+  }
+  const gross = decUint(preview, 9);
+  const tax = decUint(preview, 10);
+  if (tax > MAX_TAX) throw new Error("the terminal did not return a valid unstick quote");
+  const feeless = decUint(await read(feelessRegistry, SEL.isFeelessFor + encAddress(holder) + word(projectId) + encAddress(holder))) === 1n;
+  const feeable = feeless ? 0n : tax > 0n ? gross : gross < feeFree ? gross : feeFree;
+  const fee = feeable / 40n;
+  return { gross, tax, fee, net: gross - fee, feeless, block };
 }
-const afterFee = (gross, reward) => (reward > 0n ? gross - (gross * PROTOCOL_FEE) / 1000n : gross);
 async function poolBacking(projectId, info) {
   const block = await rpc("eth_blockNumber", []);
   if (!/^0x[0-9a-fA-F]+$/.test(block || "")) throw new Error("The RPC returned an invalid backing block.");
@@ -3573,7 +3596,9 @@ async function renderStickQuote() {
   }
 }
 
-function renderUnstickQuote() {
+let unstickQuoteSequence = 0;
+async function renderUnstickQuote() {
+  const sequence = ++unstickQuoteSequence;
   const el = $("unstake-quote");
   const pool = ctx.pool;
   if (!el) return;
@@ -3582,26 +3607,33 @@ function renderUnstickQuote() {
   let count;
   try { count = parseUnits($("unstake-amount").value || "0", 18); } catch { return; }
   if (count <= 0n) return;
-  if (count > pool.supply) count = pool.supply;
-  const gross = curveReclaim(pool, count);
-  const net = afterFee(gross, pool.reward);
-  const amt = (v) => `${formatUnits(v, pool.decimals)} ${pool.symbol}`;
   if (pool.reward === MAX_TAX) {
-    el.textContent = "100% stickiness bonus: unsticking burns your sticky tokens and returns no underlying tokens.";
+    el.textContent = "100% stickiness bonus: unsticking burns your Sticky tokens and returns nothing.";
     return;
   }
-  if (count >= pool.supply) {
-    el.textContent = pool.reward > 0n
-      ? `full exit — the last one out takes the whole pool: ≈ ${amt(net)} after the 2.5% protocol fee`
-      : `full exit estimate before any applicable fees: ${amt(gross)}; review the exact reclaim before confirming`;
+  const holder = account();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(holder || "")) {
+    el.textContent = "Connect a wallet to quote your unstick.";
     return;
   }
-  if (pool.reward === 0n) {
-    el.textContent = `Your share before any applicable fees: ≈ ${amt(gross)}. Review the exact reclaim before confirming.`;
-    return;
+  const projectId = ctx.currentId, chainId = ctx.chainId, input = $("unstake-amount").value;
+  const current = () => sequence === unstickQuoteSequence && ctx.currentId === projectId && ctx.chainId === chainId
+    && account() === holder && $("unstake-amount").value === input;
+  el.textContent = "Quoting from the terminal…";
+  try {
+    const info = await projectInfo(projectId);
+    const quote = await unstickQuote(projectId, info, holder, count > pool.supply ? pool.supply : count);
+    if (!current()) return;
+    const amt = (v) => `${formatUnits(v, pool.decimals)} ${pool.symbol}`;
+    const share = count >= pool.supply ? pool.sigma : (pool.sigma * count) / pool.supply;
+    const stays = share > quote.gross ? share - quote.gross : 0n;
+    el.textContent = `You get ${amt(quote.net)}.`
+      + (stays > 0n ? ` ${amt(stays)} stays with the holders who remain.` : "")
+      + (quote.fee > 0n ? ` ${amt(quote.fee)} goes to the protocol fee.` : quote.feeless ? " No protocol fee for this wallet." : " No protocol fee on this unstick.")
+      + " The review uses this as your minimum.";
+  } catch (error) {
+    if (current()) el.textContent = `Quote unavailable: ${error.message}`;
   }
-  const bonus = (pool.sigma * count) / pool.supply - gross;
-  el.textContent = `you get ≈ ${amt(net)}, ${amt(bonus)} stays with stickers, ${amt(gross - net)} protocol fee`;
 }
 
 async function unstake() {
@@ -3617,11 +3649,11 @@ async function unstake() {
     ["address", "uint256", "uint256", "address", "uint256", "address", "bytes"],
     [holder, ctx.currentId, count, info.stakedToken, minimum, holder, "0x"],
   );
-  // Simulate the actual terminal, including feeless exceptions and fee-free-surplus accounting. The reviewed
-  // amount becomes the on-chain minimum; a worse outcome must be reviewed again rather than silently accepted.
-  const result = await actionCall(ctx.terminal, encodeUnstake(0n), holder);
-  if (!/^0x[0-9a-fA-F]{64}$/.test(result)) throw new Error("the terminal did not return a valid unstick quote");
-  const reclaim = decUint(result);
+  // The terminal's views price the exit, the same quote the dialog showed. The reviewed net becomes the
+  // on-chain minimum; a worse outcome reverts and must be reviewed again.
+  const { net: reclaim } = await unstickQuote(ctx.currentId, info, holder, count);
+  // A preflight catches a revert the views cannot model. It never sets the amount.
+  await actionCall(ctx.terminal, encodeUnstake(reclaim), holder);
   const txs = [];
   const state = await autoStickState();
   ctx.autoStick = state;

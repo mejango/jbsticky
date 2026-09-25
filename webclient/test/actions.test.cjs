@@ -37,7 +37,7 @@ const names = [
   'beginAction', 'reviewAction', 'actionCall', 'hasRewardsToVest', 'requireTokenBalance', 'tokenApprovalTxs',
   'rewardTokenMeta', 'asApproveTx', 'asTrustTx', 'asConfigTx', 'asDisableTxs', 'setTrust', 'fundRewards',
   'claimReward', 'saveAutoStick', 'toggleAutoStick', 'repairAutoStick', 'autoStickNow', 'beginAutoStickVesting',
-  'claimAndStick', 'settleArrivals', 'stake', 'curveReclaim', 'previewStickMint', 'unstake', 'transferSticky',
+  'claimAndStick', 'settleArrivals', 'stake', 'unstickQuote', 'renderUnstickQuote', 'previewStickMint', 'unstake', 'transferSticky',
   'readTranchePage', 'poolBacking', 'homeSecuredSeries', 'asStatusLine', 'renderStickQuote',
   'decodeGroupId', 'isValidGroupId', 'groupIdFromWeeks', 'groupLabel', 'groupSentence', 'groupNote', 'fundGroupId',
   'rewardStakeOf', 'discoverFunding', 'rewardRows', 'stakedRewardGroups', 'vestableRewardGroups',
@@ -92,7 +92,7 @@ function fixture(overrides = {}) {
   const selectors = source.slice(selectorsStart, source.indexOf('\n};', selectorsStart) + 3);
   const codec = source.slice(source.indexOf('const strip ='), source.indexOf('// ------------------------------------------------------------- rpc plumbing'));
   const topics = source.slice(source.indexOf('const TOPIC ='), source.indexOf('\n};', source.indexOf('const TOPIC =')) + 3);
-  vm.runInContext(`${selectors}\n${topics}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nlet stickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
+  vm.runInContext(`${selectors}\n${topics}\n${codec}\nconst NATIVE_REWARD_TOKEN = '${NATIVE}';\nconst UNLIMITED = (1n << 256n) - 1n;\nconst MAX_TAX = 10000n;\nconst CRITERIA_BASE = 1000n;\nconst MAX_CRITERIA_WEEKS = 520n;\nlet stickQuoteSequence = 0;\nlet unstickQuoteSequence = 0;\nconst AS_STATUS = { READY: 0, DISABLED: 1, INVALID_PROJECT: 2, INSUFFICIENT_ALLOWANCE: 6, ZERO_ISSUANCE: 7 };\n${names.map(functionSource).join('\n')}`, context);
   context.readAutoStickState = context.autoStickState;
   context.autoStickState = async () => null;
   Object.assign(context, overrides);
@@ -242,13 +242,6 @@ test('auto-stick displays the appended zero-issuance status without treating it 
   assert.match(c.asStatusLine({ info, status: 7, enabled: true }), /too small/);
 });
 
-test('cash-out curve matches core rounding and its 100% tax full-exit exception', () => {
-  const { context: c } = fixture();
-  assert.equal(c.curveReclaim({ sigma: 1000n, supply: 100n, reward: 1000n }, 10n), 91n);
-  assert.equal(c.curveReclaim({ sigma: 1000n, supply: 100n, reward: 0n }, 10n), 100n);
-  assert.equal(c.curveReclaim({ sigma: 1000n, supply: 100n, reward: 10000n }, 100n), 0n);
-});
-
 test('changing nonzero ERC20 allowances resets first and preserves exact requested cap', async () => {
   const { context: c, info } = fixture({ view: async () => uint(25) });
   const txs = await c.tokenApprovalTxs(TOKEN, TERMINAL, 100n, info);
@@ -319,15 +312,67 @@ test('stake rejects zero, tiny normalized amounts, and insufficient balances', a
   assert.equal(plans.length, 0);
 });
 
-test('unstake uses authoritative wallet balance and the exact terminal simulation as minimum', async () => {
-  const { context: c, plans } = fixture({ view: async () => uint(10n ** 18n) });
+// A terminal that answers the unstick views: previewCashOutFrom, feeFreeSurplusOf, FEELESS_ADDRESSES, isFeelessFor.
+const FEELESS = address('f');
+function cashOutRpc({ gross, tax, feeFree = 0n, feeless = false, calls = [] }) {
+  return async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'eth_blockNumber') return '0x99';
+    const data = params[0].data;
+    if (data.startsWith('0x4aa71dbc')) return words(...Array(9).fill(0), gross, tax, 384, 0);
+    if (data.startsWith('0xc66d192b')) return uint(feeFree);
+    if (data.startsWith('0x659a2047')) return uint(BigInt(FEELESS));
+    if (data.startsWith('0x8717d7c2')) return uint(feeless ? 1 : 0);
+    if (data.startsWith('0x13da8317')) return uint(gross);
+    throw new Error(`unexpected call ${data.slice(0, 10)}`);
+  };
+}
+
+test('the unstick quote reads the terminal views at one block and applies its fee rule', async () => {
+  const calls = [];
+  const { context: c, info } = fixture({ rpc: cashOutRpc({ gross: 1_000_000n, tax: 1000n, calls }) });
+  const quote = await c.unstickQuote(12n, info, HOLDER, 10n ** 18n);
+  // Positive tax: the fee is on the whole reclaim, floored like JBFees.standardFeeAmountFrom.
+  assert.deepEqual([quote.gross, quote.fee, quote.net], [1_000_000n, 25_000n, 975_000n]);
+  const preview = calls.find((call) => call.params?.[0]?.data?.startsWith('0x4aa71dbc'));
+  assert.equal(preview.params[1], '0x99');
+  assert.equal(preview.params[0].from, HOLDER);
+  assert.equal(arg(preview.params[0].data, 0), BigInt(HOLDER));
+  assert.equal(arg(preview.params[0].data, 1), 12n);
+  assert.equal(arg(preview.params[0].data, 2), 10n ** 18n);
+  assert.equal(arg(preview.params[0].data, 3), BigInt(TOKEN));
+  assert.equal(arg(preview.params[0].data, 4), BigInt(HOLDER));
+  assert.ok(calls.filter((call) => call.method === 'eth_call').every((call) => call.params[1] === '0x99'));
+  // Zero tax: only the fee-free surplus portion pays the fee.
+  c.rpc = cashOutRpc({ gross: 1_000_000n, tax: 0n, feeFree: 400_000n });
+  assert.deepEqual((await c.unstickQuote(12n, info, HOLDER, 1n)).fee, 10_000n);
+  c.rpc = cashOutRpc({ gross: 1_000_000n, tax: 0n, feeFree: 0n });
+  assert.deepEqual((await c.unstickQuote(12n, info, HOLDER, 1n)).fee, 0n);
+  // A feeless beneficiary pays nothing.
+  c.rpc = cashOutRpc({ gross: 1_000_000n, tax: 1000n, feeless: true });
+  assert.deepEqual((await c.unstickQuote(12n, info, HOLDER, 1n)).net, 1_000_000n);
+  // A hook list, a bad offset, or a tax over 100% is not a quote.
+  for (const bad of [words(...Array(9).fill(0), 1, 1, 384, 1), words(...Array(9).fill(0), 1, 1, 32, 0), words(...Array(9).fill(0), 1, 10001, 384, 0), '0x']) {
+    c.rpc = async (method, params) => method === 'eth_blockNumber' ? '0x99' : params[0].data.startsWith('0x4aa71dbc') ? bad : uint(0);
+    await assert.rejects(c.unstickQuote(12n, info, HOLDER, 1n), /valid unstick quote/);
+  }
+});
+
+test('the unstick dialog quote is the minimum the final review sends', async () => {
+  const { context: c, plans, info } = fixture({ view: async () => uint(10n ** 18n), rpc: cashOutRpc({ gross: 2_000_000n, tax: 1000n }) });
+  c.ctx.pool = { supply: 10n * 10n ** 18n, sigma: 25_000_000n, reward: 1000n, decimals: 6, symbol: 'ART' };
   c.$('unstake-amount').value = '1';
+  await c.renderUnstickQuote();
+  assert.equal(c.$('unstake-quote').textContent,
+    'You get 1.95 ART. 0.5 ART stays with the holders who remain. 0.05 ART goes to the protocol fee. The review uses this as your minimum.');
   await c.unstake();
   const unstick = plans[0].txs.at(-1);
   assert.equal(arg(unstick.data, 0), BigInt(HOLDER));
   assert.equal(arg(unstick.data, 2), 10n ** 18n);
-  assert.equal(arg(unstick.data, 4), 123456n);
-  assert.ok(plans[0].summary.some(([label, value]) => label === 'Minimum you receive' && value === '0.123456 ART'));
+  assert.equal(arg(unstick.data, 4), 1_950_000n);
+  assert.ok(plans[0].summary.some(([label, value]) => label === 'Minimum you receive' && value === '1.95 ART'));
+  assert.ok(Calldata.review(unstick).rows.some(([label, value]) => label === 'MINIMUM RECEIVED' && value === '1.95 ART'));
+  assert.equal(info.stakedToken, TOKEN);
 });
 
 test('unstake rejects excessive amount, quote failures, and malformed return data before review', async () => {
@@ -335,13 +380,20 @@ test('unstake rejects excessive amount, quote failures, and malformed return dat
   c.$('unstake-amount').value = '2';
   await assert.rejects(c.unstake(), /exceeds/);
   c.$('unstake-amount').value = '1';
-  c.rpc = async () => '0x';
-  await assert.rejects(c.unstake(), /valid unstick quote/);
+  c.rpc = async (method) => method === 'eth_blockNumber' ? '0x99' : '0x';
+  await assert.rejects(c.unstake(), /valid unstick quote|invalid ABI word/);
+  // A preflight revert stops the review even when the views priced the exit.
+  const priced = cashOutRpc({ gross: 5n, tax: 0n });
+  c.rpc = async (method, params) => {
+    if (method === 'eth_call' && params[0].data.startsWith('0x13da8317')) throw new Error('execution reverted: JBMultiTerminal_UnderMin');
+    return priced(method, params);
+  };
+  await assert.rejects(c.unstake(), /UnderMin/);
   assert.equal(plans.length, 0);
 });
 
 test('full exits disable fresh auto-stick settings and remove trust/allowance before cashing out', async () => {
-  const { context: c, info, plans } = fixture({ view: async () => uint(10n ** 18n) });
+  const { context: c, info, plans } = fixture({ view: async () => uint(10n ** 18n), rpc: cashOutRpc({ gross: 1n, tax: 0n }) });
   c.autoStickState = async () => ({ info, enabled: true, minimum: 1n, cooldown: 86400, personallyTrusted: true, allowance: 100n });
   c.$('unstake-amount').value = '1';
   await c.unstake();
@@ -352,7 +404,7 @@ test('full exits disable fresh auto-stick settings and remove trust/allowance be
 });
 
 test('zero-return cash outs disclose the burn without claiming any reclaim', async () => {
-  const { context: c, plans } = fixture({ view: async () => uint(10n ** 18n), rpc: async () => uint(0) });
+  const { context: c, plans } = fixture({ view: async () => uint(10n ** 18n), rpc: cashOutRpc({ gross: 0n, tax: 10000n }) });
   c.$('unstake-amount').value = '1';
   await c.unstake();
   assert.match(plans[0].txs.at(-1).label, /without reclaiming/);
