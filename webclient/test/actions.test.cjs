@@ -1,3 +1,5 @@
+// Dates in reward copy are local; pin the zone so the expected dates hold on every machine.
+process.env.TZ = 'UTC';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -41,7 +43,7 @@ const names = [
   'readTranchePage', 'poolBacking', 'homeSecuredSeries', 'asStatusLine', 'renderStickQuote',
   'decodeGroupId', 'isValidGroupId', 'groupIdFromWeeks', 'groupLabel', 'groupSentence', 'groupNote', 'fundGroupId',
   'rewardStakeOf', 'discoverFunding', 'rewardRows', 'stakedRewardGroups', 'vestableRewardGroups',
-  'autoStickState',
+  'autoStickState', 'earnedRewardsOf', 'rewardPosition', 'rewardLines', 'roundSentence', 'dateLabel', 'dateTimeLabel',
 ];
 
 function fixture(overrides = {}) {
@@ -781,4 +783,66 @@ test('sticky transfers reject zero, excessive balances, and self or zero recipie
   c.$('transfer-recipient').value = address('0');
   await assert.rejects(c.transferSticky(), /valid recipient/);
   assert.equal(plans.length, 0);
+});
+
+test('earned rewards sum each finished round pro-rata, capped at what the pot still holds', async () => {
+  const { context: c, info } = fixture({ view: async (to, selector, data) => {
+    if (selector === '0x8a19c8bc') return uint(3);
+    if (selector === '0x5fef1a8a') return uint(0);
+    if (selector === '0xc45c9bf6') {
+      const round = BigInt(`0x${data.slice(-64)}`);
+      // round 0: 1000 pot, 25% of the stake; round 1: 1000 pot but 950 already claimed; round 2: expired.
+      return round === 0n ? words(1000, 12, 0, 0, 100) : round === 1n ? words(1000, 13, 950, 0, 100) : words(1000, 14, 0, 900, 100);
+    }
+    if (selector === '0x3a46b1a8') return uint(25);
+    throw new Error('unexpected read');
+  } });
+  assert.equal(await c.earnedRewardsOf(info, HOLDER, TOKEN), 250n + 50n);
+});
+
+// The Base Sepolia distributor's clock: round 0 started 2026-09-25 00:19:26 UTC and rounds are a week.
+const clock = { round: 2n, roundDuration: 604800n, vestingRounds: 4n, start: 1790295566n };
+clock.startOf = (r) => clock.start + clock.roundDuration * BigInt(r);
+clock.endsAt = clock.startOf(3n);
+
+test('a reward position reads claimable, vesting, and the vesting entries that set its last unlock', async () => {
+  const reads = [];
+  const { context: c, info } = fixture({ view: async (to, selector, data) => {
+    reads.push(selector);
+    if (selector === '0x5710be41') return uint(10);
+    if (selector === '0x51e0706c') return uint(40);
+    if (selector === '0x4d5bf2a8') return uint(1);
+    if (selector === '0xa50ae7da') {
+      const index = BigInt(`0x${data.slice(-64)}`);
+      if (index > 2n) throw new Error('execution reverted');
+      return words(index === 1n ? 5 : 6, 20, 0);
+    }
+    throw new Error(`unexpected read ${selector}`);
+  } });
+  c.earnedRewardsOf = async () => 7n;
+  const position = await c.rewardPosition(info, HOLDER, 4008n, TOKEN, clock);
+  assert.equal(position.collectable, 10n);
+  assert.equal(position.vesting, 30n);
+  assert.equal(position.earned, 7n);
+  assert.equal(position.nextUnlockAt, clock.startOf(3n));
+  assert.equal(position.unlockedAt, clock.startOf(6n));
+});
+
+test('reward copy states the round end, the next unlock, the last unlock, and funding by date', () => {
+  const { context: c } = fixture();
+  const meta = { decimals: 6, symbol: 'ART' };
+  assert.equal(c.roundSentence(clock), `Round 2 ends ${c.dateTimeLabel(clock.endsAt)}. Rewards funded this round are split when it ends. `
+    + 'Your share then vests over 4 rounds, a quarter each week, starting when you collect.');
+  const lines = Object.fromEntries(c.rewardLines({ collectable: 1_000_000n, vesting: 3_000_000n, earned: 2_000_000n,
+    nextUnlockAt: clock.startOf(3n), unlockedAt: clock.startOf(6n) }, meta, 30_000_000n, 10_000_000n, clock));
+  assert.equal(lines['Claimable now'], '1 ART');
+  assert.equal(c.dateLabel(clock.startOf(3n)), 'Oct 16');
+  assert.equal(c.dateLabel(clock.startOf(6n)), 'Nov 6');
+  assert.equal(lines.Vesting, '3 ART. Next unlock Oct 16. All unlocked Nov 6.');
+  assert.equal(lines['Earned, not vesting'], `About 2 ART from finished rounds. Collect to start vesting: a quarter unlocks Oct 16, all by Nov 6.`);
+  assert.equal(lines.Funded, '10 ART this round, splits Oct 16. 30 ART in total.');
+  for (const [, text] of Object.entries(lines)) assert.doesNotMatch(text, /soon|—/);
+  const idle = Object.fromEntries(c.rewardLines({ collectable: 0n, vesting: 0n, earned: 0n, nextUnlockAt: null, unlockedAt: null }, meta, 0n, 0n, clock));
+  assert.equal(idle.Vesting, 'None');
+  assert.equal(idle['Earned, not vesting'], undefined);
 });

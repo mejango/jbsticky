@@ -431,6 +431,16 @@
     border: 1px solid #eccfc6; background: #fdf1ec; color: var(--err); border-radius: 6px;
     padding: 10px 12px; font-size: 13px; margin-bottom: 4px;
   }
+  .reward-list { display: grid; gap: 10px; margin: 8px 0 12px; }
+  .reward-card { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+  .reward-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; }
+  .reward-token { margin-left: auto; }
+  .reward-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 13px; }
+  .reward-kv dt { color: var(--muted); }
+  .reward-kv dd { margin: 0; overflow-wrap: anywhere; }
+  .reward-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .reward-actions button { margin: 0; padding: 6px 12px; }
+  @media (max-width: 520px) { .reward-kv { grid-template-columns: minmax(0, 1fr); gap: 0 0; } .reward-kv dd { margin-bottom: 6px; } }
   .cd-warn.err { border-width: 2px; font-weight: 600; }
   .cd-block { margin: 6px 0; padding: 8px 10px; border-left: 3px solid var(--err); color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
   .cd-chain { font-size: 11px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
@@ -757,10 +767,8 @@
           </section>
           <section>
             <h2>Your rewards</h2>
-            <table>
-              <thead><tr><th>WHO</th><th>TOKEN</th><th>FUNDED</th><th>AVAILABLE</th><th></th></tr></thead>
-              <tbody id="rewards-list"></tbody>
-            </table>
+            <p class="mut" id="rewards-round"></p>
+            <div id="rewards-list" class="reward-list"></div>
             <p class="mut hide" id="rewards-tenure-note">Stake-age rewards pay only stake you still hold. Claim them
               before unsticking; an allocation you exit before claiming stays in the pot.</p>
             <div class="row">

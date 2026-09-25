@@ -52,6 +52,10 @@ const SEL = {
   currentRound: "0x8a19c8bc",
   ROUND_DURATION: "0x6641ea08",
   VESTING_ROUNDS: "0xaf29da14",
+  STARTING_TIMESTAMP: "0x20e9fcd4",
+  claimedFor: "0x51e0706c",
+  latestVestedIndexOf: "0x4d5bf2a8",
+  vestingDataOf: "0xa50ae7da",
   getPastVotes: "0x3a46b1a8",
   previewCashOutFrom: "0x4aa71dbc",
   feeFreeSurplusOf: "0xc66d192b",
@@ -1420,7 +1424,7 @@ async function renderHome() {
         `<div class="kv"><span class="mut">Bonus:</span> ${pct(card.info.reward)}</div>` +
         `</div></div></${card.demo ? "div" : "a"}>`,
       ).join("")
-    : `<div class="card-item mut">no sticky tokens yet — create one</div>`;
+    : `<div class="card-item mut">No Sticky tokens yet. Create one.</div>`;
 
   const activity = await activityItems(logs, true);
   if (!current()) return;
@@ -1526,7 +1530,7 @@ async function renderProject(projectId) {
     + (humanGranters.length
       ? `${humanGranters.length} permanent airdrop sender${humanGranters.length === 1 ? " is" : "s are"} approved for every holder. `
       : "")
-    + (adapterGranter ? "Auto-stick is available — holders turn it on with an allowance and settings. " : "")
+    + (adapterGranter ? "Auto-stick is available. Holders turn it on with an allowance and settings. " : "")
     + "Holders can also approve trusted senders to stick for them.";
   const meta = (label, value, title = "") =>
     `<span class="token-meta"${title ? ` title="${esc(title)}"` : ""}><b>${label}:</b><span>${value}</span></span>`;
@@ -1947,7 +1951,7 @@ function installTxRecoveryUI() {
 async function auditPrompt() {
   const chainIds = [...new Set(confirmPlan.map((tx) => Number(tx.chainId ?? ctx.chainId)))];
   const lines = [
-    "Audit these Ethereum transactions before I sign them. Do not assume good intent — verify everything.",
+    "Audit these Ethereum transactions before I sign them. Do not assume good intent. Verify everything.",
     `Chain ids: ${chainIds.join(", ")}. Reviewed account: ${confirmPlan[0]?.from || txAccount()}. App: Sticky webclient (${location.origin}).`,
     `Stated intent: ${$("cd-title").textContent}.`,
     "",
@@ -2174,7 +2178,7 @@ function renderOriginPills() {
   $("r-origin").replaceChildren(...origins.map((origin) => {
     const option = document.createElement("option");
     option.value = origin.key;
-    option.textContent = origin.chainId === ctx.chainId ? `${origin.label} — this chain` : origin.label;
+    option.textContent = origin.chainId === ctx.chainId ? `${origin.label} (this chain)` : origin.label;
     return option;
   }));
   $("r-origin").value = originKey;
@@ -2347,7 +2351,7 @@ async function renderBridgeFunding() {
       container.style.cssText = "border-top:1px solid var(--line);padding:12px 0;overflow-wrap:anywhere";
       const amount = item.row?.leaf.projectTokenCount || BigInt(item.record.amount);
       const meta = item.route.sourceMeta || { symbol: shortAddr(item.route.sourceToken), decimals: 18 };
-      const labels = { queued: "Queued on origin — ready to send", "in-flight": "Crossing chains — refresh after the bridge delivers", claimable: "Arrived — ready to claim into rewards", claimed: "Claimed into the receiver — settle any remaining balance below", recover: "Saved transfer — review its wallet status before continuing" };
+      const labels = { queued: "Queued on the origin chain. Ready to send.", "in-flight": "Crossing chains. Refresh after the bridge delivers.", claimable: "Arrived. Ready to claim into rewards.", claimed: "Claimed into the receiver. Settle any remaining balance below.", recover: "Saved transfer. Review its wallet status before continuing." };
       const summary = document.createElement("p");
       summary.textContent = `${formatUnits(amount, meta.decimals, meta.decimals)} ${meta.symbol}: ${labels[item.status]}`;
       container.append(summary);
@@ -2668,9 +2672,10 @@ async function rewardStakeOf(info, holder, groupId, round, snapshotBlock) {
   return (await through(hi)) - (lo === 0n ? 0n : await through(lo - 1n));
 }
 
-// A successful beginVesting simulation can still be a no-op. Read the holder's unresolved completed rounds
-// and their share before asking them to pay for a vesting-only transaction.
-async function hasRewardsToVest(info, holder, token, groupId = 0n) {
+// What a holder earned in finished rounds that has not started vesting yet, summed the way the distributor
+// materializes it: each round's pot pro-rata to the holder's weight, capped at what the pot still holds.
+// Collecting (or beginVesting) moves it into a vesting entry.
+async function earnedRewardsOf(info, holder, token, groupId = 0n, { any = false } = {}) {
   const [roundHex, cursorHex, block] = await Promise.all([
     view(distributor(), SEL.currentRound),
     view(distributor(), SEL.nextClaimRoundOf, encAddress(info.stToken) + word(groupId) + encAddress(holder) + encAddress(token)),
@@ -2681,6 +2686,7 @@ async function hasRewardsToVest(info, holder, token, groupId = 0n) {
   const now = BigInt(block.timestamp);
   // Keep unusual distributor histories bounded. Existing unlocked rewards can always be collected directly.
   if (round > cursor + 4096n) throw new Error("reward history is too large to check; use a distributor client to start unlocking");
+  let earned = 0n;
   for (let start = cursor; start < round; start += 16n) {
     const rounds = [];
     for (let value = start; value < round && value < start + 16n; value++) rounds.push(value);
@@ -2689,14 +2695,107 @@ async function hasRewardsToVest(info, holder, token, groupId = 0n) {
     for (const [index, state] of states.entries()) {
       const amount = decUint(state, 0);
       const snapshot = decUint(state, 1);
+      const claimedAmount = decUint(state, 2);
       const deadline = decUint(state, 3);
       const totalStake = decUint(state, 4);
       if (amount === 0n || totalStake === 0n || (deadline !== 0n && now >= deadline)) continue;
       const stake = await rewardStakeOf(info, holder, groupId, rounds[index], snapshot);
-      if (amount * stake / totalStake > 0n) return true;
+      const share = amount * stake / totalStake;
+      const left = amount > claimedAmount ? amount - claimedAmount : 0n;
+      earned += share < left ? share : left;
+      if (any && earned > 0n) return earned;
     }
   }
-  return false;
+  return earned;
+}
+
+// A successful beginVesting simulation can still be a no-op. Read the holder's unresolved completed rounds
+// and their share before asking them to pay for a vesting-only transaction.
+async function hasRewardsToVest(info, holder, token, groupId = 0n) {
+  return (await earnedRewardsOf(info, holder, token, groupId, { any: true })) > 0n;
+}
+
+// The distributor's round clock. Its immutables are read once per chain; the current round is read fresh.
+// Round r starts at STARTING_TIMESTAMP + ROUND_DURATION * r, the same formula as roundStartTimestamp(r).
+const rewardClockCache = new Map();
+async function rewardSchedule() {
+  const d = distributor();
+  const key = `${ctx.chainId}:${d}`.toLowerCase();
+  if (!rewardClockCache.has(key)) {
+    const pending = Promise.all([SEL.ROUND_DURATION, SEL.VESTING_ROUNDS, SEL.STARTING_TIMESTAMP].map((selector) => view(d, selector).then(decUint)))
+      .then(([roundDuration, vestingRounds, start]) => {
+        if (roundDuration === 0n || vestingRounds === 0n) throw new Error("the distributor returned an invalid round schedule");
+        return { roundDuration, vestingRounds, start };
+      });
+    pending.catch(() => rewardClockCache.delete(key));
+    rewardClockCache.set(key, pending);
+  }
+  const clock = await rewardClockCache.get(key);
+  const round = decUint(await view(d, SEL.currentRound));
+  const startOf = (r) => clock.start + clock.roundDuration * BigInt(r);
+  return { ...clock, round, startOf, endsAt: startOf(round + 1n) };
+}
+
+// A holder's standing in one reward pot: claimable now, vesting (and when it unlocks), and earned in
+// finished rounds but not vesting yet. Every amount comes from the distributor's views.
+async function rewardPosition(info, holder, groupId, token, schedule) {
+  const d = distributor();
+  const key = encAddress(info.stToken) + word(groupId) + encAddress(holder) + encAddress(token);
+  const [collectable, claimed, latest, earned] = await Promise.all([
+    view(d, SEL.collectableFor, key).then(decUint),
+    view(d, SEL.claimedFor, key).then(decUint),
+    view(d, SEL.latestVestedIndexOf, key).then(decUint),
+    earnedRewardsOf(info, holder, token, groupId),
+  ]);
+  const vesting = claimed > collectable ? claimed - collectable : 0n;
+  let lastRelease = 0n;
+  if (vesting > 0n) {
+    // Entries past the end revert; a holder has one entry per collection, so a few reads cover it.
+    for (let index = latest; index < latest + 32n; index++) {
+      let entry;
+      try { entry = await view(d, SEL.vestingDataOf, key + word(index)); } catch { break; }
+      const release = decUint(entry, 0);
+      if (release > lastRelease) lastRelease = release;
+    }
+  }
+  return {
+    collectable, vesting, earned,
+    nextUnlockAt: vesting > 0n ? schedule.startOf(schedule.round + 1n) : null,
+    unlockedAt: vesting > 0n && lastRelease > schedule.round ? schedule.startOf(lastRelease) : null,
+  };
+}
+
+function dateLabel(seconds) {
+  return new Date(Number(seconds) * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+function dateTimeLabel(seconds) {
+  return new Date(Number(seconds) * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+// The round line above the reward pots.
+function roundSentence(schedule) {
+  const weeks = schedule.roundDuration === 604_800n ? "week" : formatDuration(schedule.roundDuration);
+  return `Round ${schedule.round} ends ${dateTimeLabel(schedule.endsAt)}. Rewards funded this round are split when it ends. `
+    + `Your share then vests over ${schedule.vestingRounds} rounds, a ${schedule.vestingRounds === 4n ? "quarter" : `1/${schedule.vestingRounds}`} each ${weeks}, starting when you collect.`;
+}
+
+// One pot's lines, stating amounts and dates. Pure so the copy is tested.
+function rewardLines(position, meta, funded, fundedThisRound, schedule) {
+  const amt = (value) => `${formatUnits(value, meta.decimals)} ${meta.symbol}`;
+  const lines = [["Claimable now", amt(position.collectable)]];
+  if (position.vesting > 0n) {
+    lines.push(["Vesting", `${amt(position.vesting)}. Next unlock ${dateLabel(position.nextUnlockAt)}.`
+      + (position.unlockedAt && position.unlockedAt !== position.nextUnlockAt ? ` All unlocked ${dateLabel(position.unlockedAt)}.` : "")]);
+  } else {
+    lines.push(["Vesting", "None"]);
+  }
+  if (position.earned > 0n) {
+    const last = schedule.startOf(schedule.round + schedule.vestingRounds);
+    lines.push(["Earned, not vesting", `About ${amt(position.earned)} from finished rounds. Collect to start vesting: `
+      + `a ${schedule.vestingRounds === 4n ? "quarter" : "share"} unlocks ${dateLabel(schedule.endsAt)}, all by ${dateLabel(last)}.`]);
+  }
+  lines.push(["Funded", `${amt(fundedThisRound)} this round, splits ${dateLabel(schedule.endsAt)}. ${amt(funded)} in total.`]);
+  return lines;
 }
 
 async function requireTokenBalance(token, holder, amount, meta) {
@@ -2819,51 +2918,64 @@ async function renderRewards() {
   $("rr-hook").textContent = distributor();
   $("rr-beneficiary").textContent = info.stToken;
   renderRecipeGroup();
+  let schedule = null;
+  try { schedule = await rewardSchedule(); } catch (error) { console.error("reward schedule failed", error); }
+  if (!current()) return;
+  $("rewards-round").textContent = schedule ? roundSentence(schedule) : "The reward round could not be read. Refresh to try again.";
   const entries = [];
   for (const row of rows) {
     const meta = await rewardTokenMeta(row.token).catch(() => null);
     if (!current()) return;
     // Bad token metadata must not hide valid rewards.
-    if (!meta) continue;
-    const collectable = holder
-      ? await view(distributor(), SEL.collectableFor, encAddress(info.stToken) + word(row.groupId) + encAddress(holder) + encAddress(row.token)).then(decUint).catch(() => 0n)
-      : 0n;
+    if (!meta || !schedule) continue;
+    const [position, roundState] = await Promise.all([
+      holder
+        ? rewardPosition(info, holder, row.groupId, row.token, schedule).catch(() => null)
+        : null,
+      view(distributor(), SEL.rewardRoundOf, encAddress(info.stToken) + word(row.groupId) + encAddress(row.token) + word(schedule.round)).catch(() => null),
+    ]);
     if (!current()) return;
-    if (row.funded === 0n && collectable === 0n && !(row.groupId === 0n && row.token === info.stakedToken.toLowerCase())) continue;
-    entries.push({ ...row, meta, collectable });
+    const empty = { collectable: 0n, vesting: 0n, earned: 0n, nextUnlockAt: null, unlockedAt: null };
+    const mine = position || empty;
+    const fundedThisRound = roundState ? decUint(roundState, 0) : 0n;
+    if (row.funded === 0n && fundedThisRound === 0n && mine.collectable === 0n && mine.vesting === 0n && mine.earned === 0n
+      && !(row.groupId === 0n && row.token === info.stakedToken.toLowerCase())) continue;
+    entries.push({ ...row, meta, position: mine, fundedThisRound, collectable: mine.collectable });
   }
   await renderAutoStick();
   if (!current()) return;
-  const tbody = $("rewards-list");
-  tbody.innerHTML = "";
+  const list = $("rewards-list");
+  list.innerHTML = "";
   for (const entry of entries) {
     // The underlying-token row defaults to one-click claim-and-stick wherever the hook accepts the adapter as
     // payer (creator pre-approval or personal trust); every other reward token keeps normal claiming.
-    let action = `<button type="button" class="ghost" style="margin:0;padding:4px 10px" data-claim>Claim</button>`;
+    const { position } = entry;
+    const collectLabel = position.collectable > 0n ? "Collect" : position.earned > 0n ? "Start vesting" : "";
+    let action = collectLabel ? `<button type="button" class="ghost" data-claim>${collectLabel}</button>` : "";
     const as = ctx.autoStick;
     const canStick = as && (as.projectGranter || as.personallyTrusted);
-    if (entry.token === info.stakedToken.toLowerCase() && canStick && entry.collectable > 0n) {
-      action = `<button type="button" style="margin:0;padding:4px 10px" data-claim-stick>Claim &amp; stick</button>`
-        + `<div style="margin-top:2px"><button type="button" class="link text-button" style="font-size:12px" data-claim>Claim only</button></div>`;
+    if (entry.token === info.stakedToken.toLowerCase() && canStick && position.collectable > 0n) {
+      action = `<button type="button" data-claim-stick>Claim &amp; stick</button><button type="button" class="ghost" data-claim>Collect only</button>`;
     }
-    const row = document.createElement("tr");
-    row.innerHTML = `<td>${esc(groupLabel(entry.groupId))}</td><td>${esc(entry.meta.symbol)}</td>`
-      + `<td>${formatUnits(entry.funded, entry.meta.decimals)}</td>`
-      + `<td>${formatUnits(entry.collectable, entry.meta.decimals)}</td>`
-      + `<td style="min-width:80px">${action}</td>`;
-    row.querySelector("[data-claim]").onclick = guard(() => claimReward(entry.token, entry.groupId));
-    const claimAndStickButton = row.querySelector("[data-claim-stick]");
-    if (claimAndStickButton) claimAndStickButton.onclick = guard(claimAndStick);
-    tbody.appendChild(row);
+    const card = document.createElement("div");
+    card.className = "reward-card";
+    card.innerHTML = `<div class="reward-head"><b>${esc(groupLabel(entry.groupId))}</b> <span class="mut">group ${esc(entry.groupId)}</span>`
+      + `<span class="reward-token">${tok(entry.token, entry.meta.symbol)}</span></div>`
+      + `<dl class="reward-kv">${rewardLines(position, entry.meta, entry.funded, entry.fundedThisRound, schedule)
+        .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`
+      + (action ? `<div class="reward-actions">${action}</div>` : "");
+    card.querySelector("[data-claim]")?.addEventListener("click", guard(() => claimReward(entry.token, entry.groupId)));
+    card.querySelector("[data-claim-stick]")?.addEventListener("click", guard(claimAndStick));
+    list.appendChild(card);
   }
-  if (!tbody.children.length) tbody.innerHTML = `<tr><td colspan="5" class="mut">no rewards yet — fund some</td></tr>`;
+  if (!list.children.length) list.innerHTML = `<div class="reward-card mut">No rewards yet. Send some with the button above.</div>`;
   $("rewards-tenure-note").classList.toggle("hide", !entries.some((entry) => entry.groupId !== 0n));
   if (typeof renderBridgeFunding === "function") await renderBridgeFunding();
 }
 
 function renderRecipeGroup() {
   const { groupId, text } = groupNote($("rr-min-weeks").value, $("rr-max-weeks").value);
-  $("rr-group").textContent = groupId === null ? "–" : `${groupId} — ${groupLabel(groupId)}`;
+  $("rr-group").textContent = groupId === null ? "–" : `${groupId} (${groupLabel(groupId)})`;
   $("rr-group-note").textContent = text;
 }
 
@@ -2901,7 +3013,7 @@ async function fundRewards() {
     data: SEL.fund + encode(["address", "address", "uint256", "uint256"], [info.stToken, tokenAddr, amount, groupId]),
     ...(native ? { value: `0x${amount.toString(16)}`, valueNote: "the reward itself" } : {}),
   });
-  if (!(await reviewAction(action, `Fund stuck holders — ${pretty}`, txs, [["Send", pretty], ["To", who], ["How", groupSentence(groupId)]]))) return;
+  if (!(await reviewAction(action, `Fund stuck holders: ${pretty}`, txs, [["Send", pretty], ["To", who], ["How", groupSentence(groupId)]]))) return;
   try { $("fund-dialog").close(); } catch {}
   (rewardTokens[ctx.currentId.toString()] ??= new Set()).add(tokenAddr.toLowerCase());
   txStatus("Sticks funded", "ok");
@@ -2976,8 +3088,8 @@ async function unlockScheduleOf() {
 // One plain-language sentence describing how gradually rewards unlock, or "" when instant / unknown.
 function unlockScheduleSentence(sched) {
   if (!sched || sched.rounds <= 1) return "";
-  return `Rewards unlock gradually — about ${Math.round(100 / sched.rounds)}% every ${formatDuration(sched.roundDuration)}, `
-    + `fully unlocked ${formatDuration(sched.total)} after unlocking starts.`;
+  return `Rewards unlock over ${sched.rounds} rounds, about ${Math.round(100 / sched.rounds)}% every ${formatDuration(sched.roundDuration)}, `
+    + `all of it ${formatDuration(sched.total)} after unlocking starts.`;
 }
 let asCooldownChoice = 604_800;
 let asAllowanceChoice = "unlimited";
@@ -3344,7 +3456,7 @@ async function claimAndStick() {
   if (!state) return;
   const { info } = state;
   const { groupIds, collectable } = await stakedRewardGroups(info, holder);
-  if (collectable === 0n) throw new Error("nothing claimable yet — rewards unlock after the round ends");
+  if (collectable === 0n) throw new Error("nothing is claimable yet. Rewards unlock a round after you collect them");
   // A pending trust step cannot be assumed by a read-only preview. The adapter itself quotes after setup and
   // rejects zero issuance atomically; show a numeric estimate only when the actual payer can preview now.
   const expectedMint = state.projectGranter || state.personallyTrusted
@@ -3494,7 +3606,7 @@ async function stake() {
       ),
   });
   const receipt = `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`;
-  if (!(await reviewAction(action, `Stick — ${pretty}`, txs, [
+  if (!(await reviewAction(action, `Stick ${pretty}`, txs, [
     ["Stick", pretty], ["Beneficiary", beneficiary], ["Minimum Sticky tokens", receipt],
   ]))) return;
   txStatus("Stick confirmed", "ok");
@@ -3675,7 +3787,7 @@ async function unstake() {
     ],
     data: encodeUnstake(reclaim),
   });
-  if (!(await reviewAction(action, `Unstick — ${pretty}`, txs, [["Unstick", pretty], ["Minimum you receive", receive]]))) return;
+  if (!(await reviewAction(action, `Unstick ${pretty}`, txs, [["Unstick", pretty], ["Minimum you receive", receive]]))) return;
   try { $("unstick-dialog").close(); } catch {}
   txStatus("Unstick confirmed", "ok");
   await renderProject(ctx.currentId);
@@ -4074,7 +4186,7 @@ function chooseStickyLaunchPayment(options, session) {
   $("sl-funding").classList.remove("hide");
   $("sl-funding").innerHTML = `<label for="sl-payment-chain">Pay the launch quote on</label><select id="sl-payment-chain"><option value="">Choose a quoted chain</option>${options.map((payment, i) => {
     const details = client.paymentDetails(payment, session.quote.bundle_uuid);
-    return `<option value="${i}">${esc(chainById(details.chainId)?.name || details.chainId)} — ${formatUnits(details.amount, 18, 18)} ETH</option>`;
+    return `<option value="${i}">${esc(chainById(details.chainId)?.name || details.chainId)}: ${formatUnits(details.amount, 18, 18)} ETH</option>`;
   }).join("")}</select><p class="mut">One payment covers the quoted destination gas and creation fees. You will review the exact amount before paying.</p><button type="button" id="sl-review-payment" disabled>Review payment</button>`;
   return new Promise((resolve) => {
     stickyLaunchChoiceResolve = (payment) => { $("sl-funding").classList.add("hide"); resolve(payment); };
@@ -4915,7 +5027,7 @@ $("cd-confirm").onclick = (event) => {
 $("cd-close").onclick = () => settleConfirm(false);
 $("cd-audit").onclick = guard(async () => {
   await navigator.clipboard.writeText(await auditPrompt());
-  inlineStatus($("cd-audit"), "Audit prompt copied — paste it into your AI.", "ok");
+  inlineStatus($("cd-audit"), "Audit prompt copied. Paste it into your AI.", "ok");
 });
 $("tx-status-close").onclick = () => txStatus("");
 $("confirm-dialog").oncancel = (event) => { event.preventDefault(); settleConfirm(false); };
