@@ -845,4 +845,5 @@ test('reward copy states the round end, the next unlock, the last unlock, and fu
   const idle = Object.fromEntries(c.rewardLines({ collectable: 0n, vesting: 0n, earned: 0n, nextUnlockAt: null, unlockedAt: null }, meta, 0n, 0n, clock));
   assert.equal(idle.Vesting, 'None');
   assert.equal(idle['Earned, not vesting'], undefined);
+  assert.equal(idle.Funded, 'None this round. 0 ART in total.');
 });

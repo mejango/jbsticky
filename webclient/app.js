@@ -858,15 +858,25 @@ async function projectIds() {
   return logs.map((log) => decUint(log.topics[1]));
 }
 
+const POSITION_TOPICS = [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded];
 // Hook logs for a project (or all projects when undefined), with block timestamps attached.
 async function hookLogs(projectId) {
   const projectTopic = projectId === undefined ? null : "0x" + word(projectId);
-  const logs = await getLogs(ctx.hook, [
-    [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded],
-    projectTopic,
-  ]);
+  const logs = await getLogs(ctx.hook, [POSITION_TOPICS, projectTopic]);
   return attachTimestamps(logs);
 }
+
+// One scan per project view: position events plus the launch granters and every holder's trusted senders,
+// all indexed by project. Timestamps are attached to position events only. Kept for the view's lifetime
+// so the 15-second position refresh never rescans history.
+async function projectLogs(projectId) {
+  const all = await getLogs(ctx.hook, [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender], "0x" + word(projectId)]);
+  const position = all.filter((log) => POSITION_TOPICS.includes(log.topics[0]));
+  await attachTimestamps(position);
+  ctx.projectLogs = { chainId: ctx.chainId, projectId: BigInt(projectId), all, position };
+  return ctx.projectLogs;
+}
+const cachedProjectLogs = (projectId) => ctx.projectLogs?.chainId === ctx.chainId && ctx.projectLogs.projectId === BigInt(projectId) ? ctx.projectLogs : null;
 
 // Per-holder rows for a project, from the hook's own events: every Staked and Unstaked carries the holder's
 // resulting balance, StreakStarted marks the streak's start and StreakEnded its length. No per-holder reads,
@@ -1638,8 +1648,10 @@ async function renderProject(projectId) {
     ? `cash out tax: ${pct(info.reward)} | reclaim depends on your share of the pool | newest tranche first | streak resets only at zero`
     : `no cash out tax | review the exact reclaim and any fees | newest tranche first | streak resets only at zero`;
 
-  const logs = await hookLogs(projectId);
+  ctx.projectLogs = null;
+  const scanned = await projectLogs(projectId);
   if (!current()) return;
+  const logs = scanned.position;
   const rows = holderRows(projectId, logs);
   const pool = await poolBacking(projectId, info);
   if (!current()) return;
@@ -1681,12 +1693,7 @@ async function renderProject(projectId) {
   if (!current()) return;
 
   // OWNERS: token info, pie, leaderboard.
-  let granters = [];
-  try {
-    const granterLogs = await getLogs(ctx.hook, [TOPIC.SetGranter, "0x" + word(projectId)]);
-    granters = [...new Set(granterLogs.map((log) => decAddress(log.topics[2])))];
-  } catch {}
-  if (!current()) return;
+  const granters = [...new Set(scanned.all.filter((log) => log.topics[0] === TOPIC.SetGranter).map((log) => decAddress(log.topics[2])))];
   const transferMode = info.soulbound ? "No" : "Yes";
   const transferRule = info.soulbound
     ? "Transfers are disabled. Sticky tokens are minted by sticking. Unsticking burns them; a voluntary burn returns no backing."
@@ -2154,8 +2161,16 @@ async function renderTrustedSenders() {
   const isCurrent = currentView();
   const idArg = word(ctx.currentId);
   // Candidates come from the holder's trust events; current state is re-read from the contract.
-  const logs = await getLogs(ctx.hook, [TOPIC.SetTrustedSender, "0x" + idArg, "0x" + encAddress(account())]);
+  // Candidates come from the view's one project scan, or one holder scan kept until the holder changes trust.
+  const holderTopic = "0x" + encAddress(account());
+  const key = `${ctx.chainId}:${ctx.currentId}:${holderTopic}`;
+  let scanned = cachedProjectLogs(ctx.currentId)?.all ?? (ctx.trustLogs?.key === key ? ctx.trustLogs.logs : null);
+  if (!scanned) {
+    scanned = await getLogs(ctx.hook, [TOPIC.SetTrustedSender, "0x" + idArg, holderTopic]);
+    ctx.trustLogs = { key, logs: scanned };
+  }
   if (!isCurrent()) return;
+  const logs = scanned.filter((log) => log.topics[0] === TOPIC.SetTrustedSender && log.topics[2]?.toLowerCase() === holderTopic);
   // The auto-stick adapter's trust is presented through the auto-stick card, not as a generic airdropper.
   const candidates = [...new Set(logs.map((log) => decAddress(log.topics[3])))]
     .filter((sender) => sender.toLowerCase() !== (autoStickAdapter() || "").toLowerCase());
@@ -2197,6 +2212,7 @@ async function setTrust(sender, trusted) {
   }];
   if (!(await reviewAction(action, `${trusted ? "Trust" : "Untrust"} ${shortAddr(sender)}`, txs))) return;
   txStatus(trusted ? "Sender trusted" : "Sender untrusted", "ok");
+  ctx.projectLogs = ctx.trustLogs = null;
   await renderTrustedSenders();
 }
 
@@ -2965,7 +2981,8 @@ function rewardLines(position, meta, funded, fundedThisRound, schedule) {
     lines.push(["Earned, not vesting", `About ${amt(position.earned)} from finished rounds. Collect to start vesting: `
       + `a ${schedule.vestingRounds === 4n ? "quarter" : "share"} unlocks ${dateLabel(schedule.endsAt)}, all by ${dateLabel(last)}.`]);
   }
-  lines.push(["Funded", `${amt(fundedThisRound)} this round, splits ${dateLabel(schedule.endsAt)}. ${amt(funded)} in total.`]);
+  lines.push(["Funded", (fundedThisRound > 0n ? `${amt(fundedThisRound)} this round, splits ${dateLabel(schedule.endsAt)}.` : "None this round.")
+    + ` ${amt(funded)} in total.`]);
   return lines;
 }
 
@@ -5202,7 +5219,9 @@ $("cd-audit").onclick = guard(async () => {
 });
 $("tx-status-close").onclick = () => txStatus("");
 $("confirm-dialog").oncancel = (event) => { event.preventDefault(); settleConfirm(false); };
+// The close event arrives a task later; a review reopened in the meantime is not closed by it.
 $("confirm-dialog").addEventListener("close", () => {
+  if ($("confirm-dialog").open) return;
   if (confirmResolve) settleConfirm(false);
   restoreReplacedDialogs();
 });

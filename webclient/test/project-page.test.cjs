@@ -186,3 +186,45 @@ test('the review replaces the dialog it came from and brings it back only when c
   c.restoreReplacedDialogs();
   assert.equal(fund.open, false);
 });
+
+// ---------------------------------------------------------------- one scan per view
+test('a project view scans the hook once; granters and trusted senders reuse it, and a trust change rescans', async () => {
+  const scans = [];
+  const holder = HOLDER_A;
+  const fields = new Map();
+  const c = context({
+    ctx: { chainId: 84532, currentId: 7n, hook: addr('4') },
+    account: () => holder,
+    autoStickAdapter: () => addr('5'),
+    currentView: () => () => true,
+    guard: (fn) => fn,
+    esc: (value) => String(value),
+    attachTimestamps: async (logs) => logs,
+    $: (id) => { if (!fields.has(id)) fields.set(id, { innerHTML: '', querySelectorAll: () => [] }); return fields.get(id); },
+    view: async () => '0x' + word(1),
+  }, ['projectLogs', 'renderTrustedSenders']);
+  const T = c.TOPIC;
+  const trust = (who, sender) => ({ topics: [T.SetTrustedSender, '0x' + word(7), '0x' + word(BigInt(who)), '0x' + word(BigInt(sender))], data: '0x' + word(1) });
+  const all = [
+    { topics: [T.SetGranter, '0x' + word(7), '0x' + word(BigInt(addr('5')))], data: '0x' },
+    trust(holder, addr('6')), trust(HOLDER_B, addr('7')), trust(holder, addr('5')),
+    { topics: [T.Staked, '0x' + word(7), '0x' + word(BigInt(holder))], data: '0x' },
+  ];
+  c.getLogs = async (address, topics) => { scans.push(topics); return all.filter((log) => [].concat(topics[0]).includes(log.topics[0])); };
+  vm.runInContext(`const POSITION_TOPICS = [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded];
+    const cachedProjectLogs = (projectId) => ctx.projectLogs?.chainId === ctx.chainId && ctx.projectLogs.projectId === BigInt(projectId) ? ctx.projectLogs : null;`, c);
+  const scanned = await c.projectLogs(7n);
+  assert.equal(scans.length, 1);
+  assert.equal(scanned.position.length, 1);
+  await c.renderTrustedSenders();
+  await c.renderTrustedSenders();
+  assert.equal(scans.length, 1, 'the 15-second refresh reuses the view scan');
+  // Only this holder's senders, and AutoStick is shown on its own card instead.
+  assert.match(fields.get('trusted-list').innerHTML, new RegExp(addr('6')));
+  assert.doesNotMatch(fields.get('trusted-list').innerHTML, new RegExp(addr('7') + '|' + addr('5')));
+  // After a trust change the cache is dropped: one holder scan, then reused.
+  c.ctx.projectLogs = null;
+  await c.renderTrustedSenders();
+  await c.renderTrustedSenders();
+  assert.equal(scans.length, 2);
+});
