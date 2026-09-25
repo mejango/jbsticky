@@ -4638,7 +4638,6 @@ $("trust-close").onclick = () => $("trust-dialog").close();
 $("trust-dialog").onclick = (event) => {
   if (event.target === $("trust-dialog")) $("trust-dialog").close();
 };
-$("conn-toggle").onclick = () => $("connection-dialog").showModal();
 $("connection-close").onclick = () => $("connection-dialog").close();
 $("connection-dialog").onclick = (event) => {
   if (event.target === $("connection-dialog")) $("connection-dialog").close();
