@@ -81,6 +81,8 @@ For cross-chain rewards, `StickyRewardReceiverFactory` predicts and deploys a `S
 | `StickyRewardReceiverFactory` | Predicts/deploys reward receivers per Sticky token and group and settles their balances into the distributor. |
 | `StickyRewardReceiver` | Holds arriving reward tokens for one destination Sticky token and group and its bound distributor. |
 
+The deployer, hook, distributor and AutoStick accept core's ERC-2771 forwarder, so a sponsor can relay a launch or a holder's trust updates, auto-stick settings, claims and funding on the signer's behalf. Staking and unstaking already relay through the core terminal.
+
 Project rules do not expire. Reserved issuance and fund access limits are zero. The factory retains no callable path to change project rules, metadata, token, controller, terminals, price feed, or ownership after launch. Core flags needed to attach the custom token and feed are enabled during construction; immutability follows from the factory's exposed operations, not a claim that every metadata flag is disabled. These contracts still depend on the configured core release and the underlying token's behavior.
 
 ## Develop and check

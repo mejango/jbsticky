@@ -20,7 +20,7 @@ for findings, fixes, and remaining economic/recovery limits.
 
 - Sticky base commit: `584c6322584a0c85f5fe2e32c2f572822cbb4d1d`, plus this checkout's reviewed changes. Rehearsal manifests correctly record `-dirty` until the changes are committed.
 - Core: `feff600654aee6fb1747dded692f18068b2230a6` (`1.2.1`).
-- Distributor: `79af754e642b648347aba0c7df8a3398215e74a5`.
+- Distributor: `44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5`.
 - Node 22.23.1; Foundry 1.8.1; solc 0.8.28; Sphinx plugins 0.33.3.
 - Public `sphinx.lock` and the registered `sticky` project with its 1-of-3 `V6 Jango` Safe.
 - Existing RPC/service configuration loaded through `STICKY_ENV_FILE=../../deploy-all-v6/.env`. No credentials are copied into this report.

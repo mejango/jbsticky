@@ -6,6 +6,7 @@ pragma solidity 0.8.28;
 import {IJBTerminal} from "@bananapus/core-v6/src/interfaces/IJBTerminal.sol";
 import {IJBToken} from "@bananapus/core-v6/src/interfaces/IJBToken.sol";
 import {IJBTokens} from "@bananapus/core-v6/src/interfaces/IJBTokens.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -26,7 +27,7 @@ import {AutoStickConfig} from "./structs/AutoStickConfig.sol";
 /// execute, and immutable — keepers never hold funds and cannot choose the project, token, amount, or beneficiary.
 /// @dev Best effort: rewards collected to the holder before execution must be staked separately. Callers choose the
 /// reward groups to collect from; the holder's minimum applies to the combined amount.
-contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
+contract StickyAutoStick is ERC2771Context, ReentrancyGuard, IStickyAutoStick {
     // A library that safely approves and transfers the project's underlying token.
     using SafeERC20 for IERC20Metadata;
 
@@ -151,7 +152,13 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
     /// @notice Creates an adapter bound to one Sticky deployer and rewards distributor.
     /// @param deployer The deployer whose sticky projects this adapter serves.
     /// @param distributor The distributor vested rewards are collected from.
-    constructor(IStickyDeployer deployer, IStickyDistributor distributor) {
+    constructor(
+        IStickyDeployer deployer,
+        IStickyDistributor distributor
+    )
+        // Trust the deployer's forwarder, so a sponsor can relay a holder's configuration and compounds.
+        ERC2771Context(ERC2771Context(address(deployer)).trustedForwarder())
+    {
         // Restrict project resolution to the Sticky deployment this adapter serves.
         DEPLOYER = deployer;
 
@@ -215,7 +222,7 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
         // The immutable distributor starts vesting without transferring tokens or changing adapter configuration.
         // forge-lint: disable-next-item(reentrancy-events)
         emit BeganAutoStickVesting({
-            projectId: projectId, holder: holder, token: address(underlying), groupIds: groupIds, caller: msg.sender
+            projectId: projectId, holder: holder, token: address(underlying), groupIds: groupIds, caller: _msgSender()
         });
     }
 
@@ -265,7 +272,7 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
         }
 
         // Atomically collect and reinvest rewards for the same holder, subject to their configured minimum.
-        // Both asset-moving entry points are nonReentrant; other configuration writes are scoped to msg.sender.
+        // Both asset-moving entry points are nonReentrant; other configuration writes are scoped to the caller.
         // slither-disable-next-line reentrancy-no-eth
         (underlyingAmount, stickyTokenCount) = _collectAndStick({
             projectId: projectId,
@@ -305,7 +312,7 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
         if (cooldown < MIN_COOLDOWN || cooldown > MAX_COOLDOWN) revert StickyAutoStick_InvalidCooldown(cooldown);
 
         // Scope changes to the caller's own position and retain the timestamp of their last successful compound.
-        AutoStickConfig storage config = configOf[projectId][msg.sender];
+        AutoStickConfig storage config = configOf[projectId][_msgSender()];
 
         // Let the holder decide how much reward justifies creating another tranche.
         config.minimumAmount = minimumAmount;
@@ -319,11 +326,11 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
         // Expose the complete configuration so holders and keepers can track changes in eligibility.
         emit SetAutoStick({
             projectId: projectId,
-            holder: msg.sender,
+            holder: _msgSender(),
             enabled: enabled,
             minimumAmount: minimumAmount,
             cooldown: cooldown,
-            caller: msg.sender
+            caller: _msgSender()
         });
     }
 
@@ -358,7 +365,7 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
         // The caller's consent allows any positive reward that issues shares, without an automation cooldown.
         (underlyingAmount, stickyTokenCount) = _collectAndStick({
             projectId: projectId,
-            holder: msg.sender,
+            holder: _msgSender(),
             groupIds: groupIds,
             underlying: underlying,
             stickyToken: stickyToken,
@@ -615,7 +622,7 @@ contract StickyAutoStick is ReentrancyGuard, IStickyAutoStick {
             groupIds: groupIds,
             underlyingAmount: underlyingAmount,
             stickyTokenCount: stickyTokenCount,
-            caller: msg.sender
+            caller: _msgSender()
         });
     }
 
