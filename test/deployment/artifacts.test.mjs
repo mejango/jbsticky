@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { constructorArgs, contracts, emit } from '../../script/artifacts.mjs';
+import { constructorArgs, contracts, emit, trustedForwarder } from '../../script/artifacts.mjs';
 import { networks, suite } from '../../script/deploy.mjs';
 
 const code = '0x6080604052';
@@ -13,7 +13,7 @@ const addresses = {
 const word = value => BigInt(value).toString(16).padStart(64, '0');
 const expectedArgs = {
   StickyDeployer: [addresses.controller, addresses.terminal],
-  StickyHook: [addresses.directory, addresses.deployer],
+  StickyHook: [addresses.directory, addresses.deployer, trustedForwarder],
   StickyDistributor: [addresses.controller, addresses.directory, addresses.hook, '604800', '4', '63072000'],
   StickyRewardReceiverFactory: [addresses.distributor],
   StickyAutoStick: [addresses.deployer, addresses.distributor],
