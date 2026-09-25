@@ -37,7 +37,9 @@
       chainId: Number(tx.chainId), from: tx.from.toLowerCase(), to: tx.to.toLowerCase(),
       data: (tx.data || "0x").toLowerCase(), value: quantity(tx.value ?? "0x0"), rpcUrl: url.href,
       label: String(tx.label || "Transaction"), fn: String(tx.fn || ""),
-      args: Array.isArray(tx.args) ? tx.args.map(([key, value]) => [String(key), String(value)]) : [],
+      // A value is text, or { text, title } for a shortened address with the full one kept.
+      args: Array.isArray(tx.args) ? tx.args.map(([key, value]) => [String(key), value && typeof value === "object"
+        ? { text: String(value.text), title: String(value.title) } : String(value)]) : [],
       ...(tx.chainLabel ? { chainLabel: String(tx.chainLabel) } : {}),
       ...(tx.contractName ? { contractName: String(tx.contractName) } : {}),
       ...(tx.valueLabel ? { valueLabel: String(tx.valueLabel) } : {}),

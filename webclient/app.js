@@ -1676,6 +1676,15 @@ let txRunCancelled = false;
 // Non-transaction steps shown before the transactions, like signing the launch listing.
 let confirmPreSteps = [];
 
+const transactionsLeft = (count) => `${count} transaction${count === 1 ? "" : "s"} left`;
+// Review values wrap at spaces; only addresses and hex may break anywhere.
+// A value is a string, or { text, title } to shorten an address and keep it in the tooltip.
+function reviewValue(value) {
+  const text = typeof value === "object" && value !== null ? value.text : String(value);
+  const html = esc(text).replace(/0x[0-9a-fA-F]{16,}/g, (hex) => `<span class="hexv">${hex}</span>`);
+  return value?.title ? `<span title="${esc(value.title)}">${html}</span>` : html;
+}
+
 function renderConfirmSteps() {
   const card = $("cd-steps");
   card.classList.remove("hide");
@@ -1688,7 +1697,7 @@ function renderConfirmSteps() {
   const uncertain = steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state));
   const intro = done === steps.length ? "All transactions confirmed."
     : uncertain ? "The submitted step will be checked before any remaining transaction is sent."
-      : `${steps.length - done} transaction${steps.length - done === 1 ? " remains" : "s remain"}. Confirmed steps will not be repeated.`;
+      : `${transactionsLeft(steps.length - done)}. Confirmed steps will not be repeated.`;
   const offset = confirmPreSteps.length;
   card.innerHTML = `<p>${esc(intro)}</p>` + confirmPreSteps.map((step, i) =>
     `<div class="cd-step ${step.state}"><i>${step.state === "done" ? "✓" : i + 1}</i><span>${esc(step.label)}<br><small>${esc(step.note)}</small></span></div>`,
@@ -1709,8 +1718,8 @@ function renderConfirm() {
     .join("");
   renderConfirmSteps();
   $("cd-warn").textContent = confirmPlan.length > 1
-    ? "These are the exact transactions that will be sent to your wallet. Nothing is signed until you confirm each one — review before signing."
-    : "This is the exact transaction that will be sent to your wallet. Nothing is signed until you confirm — review before signing.";
+    ? "These are the exact transactions that will be sent to your wallet. Nothing is signed until you confirm each one. Review before signing."
+    : "This is the exact transaction that will be sent to your wallet. Nothing is signed until you confirm. Review before signing.";
   $("cd-body").innerHTML = confirmPlan
     .map((tx, i) => {
       const chain = tx.chainLabel || chainById(tx.chainId ?? ctx.chainId)?.label || "";
@@ -1722,7 +1731,7 @@ function renderConfirm() {
         + `<div class="cd-contract"><b>${esc(tx.contractName || contractNameOf(tx.to))}</b> | ${esc(tx.to)}</div>`
         + `<h3>${step}${esc(tx.label)}</h3>`
         + `<table><tbody>`
-        + rows.map(([k, v]) => `<tr><th style="width:104px">${esc(k)}</th><td style="word-break:break-all">${esc(String(v))}</td></tr>`).join("")
+        + rows.map(([k, v]) => `<tr><th style="width:104px">${esc(k)}</th><td>${reviewValue(v)}</td></tr>`).join("")
         + `</tbody></table>`
         + `<details class="cd-raw"><summary>Show raw data</summary>`
         + `<div class="rawbox">function: ${esc(tx.fn)}\nfrom: ${esc(tx.from || txAccount())}\nto: ${tx.to}\nvalue: ${tx.value ? BigInt(tx.value) : 0} wei\ndata: ${tx.data}</div></details>`
@@ -1896,7 +1905,7 @@ async function auditPrompt() {
       `- chain id: ${tx.chainId ?? ctx.chainId}`,
       `- to: ${tx.to} (expected to be ${tx.contractName || contractNameOf(tx.to)})`,
       `- function: ${tx.fn}`,
-      ...tx.args.map(([k, v]) => `- ${k.toLowerCase()}: ${v}`),
+      ...tx.args.map(([k, v]) => `- ${k.toLowerCase()}: ${v?.title ? `${v.text} (${v.title})` : v}`),
       `- value: ${tx.value ? BigInt(tx.value) : 0} wei`,
       `- raw calldata: ${tx.data}`,
       "",
@@ -3652,13 +3661,13 @@ async function prepareStickyLaunch() {
       to: target.deployer,
       fn: "deployStickyFor(address stakedToken, string name, string symbol, string projectUri, uint256 cashOutTaxRate, address[] granters, bool soulbound)",
       args: [
-        ["LOCKS", `${token} — ${tokenSymbol}`],
+        ["LOCKS", { text: `${shortAddr(token)} (${tokenSymbol})`, title: token }],
         ["NAME", name],
         ["SYMBOL", symbol],
-        ["STICKINESS BONUS", reward > 0n ? `${pct(reward)} cash out tax; part of each unstick stays with the holders who remain` : "none"],
-        ["TRUSTED SENDERS", humanGranters.length ? humanGranters.join(", ") : "none"],
-        ["AUTO-STICK", `${target.autoStickAdapter}, trusted; each holder still opts in`],
-        ["TRANSFERS", soulbound ? "locked" : "unlocked — transfers restart the stickiness clock"],
+        ["STICKINESS BONUS", reward > 0n ? `${pct(reward)} cash out tax. Part of each unstick stays with the holders who remain.` : "None"],
+        ["TRUSTED SENDERS", humanGranters.length ? humanGranters.join(", ") : "None"],
+        ["AUTO-STICK", { text: `AutoStick ${shortAddr(target.autoStickAdapter)}, trusted. Each holder still opts in.`, title: target.autoStickAdapter }],
+        ["TRANSFERS", soulbound ? "Locked. The token can never change hands." : "Unlocked. Transfers restart the stickiness clock."],
       ],
       value: `0x${target.fee.toString(16)}`,
       valueLabel: `${formatUnits(target.fee, 18)} ETH project creation fee`,
@@ -4743,7 +4752,7 @@ function renderBonusSplit(r, o = {}) {
 const soulboundHint = () => {
   $("d-soulbound-hint").textContent = $("d-soulbound").value === "1"
     ? "The sticky token can never change hands."
-    : "The sticky token can move between wallets — transferring resets the stickiness clock on the moved tokens.";
+    : "The sticky token can move between wallets. Transferring resets the stickiness clock on the moved tokens.";
 };
 $("d-soulbound").onchange = soulboundHint;
 $("d-custom-name").onchange = () => {
