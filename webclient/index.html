@@ -428,7 +428,7 @@
   .cd-step.current i { background: var(--accent); border-color: var(--accent); color: #fdffff; }
   .cd-step.done i { background: var(--teal); border-color: var(--teal); color: var(--ink); }
   .cd-warn {
-    border: 1px solid #eccfc6; background: #fdf1ec; color: var(--err); border-radius: 6px;
+    border: 1px solid var(--line); color: var(--muted); border-radius: 6px;
     padding: 10px 12px; font-size: 13px; margin-bottom: 4px;
   }
   .chains-table tr.total td { font-weight: 600; border-top: 1px solid var(--line); }
@@ -444,7 +444,7 @@
   .reward-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .reward-actions button { margin: 0; padding: 6px 12px; }
   @media (max-width: 520px) { .reward-kv { grid-template-columns: minmax(0, 1fr); gap: 0 0; } .reward-kv dd { margin-bottom: 6px; } }
-  .cd-warn.err { border-width: 2px; font-weight: 600; }
+  .cd-warn.err { border: 2px solid #eccfc6; background: #fdf1ec; color: var(--err); font-weight: 600; }
   .cd-block { margin: 6px 0; padding: 8px 10px; border-left: 3px solid var(--err); color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
   .cd-chain { font-size: 11px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
   .cd-contract { font-size: 12px; color: var(--muted); word-break: break-all; margin: 1px 0 4px; }
@@ -1088,17 +1088,17 @@
   <span id="tx-status-message"></span>
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
-<script src="config.js?v=130"></script>
-<script src="runtime.js?v=130"></script>
-<script src="calldata.js?v=130"></script>
-<script src="tx-safe.js?v=130"></script>
-<script src="tx-engine.js?v=130"></script>
-<script src="relayr.js?v=130"></script>
-<script src="launch-plan.js?v=130"></script>
-<script src="center-intents.js?v=130"></script>
-<script src="launch-session.js?v=130"></script>
-<script src="bridge.js?v=130"></script>
-<script src="wallet-chooser.js?v=130"></script>
-<script src="app.js?v=130"></script>
+<script src="config.js?v=131"></script>
+<script src="runtime.js?v=131"></script>
+<script src="calldata.js?v=131"></script>
+<script src="tx-safe.js?v=131"></script>
+<script src="tx-engine.js?v=131"></script>
+<script src="relayr.js?v=131"></script>
+<script src="launch-plan.js?v=131"></script>
+<script src="center-intents.js?v=131"></script>
+<script src="launch-session.js?v=131"></script>
+<script src="bridge.js?v=131"></script>
+<script src="wallet-chooser.js?v=131"></script>
+<script src="app.js?v=131"></script>
 </body>
 </html>

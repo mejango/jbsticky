@@ -168,6 +168,32 @@ Claimable backing excludes funds left when no shares existed. The current home-p
 value uses that claimable backing; its historical chart estimates past share counts
 at today's backing per share and token price, rather than reconstructing past prices.
 
+Unstick quotes come from the terminal's views at one block: `previewCashOutFrom`
+for the gross reclaim and tax, then the terminal's own fee rule (`FEELESS_ADDRESSES`,
+positive tax charges the whole reclaim, zero tax only the `feeFreeSurplusOf` part,
+floored at 1/40). The dialog quote is the minimum the review sends; an `eth_call`
+preflight only checks for a revert.
+
+Every write is checked before the wallet sees it. `calldata.js` decodes each step
+against a fixed registry of the functions the site sends, with strict canonical ABI
+decoding, and the review shows only decoded values. An unknown function, a hidden
+argument, or a value that differs from what the review names blocks Confirm.
+
+The holder list comes from the hook's own events (each `Staked` and `Unstaked`
+carries the resulting balance), one bounded scan per project view; the visible page
+is re-read from the hook. A multichain launch writes one `launchId` into every
+chain's `projectUri`; the project page finds each same-environment chain's project
+from its `DeploySticky` events and shows backing and supply per chain with totals.
+Log scans follow a node's stated range limit, including HTTP 413 answers.
+
+Rewards show the current round and when it ends, and per group the amount claimable
+now, vesting with its next and last unlock dates, earned in finished rounds but not
+vesting yet, and funding. Collecting starts a 4-round unlock, a quarter per round.
+
+Bendystraw is not used: it indexes Sticky projects and their pay and cash out events,
+but not StickyHook positions, tranches or streaks, nor custom-token holders, so the
+hook log scan is needed regardless.
+
 The 100% cash out tax permanently makes unsticking return zero underlying tokens.
 The auto-stick adapter quotes issuance during execution and rejects zero-token
 mints, including high-decimal reward dust. Its UI estimate can change before
