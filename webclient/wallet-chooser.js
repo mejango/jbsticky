@@ -95,10 +95,14 @@
         if (wallets.length) {
           nodes.push(element("div", { class: "wallet-tiles" }, wallets.map((option) => {
             const icon = safeIcon(option.icon);
+            // The visible name is the button's accessible name; the mark is decorative.
             return element("button", {
-              type: "button", class: "wallet-tile", title: option.name, "aria-label": option.name,
-              onClick: () => void controller.choose(option.id),
-            }, [icon ? element("img", { src: icon, alt: "" }) : element("span", { "aria-hidden": "true", text: option.name.slice(0, 1) })]);
+              type: "button", class: "wallet-tile", onClick: () => void controller.choose(option.id),
+            }, [
+              icon ? element("img", { class: "wallet-mark", src: icon, alt: "" })
+                : element("span", { class: "wallet-mark", "aria-hidden": "true", text: option.name.slice(0, 1) }),
+              element("span", { class: "wallet-name", text: option.name }),
+            ]);
           })));
         } else {
           nodes.push(element("p", { class: "wallet-note", text: "No wallet detected in this browser. Install a browser wallet." }));

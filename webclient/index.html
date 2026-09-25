@@ -67,6 +67,12 @@
   .brand { font-size: 15px; font-weight: 700; letter-spacing: 2px; cursor: pointer; }
   .brand span { color: var(--amber); }
   header .right { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  /* Phones: the chain picker and the connect button share the row right of the 54px drip logo. */
+  @media (max-width: 520px) {
+    header .right { gap: 8px; min-width: 0; max-width: calc(100vw - 96px); }
+    header .right #site-chain { flex: 0 1 auto; min-width: 0; max-width: 100% !important; text-overflow: ellipsis; }
+    header .right .connect-btn { flex: none; white-space: nowrap; font-size: 13px; letter-spacing: .5px; padding: 5px 10px; }
+  }
   .link { color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
   .mut { color: var(--muted); }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; position: relative; }
@@ -504,14 +510,15 @@
   .wallet-dialog:has(.wallet-frame) { padding-bottom: 0; }
   button.wallet-primary { display: inline-block; margin: 0; min-height: 44px; padding: 10px 20px; }
   .wallet-divider { margin: 16px 0 8px; color: var(--muted); font-size: 13px; }
-  .wallet-tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+  .wallet-tiles { display: grid; gap: 8px; }
   button.wallet-tile {
-    display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 8px; margin: 0;
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 8px 12px; margin: 0;
     background: #fdffff; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    font: inherit; font-weight: 600; letter-spacing: 0; text-align: left;
   }
   button.wallet-tile:hover { border-color: var(--ink); }
-  .wallet-tile img { width: 22px; height: 22px; object-fit: contain; }
-  .wallet-tile span { font-size: 13px; font-weight: 700; }
+  .wallet-mark { flex: none; display: grid; place-items: center; width: 22px; height: 22px; object-fit: contain; font-size: 13px; font-weight: 700; }
+  .wallet-name { min-width: 0; overflow-wrap: anywhere; }
   .wallet-note, .wallet-status { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
   .wallet-error { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid var(--err); color: var(--err); overflow-wrap: anywhere; font-size: 13px; }
   .wallet-frame {

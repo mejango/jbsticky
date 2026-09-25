@@ -82,10 +82,14 @@ test('Signa comes first as the primary action, then every browser wallet as a na
   assert.equal(primary.tagName, 'BUTTON');
   assert.equal(primary.textContent, 'Touch ID');
   assert.equal(divider.textContent, 'or connect a wallet');
-  assert.deepEqual(tiles.children.map((tile) => tile.getAttribute('aria-label')), ['Rabby', 'Sneaky']);
+  // Every wallet shows its name; that visible text is the button's accessible name.
+  assert.deepEqual(tiles.children.map((tile) => tile.children[1].textContent), ['Rabby', 'Sneaky']);
+  assert.ok(tiles.children.every((tile) => tile.tagName === 'BUTTON' && tile.getAttribute('aria-label') === null));
   assert.equal(tiles.children[0].children[0].getAttribute('src'), rabby.icon);
+  assert.equal(tiles.children[0].children[0].getAttribute('alt'), '');
   // Only data: images render; a remote icon would leak the visit to its host.
   assert.equal(tiles.children[1].children[0].tagName, 'SPAN');
+  assert.equal(tiles.children[1].children[0].getAttribute('aria-hidden'), 'true');
   primary.click();
   tiles.children[0].click();
   assert.deepEqual(controller.calls.choose, ['juicebox-center', 'wallet:rabby']);
