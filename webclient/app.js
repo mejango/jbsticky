@@ -167,7 +167,8 @@ function decTranches(hex) {
 
 // ------------------------------------------------------------- rpc plumbing
 const $ = (id) => document.getElementById(id);
-let walletAccount = null; // set when a browser wallet is connected
+let walletAccount = null; // set when a browser wallet or a Signa account is connected
+let walletKind = null; // "injected" (a browser wallet signs) or "signa" (an address for reads only)
 const account = () => viewAs ?? walletAccount ?? $("account").value;
 function localTransactionMode(tx) {
   const loopback = (hostname) => ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
@@ -176,6 +177,8 @@ function localTransactionMode(tx) {
 }
 function txAccount() {
   if (viewAs) throw new Error("Exit account preview before sending a transaction.");
+  // Signa's review covers only Base USDC pays today; no Sticky action is one of them.
+  if (walletKind === "signa") throw needsExternalWallet();
   if (window.__DEMO_RPC) throw new Error("The demo is read only. Connect to a live Sticky deployment to transact.");
   const address = walletAccount || (localTransactionMode() ? $("account").value : null);
   if (!/^0x[0-9a-fA-F]{40}$/.test(address || "")) throw new Error("Connect a wallet before sending a transaction.");
@@ -344,7 +347,7 @@ function getTxEngine() {
     txEngine = window.StickyTx.createEngine({
       storage: window.localStorage,
       locks: navigator.locks,
-      wallet: () => walletAccount ? activeProvider : null,
+      wallet: () => walletAccount && walletKind === "injected" ? activeProvider : null,
       ensureChain: ensureWalletChain,
       localMode: localTransactionMode,
       authorize: (tx) => {
@@ -578,7 +581,7 @@ function txStatus(msg, cls = "") {
   }
 }
 
-function inlineStatus(anchor, msg, cls = "err") {
+function inlineStatus(anchor, msg, cls = "err", action = null) {
   const dialog = anchor?.closest?.("dialog");
   const target = dialog
     ? anchor.closest?.(".create-section") || dialog
@@ -595,6 +598,7 @@ function inlineStatus(anchor, msg, cls = "err") {
   }
   notice.textContent = msg;
   notice.className = `inline-status ${cls}`;
+  if (action) notice.append(" ", action);
 }
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -3944,16 +3948,18 @@ function bindWalletEvents(provider) {
   boundWalletProviders.add(provider);
   try {
     provider.on("accountsChanged", (accounts) => {
-      if (provider !== activeProvider) return;
+      if (provider !== activeProvider || walletKind === "signa") return;
       walletAccount = accounts?.[0] ?? null;
+      walletKind = walletAccount ? "injected" : null;
       try { walletAccount ? localStorage.setItem(WALLET_FLAG, "1") : localStorage.removeItem(WALLET_FLAG); } catch {}
       updateConnectButton();
       route();
     });
     provider.on("chainChanged", () => { if (provider === activeProvider) updateConnectButton(); });
     provider.on("disconnect", () => {
-      if (provider !== activeProvider) return;
+      if (provider !== activeProvider || walletKind === "signa") return;
       walletAccount = null;
+      walletKind = null;
       updateConnectButton();
       route();
     });
@@ -3975,21 +3981,33 @@ async function walletConnect(chosen) {
     if (error?.code === 4001) throw error;
   }
   const accounts = await activeProvider.request({ method: "eth_requestAccounts" });
-  walletAccount = accounts?.[0] ?? null;
+  if (!accounts?.[0]) throw new Error("The wallet did not share an account.");
+  // One connection at a time: a browser wallet replaces a Signa sign-in.
+  if (walletKind === "signa") { try { centerClient?.disconnect(); } catch {} }
+  walletAccount = accounts[0];
+  walletKind = "injected";
   try { localStorage.setItem(WALLET_FLAG, "1"); } catch {}
 }
 
 async function walletDisconnect() {
+  if (walletKind === "signa") {
+    (await centerWallet()).disconnect();
+    walletAccount = null;
+    walletKind = null;
+    return;
+  }
   // Revoke so the next connect re-prompts the account picker; older wallets lack this — ignore.
   try {
     await activeProvider?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] });
   } catch {}
   walletAccount = null;
+  walletKind = null;
   try { localStorage.removeItem(WALLET_FLAG); localStorage.removeItem(WALLET_RDNS); } catch {}
 }
 
 // Silently restore a prior connection — eth_accounts returns authorized accounts without prompting.
 async function walletEagerConnect() {
+  if (await restoreCenterConnection()) { route(); return; }
   let wasConnected = false;
   try { wasConnected = localStorage.getItem(WALLET_FLAG) === "1"; } catch {}
   if (!wasConnected) return;
@@ -4005,6 +4023,7 @@ async function walletEagerConnect() {
     const accounts = await activeProvider.request({ method: "eth_accounts" });
     if (accounts?.length) {
       walletAccount = accounts[0];
+      walletKind = "injected";
       route();
     } else {
       try { localStorage.removeItem(WALLET_FLAG); } catch {}
@@ -4104,44 +4123,153 @@ async function appendWalletBalances(menu, address) {
     if (panel.isConnected) panel.textContent = "Balances unavailable";
   }
 }
-function openWalletPicker() {
-  const providers = getWalletProviders();
-  const menu = newWalletMenu();
-  if (!providers.length) {
-    const note = document.createElement("div");
-    note.className = "wallet-menu-note wallet-menu-error";
-    note.textContent = "No wallet detected in this browser. Install a browser wallet.";
-    menu.appendChild(note);
-  }
-  for (const p of providers) {
-    const item = document.createElement("button");
-    item.className = "wallet-menu-item wallet-pick";
-    if (p.info?.icon) {
-      const img = document.createElement("img");
-      img.className = "wallet-pick-icon";
-      img.alt = "";
-      img.src = p.info.icon;
-      item.appendChild(img);
-    }
-    const name = document.createElement("span");
-    name.textContent = p.info?.name || "Wallet";
-    item.appendChild(name);
-    item.addEventListener("click", () => {
-      closeWalletMenu();
-      guard(async () => {
-        await walletConnect(p);
-        updateConnectButton();
-        route();
-      })();
+// ------------------------------------------------ Signa sign-in and the chooser (Homerun's dynamic)
+// A Signa account is a passkey account on Base. Here it is an address for reads: positions, rewards and
+// the account page. Every write needs a browser wallet until Signa's review covers the action.
+const CENTER_WALLET = window.STICKY_CONFIG?.centerWallet || null;
+const CENTER_CALLBACK_PATH = "/center/callback";
+const CENTER_RETURN_KEY = "sticky:center:return:v1";
+let centerSdk = null;
+let centerClient = null;
+let walletChooser = null;
+function loadCenterSdk() {
+  centerSdk ||= import("./center-connect.js").catch((error) => { centerSdk = null; throw error; });
+  return centerSdk;
+}
+async function centerWallet() {
+  if (!CENTER_WALLET) throw new Error("Signa sign-in is not configured for this site.");
+  const sdk = await loadCenterSdk();
+  centerClient ||= sdk.createCenterWalletClient({ ...CENTER_WALLET, callbackUri: location.origin + CENTER_CALLBACK_PATH });
+  return centerClient;
+}
+// The SDK keeps this tab's sign-in in sessionStorage under this key, so a reload restores it.
+// Check for it before loading the SDK.
+function centerConnectionSaved() {
+  if (!CENTER_WALLET) return false;
+  try { return !!sessionStorage.getItem(`center.wallet.connection.v1:${CENTER_WALLET.issuer}:${location.origin}${CENTER_CALLBACK_PATH}`); }
+  catch { return false; }
+}
+function centerAddress(connection) {
+  const address = connection?.address;
+  if (connection?.chainId !== 8453 || !/^0x[0-9a-fA-F]{40}$/.test(address || "")
+    || connection.accountId !== `eip155:8453:${address.toLowerCase()}`
+    || !(connection.expiresAt > Math.floor(Date.now() / 1000))) return null;
+  return address;
+}
+function adoptCenterConnection(connection) {
+  const address = centerAddress(connection);
+  if (!address) throw new Error("The Signa sign-in did not return a usable account.");
+  try { localStorage.removeItem(WALLET_FLAG); localStorage.removeItem(WALLET_RDNS); } catch {}
+  walletAccount = address;
+  walletKind = "signa";
+}
+async function restoreCenterConnection() {
+  if (!centerConnectionSaved()) return false;
+  try {
+    const address = centerAddress((await centerWallet()).restoreConnection());
+    if (!address) return false;
+    walletAccount = address;
+    walletKind = "signa";
+    return true;
+  } catch { return false; }
+}
+// Signa's "Open as a page" leaves this page; /center/callback brings the tab back to this route.
+function saveCenterReturn() {
+  const saved = /^#\/[A-Za-z0-9/_@.:%-]{0,1000}$/.test(location.hash) ? location.hash : "";
+  sessionStorage.setItem(CENTER_RETURN_KEY, saved);
+  if (sessionStorage.getItem(CENTER_RETURN_KEY) !== saved) throw new Error("This tab could not keep your place for the sign-in.");
+}
+function needsExternalWallet() {
+  return Object.assign(new Error("This action needs an external wallet."), { code: "NEEDS_EXTERNAL_WALLET" });
+}
+function connectWalletAction() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "text-button";
+  button.textContent = "Connect a wallet";
+  button.addEventListener("click", () => void openWalletChooser({ walletsOnly: true }));
+  return button;
+}
+function viewAsControl() {
+  const wrap = document.createElement("div");
+  wrap.className = "wallet-viewas";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "text-button";
+  toggle.textContent = viewAs ? "View as another account" : "View as an address";
+  toggle.addEventListener("click", () => {
+    toggle.remove();
+    const input = document.createElement("input");
+    input.placeholder = "0x address";
+    input.setAttribute("aria-label", "Account address to preview");
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "ghost";
+    go.textContent = "View";
+    go.addEventListener("click", () => {
+      if (!/^0x[0-9a-fA-F]{40}$/.test(input.value.trim())) { input.setAttribute("aria-invalid", "true"); return; }
+      viewAs = input.value.trim();
+      walletChooser?.close();
+      updateConnectButton();
+      route();
     });
-    menu.appendChild(item);
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") go.click(); });
+    wrap.append(input, go);
+    input.focus();
+  });
+  wrap.append(toggle);
+  return wrap;
+}
+function walletConnected() {
+  walletChooser?.close();
+  updateConnectButton();
+  route();
+}
+// One native dialog. It replaces whatever dialog is open; dialogs never stack.
+async function openWalletChooser({ walletsOnly = false } = {}) {
+  closeWalletMenu();
+  walletChooser?.close();
+  for (const open of document.querySelectorAll("dialog[open]")) open.close();
+  let sdk;
+  try { sdk = await loadCenterSdk(); }
+  catch { status("The sign-in options could not load. Reload to try again.", "err"); return; }
+  const options = [];
+  if (CENTER_WALLET && !walletsOnly) {
+    options.push({ ...sdk.passkeyOption({
+      wallet: centerWallet,
+      beforeLaunch: saveCenterReturn,
+      // Signa frames its sign-in here for sites it admits; inside, "Open as a page" is the full-page path.
+      frame: true,
+      connected: async (connection) => { adoptCenterConnection(connection); walletConnected(); },
+    }), name: "Signa" });
   }
-  appendViewAsItem(menu);
-  mountWalletMenu();
+  for (const provider of getWalletProviders()) {
+    options.push({
+      id: `wallet:${provider.info?.uuid}`, name: provider.info?.name || "Wallet", icon: provider.info?.icon || undefined,
+      async connect() { await walletConnect(provider); walletConnected(); },
+    });
+  }
+  const chooser = walletChooser = StickyWalletChooser.createChooser({
+    dialog: $("wallet-dialog"), heading: $("wallet-title"), body: $("wallet-body"),
+    controller: sdk.createConnectController(options), issuer: CENTER_WALLET?.issuer || null,
+    label: StickyWalletChooser.deviceLabel(navigator.userAgent), win: window, extra: viewAsControl(),
+    onClose: () => {
+      if (walletChooser !== chooser) return;
+      walletChooser = null;
+      $("connect-btn").focus();
+    },
+  });
+  chooser.open();
 }
 function openWalletMenu() {
   const menu = newWalletMenu();
   const shown = viewAs || walletAccount;
+  if (walletKind === "signa" && !viewAs) {
+    const note = document.createElement("div");
+    note.className = "wallet-menu-note";
+    note.textContent = "Signa account. Connect a wallet to stick, unstick or claim.";
+    menu.appendChild(note);
+  }
   if (shown) appendWalletBalances(menu, shown);
   menu.appendChild(menuItem("Account", () => {
     closeWalletMenu();
@@ -4178,7 +4306,7 @@ function updateConnectButton() {
     : walletAccount ? shortAddr(walletAccount) : "Connect wallet";
   btn.classList.toggle("connected", !!walletAccount && !viewAs);
   btn.classList.toggle("viewing-as", !!viewAs);
-  btn.title = viewAs || walletAccount || "Connect a wallet or view as another account";
+  btn.title = viewAs || (walletKind === "signa" ? `Signa account ${walletAccount}` : walletAccount) || "Sign in, connect a wallet or view as another account";
 }
 
 // ------------------------------------------------------------------- account view
@@ -4290,7 +4418,7 @@ function guard(fn) {
     oldNotice?.remove();
     try { return await fn(event); } catch (error) {
       if (confirmProgress >= 0 || $("confirm-dialog").open) txStatus(error.message, "err");
-      else inlineStatus(anchor, error.message, "err");
+      else inlineStatus(anchor, error.message, "err", error.code === "NEEDS_EXTERNAL_WALLET" ? connectWalletAction() : null);
     } finally {
       active = false;
       if (wasDisabled !== null) anchor.disabled = wasDisabled;
@@ -4656,8 +4784,15 @@ function setTab(tab) {
 $("connect-btn").addEventListener("click", () => {
   if (walletMenu) { closeWalletMenu(); return; }
   if (viewAs || walletAccount) { openWalletMenu(); return; }
-  openWalletPicker();
+  void openWalletChooser();
 });
+$("wallet-close").onclick = () => walletChooser?.close();
+$("wallet-dialog").addEventListener("mousedown", (event) => {
+  if (event.target !== event.currentTarget) return;
+  const box = event.currentTarget.getBoundingClientRect();
+  if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) walletChooser?.close();
+});
+if (CENTER_WALLET) setTimeout(() => { loadCenterSdk().catch(() => {}); }, 0);
 updateConnectButton();
 walletEagerConnect().then(updateConnectButton);
 

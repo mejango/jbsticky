@@ -7,11 +7,22 @@ const A='0x'+'11'.repeat(20),B='0x'+'22'.repeat(20);
 function region(start,end){return source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));}
 const authCode=region('function localTransactionMode(tx) {','// Give the reflected half');
 function auth(overrides={}){
- const c={window:{STICKY_CONFIG:{}},location:{hostname:'sticky.example'},viewAs:null,walletAccount:null,$:id=>({value:id==='rpc'?'https://rpc.example':A}),URL,...overrides};vm.createContext(c);vm.runInContext(authCode,c);return c;
+ const c={window:{STICKY_CONFIG:{}},location:{hostname:'sticky.example'},viewAs:null,walletAccount:null,walletKind:null,needsExternalWallet:()=>Object.assign(new Error('This action needs an external wallet.'),{code:'NEEDS_EXTERNAL_WALLET'}),$:id=>({value:id==='rpc'?'https://rpc.example':A}),URL,...overrides};vm.createContext(c);vm.runInContext(authCode,c);return c;
 }
 test('account preview and demo cannot send even with a connected wallet',()=>{
  assert.throws(()=>auth({viewAs:B,walletAccount:A}).txAccount(),/Exit account preview/);
  assert.throws(()=>auth({window:{__DEMO_RPC:()=>{},STICKY_CONFIG:{}},walletAccount:A}).txAccount(),/demo is read only/);
+});
+test('a Signa account reads but every write asks for an external wallet',()=>{
+ let error;try{auth({walletAccount:A,walletKind:'signa'}).txAccount();}catch(caught){error=caught;}
+ assert.equal(error.message,'This action needs an external wallet.');assert.equal(error.code,'NEEDS_EXTERNAL_WALLET');
+ assert.equal(auth({walletAccount:A,walletKind:'injected'}).txAccount(),A);
+});
+test('guard offers to connect a wallet only for the needs-external-wallet error',async()=>{
+ const button={disabled:false,closest:()=>null};const actions=[];const c={document:{activeElement:button},confirmProgress:-1,$:()=>({open:false}),txStatus:()=>{},inlineStatus:(_a,m,_cls,action)=>actions.push([m,action]),connectWalletAction:()=>'connect',txEngine:null};vm.createContext(c);vm.runInContext(region('function guard(fn) {','$("load").onclick'),c);
+ await c.guard(()=>{throw Object.assign(Error('This action needs an external wallet.'),{code:'NEEDS_EXTERNAL_WALLET'});})({currentTarget:button});
+ await c.guard(()=>{throw Error('bad input');})({currentTarget:button});
+ assert.deepEqual(actions,[['This action needs an external wallet.','connect'],['bad input',null]]);
 });
 test('editable account field authorizes only explicit loopback local development',()=>{
  assert.throws(()=>auth().txAccount(),/Connect a wallet/);

@@ -70,6 +70,22 @@ destination address even before its receiver is deployed. Configure the factory 
 `settleFor(address,uint256,address)`, where the `uint256` is the reward group
 chosen in the funding dialog's stake-age fields.
 
+## Sign in
+
+The connect button opens one chooser: Sign in with Signa (a passkey account; Signa
+frames its sign-in inside the dialog) or connect a browser wallet. It uses Homerun's
+flow from `@bananapus/nana-sdk-connect/core`, vendored as `center-connect.js` and
+served from this origin. `vendor/build.sh` rebuilds it from the pinned
+`vendor/package-lock.json`, and `vendor/build.sh --check` fails when the committed file
+differs. Signa sends the sign-in back to `/center/callback`, the only page that can be
+framed, and only by this site.
+
+Set `STICKY_CENTER_WALLET_ENABLED=true` with the manifest pins (see `.env.example`)
+only after Signa admits the site's origin and `/center/callback`. A Signa account is
+an address for reads: positions, rewards and the account page. Every transaction asks
+for a browser wallet ("This action needs an external wallet."), because Signa's review
+covers only Base USDC payments and Sticky's stick pays the project's own token.
+
 ## Transactions and recovery
 
 Multichain creation requests a Relayr prepaid quote for the frozen deployment
@@ -130,6 +146,7 @@ Run from the repository root with the Python environment activated:
 python -m unittest discover -s webclient/test -p 'test_*.py' -v
 for script in webclient/*.js; do node --check "$script"; done
 node --test webclient/test/*.test.cjs
+webclient/vendor/build.sh --check
 ```
 
 The separate `webclient` GitHub workflow runs these gates, builds the explicit demo,

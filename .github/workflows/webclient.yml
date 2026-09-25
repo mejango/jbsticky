@@ -25,6 +25,8 @@ jobs:
         run: |
           for script in webclient/*.js; do node --check "$script"; done
           node --test webclient/test/*.test.cjs
+      - name: Vendored Signa SDK matches a fresh pinned build
+        run: webclient/vendor/build.sh --check
       - name: Build an explicit demo
         run: STICKY_DEMO=true python webclient/build-config.py
       # Shape only: these addresses and blocks change with a redeploy.
@@ -42,6 +44,10 @@ jobs:
           STICKY_FROM_BLOCK_11155420: '49246507'
           STICKY_FROM_BLOCK_84532: '47263633'
           STICKY_FROM_BLOCK_421614: '312407563'
+          STICKY_CENTER_WALLET_ENABLED: 'true'
+          STICKY_CENTER_WALLET_MANIFEST_ID: 'shape-only'
+          STICKY_CENTER_WALLET_MANIFEST_REVISION: '0x0000000000000000000000000000000000000000000000000000000000000001'
+          STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI: '1'
         run: |
           python webclient/build-config.py
           python - <<'PY'
@@ -54,6 +60,7 @@ jobs:
           for chain_id, entry in chains.items():
               assert entry["deployer"] == os.environ["STICKY_DEPLOYER"], chain_id
               assert entry["fromBlock"] == os.environ[f"STICKY_FROM_BLOCK_{chain_id}"], chain_id
+          assert config["centerWallet"]["issuer"] == "https://signa.center", config["centerWallet"]
           PY
       - name: Verify production entry point
         run: |
@@ -62,3 +69,4 @@ jobs:
           trap 'kill "$server_pid"' EXIT
           curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:8788/healthz | grep -q '"mode":"live"'
           curl --fail http://127.0.0.1:8788/ > /dev/null
+          curl --fail --head http://127.0.0.1:8788/center/callback | grep -qi "x-frame-options: SAMEORIGIN"
