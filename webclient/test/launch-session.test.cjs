@@ -262,3 +262,213 @@ test('session and real Relayr protocol bind reordered records before offering th
   assert.equal(picks, 2);
   assert.equal(store.load().quote.expectedTransactions[0].chain, 1);
 });
+
+// Juicebox Center listings (project intents).
+const INTENT = '0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b';
+function listed(mode = 'direct', center = { state: 'pending', envelope: { format: 'sticky.center/deploy.v1' } }) {
+  return { ...input(mode === 'center' ? 'relayr' : mode), mode, center };
+}
+function listingMock(calls, overrides = {}) {
+  return {
+    forwarder: address('f'),
+    publish: async () => { calls.push('publish'); return { intentId: INTENT }; },
+    record: async (session, chainId, result) => { calls.push(`record:${chainId}:${result.hash}`); return { status: 'recorded' }; },
+    deploy: async () => { calls.push('deploy'); return { deploys: [] }; },
+    status: async () => { calls.push('status'); return { deployments: [], deploys: [] }; },
+    ...overrides,
+  };
+}
+const sending = (calls, hashValue = hash('b')) => async (session, { beforeSend }) => {
+  calls.push('review'); await beforeSend(); calls.push('send');
+  return { status: 'confirmed', hash: hashValue };
+};
+
+test('a direct launch signs the listing after review and before sending, then records its chain once', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls), runDirect: sending(calls) });
+  f.controller.prepare(listed());
+  const state = await f.controller.run();
+  assert.deepEqual(calls, ['review', 'publish', 'send', `record:1:${hash('b')}`]);
+  assert.equal(state.center.state, 'published');
+  assert.equal(state.center.intentId, INTENT);
+  assert.deepEqual(state.center.recorded, { 1: hash('b') });
+  await f.controller.refresh(); await f.controller.run();
+  assert.equal(calls.filter((call) => call === 'publish').length, 1);
+  assert.equal(calls.filter((call) => call.startsWith('record')).length, 1);
+  assert.equal(Launch.needsPolling(f.store.load()), false);
+});
+
+test('Center refusing or unreachable never blocks a self-paid launch; retry lists and records it later', async () => {
+  const calls = [];
+  let up = false;
+  const listing = listingMock(calls, { publish: async () => { calls.push('publish'); if (!up) throw new Error('Juicebox Center could not be reached.'); return { intentId: INTENT }; } });
+  const f = fixture({ listing, runDirect: sending(calls) });
+  f.controller.prepare(listed());
+  const state = await f.controller.run();
+  assert.equal(state.results[1].status, 'confirmed');
+  assert.deepEqual(calls, ['review', 'publish', 'send']);
+  assert.equal(state.center.state, 'unlisted');
+  assert.equal(state.center.error, 'Juicebox Center could not be reached.');
+  assert.equal(Launch.needsPolling(state), false, 'a refused listing is not retried in the background');
+  up = true;
+  const retried = await f.controller.list();
+  assert.equal(retried.center.state, 'published');
+  assert.deepEqual(retried.center.recorded, { 1: hash('b') });
+  assert.equal(calls.filter((call) => call === 'publish').length, 2);
+});
+
+test('a record Center refuses keeps the listing ID; retry records without signing again', async () => {
+  const calls = [];
+  let refuse = true;
+  const listing = listingMock(calls, { record: async (s, chainId) => { calls.push(`record:${chainId}`); if (refuse) throw new Error('Juicebox Center could not be reached.'); return { status: 'recorded' }; } });
+  const f = fixture({ listing, runDirect: sending(calls) });
+  f.controller.prepare(listed());
+  const state = await f.controller.run();
+  assert.equal(state.center.state, 'unlisted');
+  assert.equal(state.center.intentId, INTENT);
+  refuse = false;
+  const retried = await f.controller.list();
+  assert.equal(retried.center.state, 'published');
+  assert.deepEqual(Object.keys(retried.center.recorded), ['1']);
+  assert.equal(calls.filter((call) => call === 'publish').length, 1);
+});
+
+test('after a reload, a listing waiting for confirmations records exactly once', async () => {
+  const calls = [];
+  let confirmations = 1;
+  const record = async (s, chainId) => { calls.push(`record:${chainId}`); return { status: confirmations < 2 ? 'wait' : 'recorded' }; };
+  const f = fixture({ listing: listingMock(calls, { record }), runDirect: sending(calls) });
+  f.controller.prepare(listed());
+  const state = await f.controller.run();
+  assert.deepEqual(state.center.recorded, {});
+  assert.equal(Launch.needsPolling(state), true);
+  // Reload: a new controller over the same browser storage.
+  const again = [];
+  const reloaded = fixture({ listing: listingMock(again, { record: async (s, chainId) => { again.push(`record:${chainId}`); return { status: confirmations < 2 ? 'wait' : 'recorded' }; } }),
+    runDirect: async () => assert.fail('a reload never sends again') }, f.disk);
+  confirmations = 2;
+  await reloaded.controller.refresh();
+  await reloaded.controller.refresh();
+  await reloaded.controller.run();
+  assert.deepEqual(again, ['record:1']);
+  assert.ok(!again.includes('publish'));
+  assert.deepEqual(reloaded.store.load().center.recorded, { 1: hash('b') });
+  assert.equal(Launch.needsPolling(reloaded.store.load()), false);
+});
+
+test('a reload after signing but before sending resumes without publishing again', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls), runDirect: async (session, { beforeSend }) => { await beforeSend(); throw new Error('tab closed'); } });
+  f.controller.prepare(listed());
+  await assert.rejects(f.controller.run(), /tab closed/);
+  assert.equal(f.store.load().center.state, 'published');
+  const next = [];
+  const reloaded = fixture({ listing: listingMock(next), runDirect: sending(next) }, f.disk);
+  await reloaded.controller.run();
+  assert.deepEqual(next, ['review', 'send', `record:1:${hash('b')}`]);
+});
+
+test('a Relayr launch signs the listing before paying and records every chain', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls), runPayment: async (session, { beforeSend }) => {
+    calls.push('review'); await beforeSend(); calls.push('pay'); return { status: 'confirmed', hash: hash('a') };
+  } });
+  f.controller.prepare(listed('relayr'));
+  await f.controller.run();
+  assert.ok(calls.indexOf('publish') < calls.indexOf('pay'));
+  f.rows([{ request: { chain: 1 }, hash: hash('b') }, { request: { chain: 10 }, hash: hash('c') }]);
+  const state = await f.controller.refresh();
+  assert.deepEqual(state.center.recorded, { 1: hash('b'), 10: hash('c') });
+  assert.equal(Launch.needsPolling(state), false);
+});
+
+test('a launch whose listing was never signed is marked unlisted when it completes', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls), runDirect: async () => ({ status: 'confirmed', hash: hash('b') }) });
+  f.controller.prepare(listed());
+  const state = await f.controller.run();
+  assert.equal(state.center.state, 'unlisted');
+  assert.deepEqual(calls, []);
+});
+
+test('an unavailable listing never calls Center', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls), runDirect: sending(calls) });
+  f.controller.prepare(listed('direct', { state: 'unavailable', reason: 'contract wallet' }));
+  const state = await f.controller.run();
+  assert.equal(state.center.state, 'unavailable');
+  assert.deepEqual(calls, ['review', 'send']);
+  assert.equal((await f.controller.list()).center.state, 'unavailable');
+});
+
+test('a sponsored launch publishes, asks Center to deploy, and verifies forwarded deployments', async () => {
+  const calls = [];
+  const verified = [];
+  const status = async () => ({ deployments: [{ chainId: 1, transactionHash: hash('b') }], deploys: [{ chainId: 10, status: 'sent', transactionHash: hash('C') }] });
+  const f = fixture({ listing: listingMock(calls, { status }),
+    relayr: { verifyDeployment: async (txHash, entry, expected) => { verified.push(expected.forwarder); return { status: 'confirmed', hash: txHash, projectId: '7' }; } },
+    runDirect: async () => assert.fail('no wallet transaction'), runPayment: async () => assert.fail('no wallet payment') });
+  f.controller.prepare(listed('center'));
+  const state = await f.controller.run();
+  assert.deepEqual(calls.slice(0, 2), ['publish', 'deploy']);
+  assert.equal(state.mode, 'center');
+  assert.deepEqual(state.candidates[10], [hash('c')]);
+  assert.ok(verified.every((forwarder) => forwarder === address('f')));
+  assert.deepEqual(state.center.recorded, { 1: hash('b'), 10: hash('c') });
+  assert.ok(!calls.some((call) => call.startsWith('record')), 'Center records its own deployments');
+  assert.equal(Launch.canClear({ ...state, results: {} }), false);
+});
+
+test('a sponsored deploy still pending after a reload is polled and never requested twice', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls) });
+  f.controller.prepare(listed('center'));
+  await f.controller.run();
+  assert.equal(Launch.needsPolling(f.store.load()), true);
+  await f.controller.run();
+  assert.equal(calls.filter((call) => call === 'deploy').length, 1);
+});
+
+test('Center refusing to sponsor before anything is queued falls back to a self-paid launch', async () => {
+  const calls = [];
+  const deploy = async () => { calls.push('deploy'); throw Object.assign(new Error('not sponsored'), { status: 400 }); };
+  const f = fixture({ listing: listingMock(calls, { deploy }) });
+  f.controller.prepare(listed('center'));
+  const state = await f.controller.run();
+  assert.equal(state.mode, 'relayr');
+  assert.equal(state.center.state, 'published');
+  assert.match(state.center.error, /could not sponsor/);
+  assert.ok(f.calls.includes('post') && f.calls.includes('pay'));
+});
+
+test('an unknown sponsored deploy outcome is kept for a retry, not replaced by a paid launch', async () => {
+  const calls = [];
+  const deploy = async () => { calls.push('deploy'); throw Object.assign(new Error('Juicebox Center could not be reached.'), { status: 0 }); };
+  const f = fixture({ listing: listingMock(calls, { deploy }) });
+  f.controller.prepare(listed('center'));
+  await assert.rejects(f.controller.run(), /could not be reached/);
+  assert.equal(f.store.load().mode, 'center');
+  assert.ok(!f.calls.includes('post'));
+});
+
+test('a sponsored listing Center refuses falls back to a self-paid, unlisted launch', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls, { publish: async () => { throw new Error('Juicebox Center does not accept listings from this site yet.'); } }),
+    runDirect: sending(calls) });
+  f.controller.prepare({ ...listed('direct'), mode: 'center' });
+  const state = await f.controller.run();
+  assert.equal(state.mode, 'direct');
+  assert.equal(state.center.state, 'unlisted');
+  assert.equal(state.results[1].status, 'confirmed');
+});
+
+test('stored listings are validated', () => {
+  const disk = storage();
+  const store = Launch.createStore(disk);
+  const base = { ...input('direct'), version: 1, published: false, results: {}, candidates: { 1: [] } };
+  store.save({ ...base, center: { state: 'published', intentId: INTENT, recorded: {} } });
+  for (const center of [{ state: 'odd', intentId: null, recorded: {} }, { state: 'published', intentId: null, recorded: {} }, { state: 'pending', intentId: 5, recorded: {} }, { state: 'pending', intentId: null }]) {
+    assert.throws(() => store.save({ ...base, center }), /listing is invalid/);
+  }
+  assert.throws(() => store.save({ ...base, mode: 'center', center: { state: 'unavailable', intentId: null, recorded: {} } }), /sponsored/);
+});

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Bridge = require('../bridge.js');
 const { keccak256 } = require('../relayr.js');
+const Calldata = require('../calldata.js');
 const { SEL, ZERO, NATIVE, word, CONTRACTS } = Bridge;
 const A = n => '0x' + BigInt(n).toString(16).padStart(40, '0');
 const addressWord = a => a.slice(2).padStart(64, '0');
@@ -181,6 +182,11 @@ test('prepare returns exact, chain-pinned approval and protected queue requests 
   assert.equal(tx.rpcUrl, route.source.rpcUrl);
   assert.equal(tx.from, owner);
   assert.equal(tx.sessionTag, 'sticky-bridge:' + metadata);
+  // The confirm dialog decodes both steps and every argument is shown and matches.
+  const [approval, queue] = result.txs.map(item => Calldata.review(item).rows);
+  assert.deepEqual(approval.map(([label]) => label), ['SPENDER', 'AMOUNT']);
+  assert.ok(queue.some(([label, value]) => label === 'DESTINATION RECEIVER' && value === receiver));
+  assert.ok(queue.some(([label, value]) => label === 'TRANSFER REFERENCE' && value === metadata));
 });
 
 test('nonzero insufficient approval is reset first, exact sufficient allowance skips approval', async () => {
@@ -240,6 +246,7 @@ test('claim uses an exact static V6 tuple and rechecks the proof before simulati
   assert.equal(tx.data.length, 10 + 38 * 64);
   assert.equal(tx.data.slice(10, 10 + 6 * 64), addressWord(NATIVE) + word(0) + addressWord(f.receiver) + word(1000) + word(500) + f.metadata.slice(2));
   assert.ok(f.calls.some(call => call.method === 'eth_call' && call.params[0].data === tx.data && call.url === f.route.destination.rpcUrl));
+  assert.match(Calldata.review(tx).rows[0][1], /^leaf 0, .* to .*\(reward receiver\)$/);
   f.state.rejectClaim = true;
   await assert.rejects(f.api.claim(f.route, row, f.owner, f.receiver), /claim reverted/);
 });
@@ -249,6 +256,7 @@ test('CCIP flushing uses a positive native transport budget plus the registry fe
   const tx = await f.api.flush(f.route, f.owner, f.receiver);
   assert.equal(tx.chainId, 1);
   assert.equal(BigInt(tx.value), 100n + 5n * 10n ** 15n);
+  assert.deepEqual(Calldata.review(tx).rows.map(([label]) => label), ['DESTINATION', 'BACKING TOKEN', 'EFFECT']);
   const probes = f.calls.filter(call => call.method === 'eth_call' && call.params[0].data?.startsWith(SEL.toRemote));
   assert.ok(probes.every(call => BigInt(call.params[0].value) > 100n));
 });

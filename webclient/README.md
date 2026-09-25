@@ -21,7 +21,9 @@ The generator writes next to itself regardless of the working directory. It does
 not automatically load `.env`; source an appropriately filled file or set the
 variables through the hosting platform. Restart the server after changing files.
 Existing local `config.js` files are ignored by Git and are changed only when the
-generator is explicitly run.
+generator is explicitly run. Fixtures in a hand-written config (`demoHome*`,
+`demoChartHistory`, `*Overrides`) show only in demo mode or in a `localMode: true`
+config on localhost; a live page drops them.
 
 ## Production configuration
 
@@ -67,6 +69,58 @@ destination address even before its receiver is deployed. Configure the factory 
 `predictReceiverOf(address,uint256)` and settles arrivals through the factory's
 `settleFor(address,uint256,address)`, where the `uint256` is the reward group
 chosen in the funding dialog's stake-age fields.
+
+## Sign in
+
+The connect button opens one chooser: Sign in with Signa (a passkey account; Signa
+frames its sign-in inside the dialog) or connect a browser wallet. It uses Homerun's
+flow from `@bananapus/nana-sdk-connect/core`, vendored as `center-connect.js` and
+served from this origin. `vendor/build.sh` rebuilds it from the pinned
+`vendor/package-lock.json`, and `vendor/build.sh --check` fails when the committed file
+differs. Signa sends the sign-in back to `/center/callback`, the only page that can be
+framed, and only by this site.
+
+Set `STICKY_CENTER_WALLET_ENABLED=true` with the manifest pins (see `.env.example`)
+only after Signa admits the site's origin and `/center/callback`. A Signa account is
+an address for reads: positions, rewards and the account page. Every transaction asks
+for a browser wallet ("This action needs an external wallet."), because Signa's review
+covers only Base USDC payments and Sticky's stick pays the project's own token.
+
+## Creating a Sticky token
+
+Pick the token by address or by Juicebox project ID. A plain ID (`5`) resolves to that
+project's ERC-20 on every selected chain and must name the same token on each; a
+chain-prefixed ID (`base:5`) resolves once on that chain. Either way the token must
+have the same address, name, symbol and decimals everywhere the launch goes.
+
+Options: a custom name and symbol (defaults "Sticky <token name>" and STICKY<SYMBOL>),
+a stickiness bonus of 0, 5, 10 or 25% or a custom 0 to 99.99%, trusted senders,
+transfers Unlocked (default) or Locked, and the chains. AutoStick is a trusted sender
+on every launch, so a chain without a configured AutoStick helper can't be selected.
+
+Each chain hands out its own next project ID, and the Sticky token address includes it,
+so IDs and token addresses differ across chains. The project URI carries a `launchId`
+shared by every chain of one launch, and the launch steps link each chain's project.
+
+### Juicebox Center listing
+
+Each launch is listed on Juicebox Center as a signed project intent (format
+`sticky.center/deploy.v1`). After you confirm the deployment review, your wallet
+signs Center's message for the exact calls (`personal_sign`; wallet addresses only,
+so a Safe or other contract account launches unlisted), and the launch is then sent
+as before: directly for one chain, or through one Relayr bundle for several. Each
+chain's deployment is recorded on Center (`POST /v1/intents/:id/deployments`) once it
+has 2 confirmations.
+
+Center refusing or being unreachable never blocks a launch. The launch says "Not
+listed on Juicebox Center" and offers a retry. The listing ID and what was recorded
+live in the saved launch, so a reload resumes without publishing or recording twice.
+
+Center sponsors a launch only through the V6 ERC-2771 forwarder. When every selected
+chain is one Center sponsors and `StickyDeployer.isTrustedForwarder(forwarder)` is
+true on each, the site publishes the listing and asks Center to deploy it; you send
+no transaction. Today's StickyDeployer does not trust the forwarder, so launches are
+self-paid. Set `STICKY_CENTER_URL` to another HTTPS origin to use a different Center.
 
 ## Transactions and recovery
 
@@ -114,6 +168,32 @@ Claimable backing excludes funds left when no shares existed. The current home-p
 value uses that claimable backing; its historical chart estimates past share counts
 at today's backing per share and token price, rather than reconstructing past prices.
 
+Unstick quotes come from the terminal's views at one block: `previewCashOutFrom`
+for the gross reclaim and tax, then the terminal's own fee rule (`FEELESS_ADDRESSES`,
+positive tax charges the whole reclaim, zero tax only the `feeFreeSurplusOf` part,
+floored at 1/40). The dialog quote is the minimum the review sends; an `eth_call`
+preflight only checks for a revert.
+
+Every write is checked before the wallet sees it. `calldata.js` decodes each step
+against a fixed registry of the functions the site sends, with strict canonical ABI
+decoding, and the review shows only decoded values. An unknown function, a hidden
+argument, or a value that differs from what the review names blocks Confirm.
+
+The holder list comes from the hook's own events (each `Staked` and `Unstaked`
+carries the resulting balance), one bounded scan per project view; the visible page
+is re-read from the hook. A multichain launch writes one `launchId` into every
+chain's `projectUri`; the project page finds each same-environment chain's project
+from its `DeploySticky` events and shows backing and supply per chain with totals.
+Log scans follow a node's stated range limit, including HTTP 413 answers.
+
+Rewards show the current round and when it ends, and per group the amount claimable
+now, vesting with its next and last unlock dates, earned in finished rounds but not
+vesting yet, and funding. Collecting starts a 4-round unlock, a quarter per round.
+
+Bendystraw is not used: it indexes Sticky projects and their pay and cash out events,
+but not StickyHook positions, tranches or streaks, nor custom-token holders, so the
+hook log scan is needed regardless.
+
 The 100% cash out tax permanently makes unsticking return zero underlying tokens.
 The auto-stick adapter quotes issuance during execution and rejects zero-token
 mints, including high-decimal reward dust. Its UI estimate can change before
@@ -128,10 +208,12 @@ Run from the repository root with the Python environment activated:
 python -m unittest discover -s webclient/test -p 'test_*.py' -v
 for script in webclient/*.js; do node --check "$script"; done
 node --test webclient/test/*.test.cjs
+webclient/vendor/build.sh --check
 ```
 
-The separate `webclient` GitHub workflow runs these gates and starts the real
-production HTTP entry point with an explicit demo config. Contract tests remain
+The separate `webclient` GitHub workflow runs these gates, builds the explicit demo,
+builds a live config for all 8 chains and checks each has a deployer and starting
+block, then starts the real production HTTP entry point with that live config. Contract tests remain
 under `forge test`; they do not broadcast transactions.
 
 Server libraries: [Waitress](https://docs.pylonsproject.org/projects/waitress/en/latest/)

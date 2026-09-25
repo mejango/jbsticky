@@ -172,6 +172,15 @@ test("partial status stays pending and foreign status requests never become evid
   f.status.transactions = [{ tx_uuid: ID2, request: f.ordered[0] }];
   await assert.rejects(clientFor(async () => response(f.status)).fetchStatus(f.bound), /differs/);
 });
+test("the configured Relayr URL replaces the default API", async () => {
+  const f = quoteFixture(); f.status.transactions = [];
+  const urls = [];
+  const fetch = async (url) => { urls.push(url); return response(f.status); };
+  const rpc = async () => { throw Error("unexpected RPC"); };
+  await R.createClient({ fetch, rpc, apiUrl: "https://relayr.example/" }).fetchStatus(f.bound);
+  await R.createClient({ fetch, rpc, apiUrl: undefined }).fetchStatus(f.bound);
+  assert.deepEqual(urls, ["https://relayr.example/v1/bundle/" + BUNDLE, "https://api.relayr.ba5ed.com/v1/bundle/" + BUNDLE]);
+});
 test("status label cannot prove execution and contradictory or malformed hashes are rejected", () => {
   assert.equal(R.destinationHash({ status: { state: "Success" } }), null);
   assert.equal(R.destinationHash({ status: { data: { hash: HASH } } }), HASH);
@@ -280,4 +289,23 @@ test("only proposal-bound Safe inner failure can prove a finalized unsuccessful 
   f.receipt.status = "0x0";
   f.receipt.logs = [];
   assert.deepEqual(await client.verifyPayment(HASH, p, BUNDLE, ACCOUNT, { safeTxHash: h(90) }), { status: "unresolved", hash: HASH });
+});
+test("a sponsored deployment through the forwarder verifies its exact call and configuration", async () => {
+  const FORWARDER = addr(8), SPONSOR = addr(9);
+  const forwarded = () => {
+    const f = evidence(ENTRY, SPONSOR);
+    f.tx.to = FORWARDER; f.receipt.to = FORWARDER;
+    f.tx.input = "0xdf905caf" + word(32) + ENTRY.data.slice(2) + word(SPONSOR).slice(24);
+    return f;
+  };
+  let f = forwarded();
+  assert.equal((await clientFor(undefined, f.rpc).verifyDeployment(HASH, ENTRY, { ...EXPECTED, forwarder: FORWARDER })).projectId, "123");
+  f = forwarded();
+  await assert.rejects(clientFor(undefined, f.rpc).verifyDeployment(HASH, ENTRY, EXPECTED), /does not match/);
+  f = forwarded();
+  await assert.rejects(clientFor(undefined, f.rpc).verifyDeployment(HASH, ENTRY, { ...EXPECTED, forwarder: addr(10) }), /does not match/);
+  f = forwarded(); f.tx.input = "0xdf905caf" + word(32);
+  await assert.rejects(clientFor(undefined, f.rpc).verifyDeployment(HASH, ENTRY, { ...EXPECTED, forwarder: FORWARDER }), /does not match/);
+  f = forwarded(); f.receipt.logs[0].data = "0x" + [STICKY_TOKEN, 101, 1, SPONSOR].map(word).join("");
+  await assert.rejects(clientFor(undefined, f.rpc).verifyDeployment(HASH, ENTRY, { ...EXPECTED, forwarder: FORWARDER }), /configuration/);
 });

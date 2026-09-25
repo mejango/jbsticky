@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sticky sign-in</title>
+<style>
+  @font-face { font-family: "Beatrice"; src: url("/Beatrice-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Agrandir"; src: url("/PPAgrandir-WideBold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+  body { margin: 0; background: #f8fcfd; color: #1c2d33; font: 15px/1.5 "Beatrice", system-ui, sans-serif; }
+  main { max-width: 36rem; margin: 0 auto; padding: 64px 24px; visibility: hidden; }
+  main.framed { padding: 24px 20px; min-height: 10rem; display: flex; flex-direction: column; justify-content: center; }
+  main.ready { visibility: visible; }
+  h1 { margin: 0; font: 700 24px/1.2 "Agrandir", "Beatrice", sans-serif; }
+  p { margin: 16px 0 0; overflow-wrap: anywhere; }
+  p:empty { display: none; }
+  p.err { color: #b34a35; }
+  button { margin-top: 16px; padding: 10px 18px; min-height: 44px; border: 0; border-radius: 4px; background: #0e7c91; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+<main id="callback">
+  <h1 id="callback-title">Your Signa account</h1>
+  <p id="callback-status" role="status"></p>
+  <button id="callback-retry" type="button" class="hide">Retry</button>
+</main>
+<script src="/config.js"></script>
+<script src="/center-callback.js"></script>
+</body>
+</html>

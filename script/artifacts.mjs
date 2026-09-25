@@ -10,12 +10,15 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { networks } from './deploy.mjs';
 
-// Each contract's constructor arguments in declaration order: a manifest field, or a policy constant. The
-// distributor's words match `_distributorArgs` in script/helpers/StickyDeployment.sol.
+// Core's ERC-2771 forwarder, the same on every chain. The runner's verify step checks each Sticky contract trusts it.
+export const trustedForwarder = '0x3bA60b60933916a7C87D0860DcEE62a0CE34E3e2';
+
+// Each contract's constructor arguments in declaration order: a manifest field, an address, or a policy constant.
+// The distributor's words match `_distributorArgs` in script/helpers/StickyDeployment.sol.
 export const contracts = [
   { name: 'StickyDeployer', field: 'deployer', args: ['controller', 'terminal'] },
   // The deployer's constructor creates the hook, so the explorer attributes it to the deployer's creation transaction.
-  { name: 'StickyHook', field: 'hook', args: ['directory', 'deployer'], child: true },
+  { name: 'StickyHook', field: 'hook', args: ['directory', 'deployer', trustedForwarder], child: true },
   { name: 'StickyDistributor', field: 'distributor', args: ['controller', 'directory', 'hook', 7n * 86_400n, 4n, 2n * 365n * 86_400n] },
   { name: 'StickyRewardReceiverFactory', field: 'rewardReceiverFactory', args: ['distributor'] },
   { name: 'StickyAutoStick', field: 'autoStick', args: ['deployer', 'distributor'] },
@@ -81,6 +84,7 @@ export function constructorArgs(contract, manifest, artifact) {
   }
   const args = contract.args.map(arg => {
     if (typeof arg === 'bigint') return arg.toString();
+    if (/^0x[\da-fA-F]{40}$/.test(arg)) return arg;
     if (!/^0x[\da-fA-F]{40}$/.test(manifest[arg] || '')) throw new Error(`The manifest records no ${arg} address.`);
     return manifest[arg];
   });

@@ -30,7 +30,15 @@ PUBLIC_RPC = {
     421614: "https://sepolia-rollup.arbitrum.io/rpc",
 }
 ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}\Z")
+# Signa hosts the passkey sign-in. Over HTTPS only these exact origins are accepted; a local
+# Signa for development runs over plain HTTP on a loopback host.
+SIGNA_ISSUER = "https://signa.center"
+SIGNA_AUDIENCE = "https://api.signa.center"
+LOCAL_ORIGIN = re.compile(r"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[1-9][0-9]{0,4})?\Z")
+HTTPS_ORIGIN = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[1-9][0-9]{0,4})?\Z")
 ZERO_ADDRESS = "0x" + "0" * 40
+# Juicebox Center lists launches (project intents). Its API is served from the site origin.
+CENTER_URL = "https://juicebox.center"
 
 
 def address(value, name):
@@ -58,6 +66,41 @@ def block_number(value, name):
     if value != "earliest" and not re.fullmatch(r"(?:0x[0-9a-fA-F]+|[0-9]+)", value):
         raise ValueError(f"{name} must be earliest or a nonnegative block number")
     return value
+
+
+def center_url(value):
+    if not HTTPS_ORIGIN.fullmatch(value):
+        raise ValueError("STICKY_CENTER_URL must be an HTTPS origin, like https://juicebox.center")
+    return value
+
+
+def center_wallet(env):
+    """Mirrors Homerun's wallet-config.ts; a build fails instead of shipping a half-pinned wallet."""
+    enabled = env("STICKY_CENTER_WALLET_ENABLED", default="false").lower()
+    if enabled not in ("true", "false"):
+        raise ValueError("STICKY_CENTER_WALLET_ENABLED must be true or false")
+    if enabled == "false":
+        return None
+    issuer = env("STICKY_CENTER_WALLET_ISSUER", default=SIGNA_ISSUER)
+    audience = env("STICKY_CENTER_WALLET_AUDIENCE", default=SIGNA_AUDIENCE)
+    for name, value in (("STICKY_CENTER_WALLET_ISSUER", issuer), ("STICKY_CENTER_WALLET_AUDIENCE", audience)):
+        if not (LOCAL_ORIGIN.fullmatch(value) or HTTPS_ORIGIN.fullmatch(value)):
+            raise ValueError(f"{name} must be an origin: HTTPS, or HTTP on localhost")
+    if issuer.startswith("https:") and (issuer, audience) != (SIGNA_ISSUER, SIGNA_AUDIENCE):
+        raise ValueError(f"Over HTTPS the Signa issuer and audience must be {SIGNA_ISSUER} and {SIGNA_AUDIENCE}")
+    if issuer == audience:
+        raise ValueError("STICKY_CENTER_WALLET_ISSUER and STICKY_CENTER_WALLET_AUDIENCE must differ")
+    manifest_id = env("STICKY_CENTER_WALLET_MANIFEST_ID")
+    if not re.fullmatch(r"[a-zA-Z0-9:_-]{1,128}", manifest_id):
+        raise ValueError("STICKY_CENTER_WALLET_MANIFEST_ID must be 1-128 letters, digits, colons, underscores or hyphens")
+    revision = env("STICKY_CENTER_WALLET_MANIFEST_REVISION")
+    if not re.fullmatch(r"0x[0-9a-f]{64}", revision) or int(revision, 16) == 0:
+        raise ValueError("STICKY_CENTER_WALLET_MANIFEST_REVISION must be a nonzero lowercase 32-byte hex value")
+    fee = env("STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI")
+    if not re.fullmatch(r"[1-9][0-9]{0,77}", fee) or int(fee) >= 2**256:
+        raise ValueError("STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI must be a positive uint256 in wei")
+    return {"issuer": issuer, "audience": audience, "manifest": {"id": manifest_id, "revision": revision},
+            "maximumNetworkFee": fee}
 
 
 def build_config(environ):
@@ -118,6 +161,8 @@ def build_config(environ):
         "relayrUrl": endpoint(env("STICKY_RELAYR_URL", default="https://api.relayr.ba5ed.com"), "STICKY_RELAYR_URL"),
         "bendystrawUrl": endpoint(env("NEXT_PUBLIC_BENDYSTRAW_URL", default="https://bendystraw.up.railway.app"), "NEXT_PUBLIC_BENDYSTRAW_URL"),
         "testnetBendystrawUrl": endpoint(env("NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL", default="https://testnet.bendystraw.xyz"), "NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL"),
+        "centerWallet": center_wallet(env),
+        "centerUrl": center_url(env("STICKY_CENTER_URL", default=CENTER_URL)),
     }
 
 
@@ -146,7 +191,9 @@ def main():
         parser.exit(1, f"Configuration failed: {error}\n")
     print(f"config.js generated: {'demo' if config['demoMode'] else 'live'}, "
           f"default chain {config['defaultChainId']}, "
-          f"{sum(bool(entry.get('deployer')) for entry in config['chains'].values())} configured deployment chains")
+          f"{sum(bool(entry.get('deployer')) for entry in config['chains'].values())} configured deployment chains, "
+          f"Signa sign-in {'on' if config['centerWallet'] else 'off'}, "
+          f"listings on {config['centerUrl']}")
 
 
 if __name__ == "__main__":

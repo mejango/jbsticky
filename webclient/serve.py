@@ -11,18 +11,61 @@ from whitenoise import WhiteNoise
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC_ASSETS = frozenset({
-    "index.html", "config.js", "app.js", "runtime.js", "tx-engine.js", "tx-safe.js",
-    "relayr.js", "launch-session.js", "bridge.js", "llms.txt",
+    "index.html", "config.js", "app.js", "runtime.js", "calldata.js", "tx-engine.js", "tx-safe.js",
+    "relayr.js", "launch-session.js", "launch-plan.js", "center-intents.js", "bridge.js", "llms.txt",
+    "wallet-chooser.js", "center-connect.js", "center-callback.js", "center-callback.html",
     "Beatrice-Medium.woff2", "Beatrice-Regular.woff2", "PPAgrandir-WideBold.woff2",
     "artizen.jpg", "banny.png", "cone.png", "donut.png", "drip-corner.png", "drip-round.png",
     "drip-wide.png", "goo.png", "goo2.png", "hero-donut.png", "hero.png", "jar.png", "juicebox.png",
 })
-SECURITY_HEADERS = [
-    ("X-Content-Type-Options", "nosniff"),
-    ("X-Frame-Options", "DENY"),
-    ("Referrer-Policy", "no-referrer"),
-    ("Content-Security-Policy", "script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"),
-]
+CALLBACK_PATH = "/center/callback"
+CALLBACK_FILE = "/center-callback.html"
+WALLET_ORIGIN = re.compile(r"https://[a-z0-9.-]+|http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?")
+
+
+def security_headers(wallet_origin=None, callback=False):
+    """Every page refuses framing and form posts, except for what the Signa sign-in needs.
+
+    With Signa on, the page posts its launch form to Signa (form-action) and sends
+    strict-origin so that post carries this site's origin; no-referrer would send Origin: null.
+    Only the callback page may be framed, and only by this site: the sign-in frame lands on it.
+    """
+    if callback:
+        return [
+            ("X-Content-Type-Options", "nosniff"),
+            ("X-Frame-Options", "SAMEORIGIN"),
+            ("Referrer-Policy", "strict-origin"),
+            ("Content-Security-Policy", "script-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'none'"),
+        ]
+    form_action = wallet_origin or "'none'"
+    return [
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+        ("Referrer-Policy", "strict-origin" if wallet_origin else "no-referrer"),
+        ("Content-Security-Policy", f"script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action {form_action}"),
+    ]
+
+
+SECURITY_HEADERS = security_headers()
+
+
+def read_config(root):
+    source = (root / "config.js").read_text(encoding="utf-8")
+    assignment = re.search(r"window\.STICKY_CONFIG\s*=\s*(\{.*\})\s*;\s*\Z", source, re.S)
+    config = json.loads(assignment[1]) if assignment else None
+    if not isinstance(config, dict) or not isinstance(config.get("demoMode"), bool):
+        raise ValueError("not generated configuration")
+    return config
+
+
+def wallet_origin(root):
+    """The configured Signa issuer, or None when sign-in is off or the config is unusable."""
+    try:
+        wallet = read_config(root).get("centerWallet")
+    except (OSError, ValueError, TypeError):
+        return None
+    issuer = wallet.get("issuer") if isinstance(wallet, dict) else None
+    return issuer if isinstance(issuer, str) and WALLET_ORIGIN.fullmatch(issuer) else None
 
 
 def readiness(root):
@@ -31,11 +74,7 @@ def readiness(root):
             candidate = root / name
             if candidate.is_symlink() or not candidate.is_file():
                 raise ValueError("missing public build file")
-        source = (root / "config.js").read_text(encoding="utf-8")
-        assignment = re.search(r"window\.STICKY_CONFIG\s*=\s*(\{.*\})\s*;\s*\Z", source, re.S)
-        config = json.loads(assignment[1]) if assignment else None
-        if not isinstance(config, dict) or not isinstance(config.get("demoMode"), bool):
-            raise ValueError("not generated configuration")
+        config = read_config(root)
         if not config["demoMode"]:
             deployer = config.get("deployer", "")
             if not re.fullmatch(r"0x[0-9a-fA-F]{40}", deployer) or int(deployer, 16) == 0:
@@ -47,6 +86,13 @@ def readiness(root):
             candidate = root / name
             if name not in PUBLIC_ASSETS or candidate.is_symlink() or not candidate.is_file():
                 raise ValueError("missing public script")
+        if config.get("centerWallet") is not None:
+            if not wallet_origin(root):
+                raise ValueError("invalid Signa issuer")
+            for name in ("center-callback.html", "center-callback.js", "center-connect.js"):
+                candidate = root / name
+                if candidate.is_symlink() or not candidate.is_file():
+                    raise ValueError("missing Signa callback file")
         return {"ok": True, "mode": "demo" if config["demoMode"] else "live"}
     except (OSError, ValueError, TypeError):
         return {"ok": False, "error": "Client build or generated deployment configuration is incomplete"}
@@ -71,12 +117,15 @@ class PublicFiles(WhiteNoise):
     @staticmethod
     def asset_headers(headers, path, url):
         if Path(path).suffix in (".html", ".js", ".txt"):
-            headers["Cache-Control"] = "no-store" if url == "/config.js" else "no-cache"
+            headers["Cache-Control"] = "no-store" if url in ("/config.js", CALLBACK_FILE) else "no-cache"
 
 
 def create_app(root=ROOT, revision=None):
     root = Path(root).resolve()
     state = readiness(root)
+    issuer = wallet_origin(root) if state["ok"] else None
+    page_headers = security_headers(issuer)
+    callback_headers = security_headers(issuer, callback=True)
     if revision and re.fullmatch(r"[0-9a-fA-F]{7,40}", revision):
         state["revision"] = revision
 
@@ -92,7 +141,10 @@ def create_app(root=ROOT, revision=None):
 
     def application(environ, start_response):
         def secure_response(status, headers, exc_info=None):
-            return start_response(status, [*headers, *SECURITY_HEADERS], exc_info)
+            return start_response(status, [*headers, *page_headers], exc_info)
+
+        def callback_response(status, headers, exc_info=None):
+            return start_response(status, [*headers, *callback_headers], exc_info)
 
         if environ.get("REQUEST_METHOD") not in ("GET", "HEAD"):
             return respond(environ, secure_response, "405 Method Not Allowed", b"Method not allowed\n",
@@ -102,6 +154,10 @@ def create_app(root=ROOT, revision=None):
             body = (json.dumps(state, separators=(",", ":")) + "\n").encode()
             return respond(environ, secure_response, "200 OK" if state["ok"] else "503 Service Unavailable",
                            body, "application/json")
+        if path == CALLBACK_PATH and issuer:
+            return assets({**environ, "PATH_INFO": CALLBACK_FILE}, callback_response)
+        if path in (CALLBACK_PATH, CALLBACK_FILE):
+            return not_found(environ, secure_response)
         if path == "/":
             environ = {**environ, "PATH_INFO": "/index.html"}
         return assets(environ, secure_response)

@@ -215,6 +215,9 @@
       return routes;
     }
     const txFor = (runtime, to, data, label, args = [], value = 0n) => ({ chainId: runtime.chainId, rpcUrl: runtime.rpcUrl, to: address(to), data, value: "0x" + value.toString(16), label, args });
+    // Review rows bound to calldata arguments; the confirm dialog decodes each one and blocks a mismatch.
+    const bound = (param, expect, fmt) => ({ param, expect: typeof expect === "bigint" ? expect.toString() : expect, ...(fmt ? { fmt } : {}) });
+    const units = (meta) => ({ kind: "units", decimals: meta?.decimals ?? 18, symbol: meta?.symbol || "units" });
     async function prepare({ route, amount, owner, receiver, metadata }) {
       amount = BigInt(amount); owner = address(owner); receiver = address(receiver); metadata = hash(metadata);
       if (amount <= 0n || metadata === ZERO) throw new Error("A positive bridge amount and unique transfer reference are required.");
@@ -233,10 +236,18 @@
       const quote = minimumOutput(uint(preview, 9), uint(preview, 10), feeFree, feeless === 1n);
       const txs = [];
       if (allowance < amount) {
-        if (allowance > 0n) txs.push({ ...txFor(source, sourceToken, SEL.approve + aw(sourceSucker) + word(0), "Reset bridge allowance"), fn: "approve(address,uint256)" });
-        txs.push({ ...txFor(source, sourceToken, SEL.approve + aw(sourceSucker) + word(amount), "Approve bridge transfer", [["SPENDER", sourceSucker], ["AMOUNT", amount.toString() + " smallest units"]]), fn: "approve(address,uint256)" });
+        const approval = (value) => [["SPENDER", bound("spender", sourceSucker, { names: { [sourceSucker]: "bridge" } })], ["AMOUNT", bound("amount", value, units(route.sourceMeta))]];
+        if (allowance > 0n) txs.push({ ...txFor(source, sourceToken, SEL.approve + aw(sourceSucker) + word(0), "Reset bridge allowance", approval(0n)), fn: "approve(address spender, uint256 amount)" });
+        txs.push({ ...txFor(source, sourceToken, SEL.approve + aw(sourceSucker) + word(amount), "Approve bridge transfer", approval(amount)), fn: "approve(address spender, uint256 amount)" });
       }
-      txs.push({ ...txFor(source, sourceSucker, SEL.prepare + word(amount) + aw(receiver) + word(quote.minimum) + aw(backingToken) + metadata.slice(2), "Queue cross-chain rewards", [["SOURCE TOKEN", sourceToken], ["DESTINATION TOKEN", route.rewardToken], ["DESTINATION RECEIVER", receiver], ["MINIMUM BACKING", quote.minimum.toString() + " smallest units"], ["SLIPPAGE", "1% below the live net backing quote"]]), fn: "prepare(uint256,bytes32,uint256,address,bytes32)" });
+      txs.push({ ...txFor(source, sourceSucker, SEL.prepare + word(amount) + aw(receiver) + word(quote.minimum) + aw(backingToken) + metadata.slice(2), "Queue cross-chain rewards", [
+        ["SEND", bound("projectTokenCount", amount, units(route.sourceMeta))],
+        ["SOURCE TOKEN", sourceToken], ["DESTINATION TOKEN", route.rewardToken],
+        ["DESTINATION RECEIVER", bound("beneficiary", "0x" + aw(receiver), { kind: "bytes32Address" })],
+        ["MINIMUM BACKING", bound("minTokensReclaimed", quote.minimum, units(route.backingMeta))],
+        ["BACKING TOKEN", bound("token", backingToken, { names: { [backingToken]: route.backingMeta?.symbol || "backing" } })],
+        ["TRANSFER REFERENCE", bound("metadata", metadata)],
+        ["SLIPPAGE", "1% below the live net backing quote"]]), fn: "prepare(uint256 projectTokenCount, bytes32 beneficiary, uint256 minTokensReclaimed, address token, bytes32 metadata)" });
       return { txs: txs.map(tx => ({ ...tx, from: owner, sessionTag: "sticky-bridge:" + metadata })), ...quote };
     }
 
@@ -316,7 +327,7 @@
       const fee = uint(await call(route.source, contracts(route.source).suckerRegistry, "toRemoteFee"));
       const budgets = ["ccip", "arbitrum-l1"].includes(transport) ? [10n ** 15n, 5n * 10n ** 15n, 2n * 10n ** 16n, 5n * 10n ** 16n, 2n * 10n ** 17n, 5n * 10n ** 17n] : [0n];
       for (const budget of budgets) {
-        const tx = { ...txFor(route.source, route.sourceSucker, SEL.toRemote + aw(route.backingToken), "Send queued rewards across chains", [["DESTINATION", route.destination.name || String(route.destination.chainId)], ["FEE AND TRANSPORT BUDGET", (fee + budget).toString() + " wei"], ["EFFECT", "send the origin bridge's queued batch; destination arrival is asynchronous"]], fee + budget), from: address(owner), fn: "toRemote(address)" };
+        const tx = { ...txFor(route.source, route.sourceSucker, SEL.toRemote + aw(route.backingToken), "Send queued rewards across chains", [["DESTINATION", route.destination.name || String(route.destination.chainId)], ["BACKING TOKEN", bound("token", route.backingToken, { names: { [route.backingToken]: route.backingMeta?.symbol || "backing" } })], ["EFFECT", "Sends the origin bridge's queued batch. It arrives later, on the bridge's schedule."]], fee + budget), valueNote: "bridge fee and transport budget", from: address(owner), fn: "toRemote(address token)" };
         try { await request(route.source, "eth_call", [{ from: tx.from, to: tx.to, data: tx.data, value: tx.value }, "latest"]); return tx; } catch { /* Only a successfully simulated exact native budget is offered. */ }
       }
       throw new Error("The bridge transport could not be quoted. The queued rewards remain recoverable; refresh and try again.");
@@ -326,7 +337,8 @@
       if (!live || live.status !== "claimable" || live.proof?.length !== 32) throw new Error("This transfer is not ready to claim. Refresh its bridge status.");
       const leaf = live.leaf;
       const data = SEL.claim + aw(route.remoteBackingToken) + word(leaf.index) + hash(leaf.beneficiary).slice(2) + word(leaf.projectTokenCount) + word(leaf.terminalTokenAmount) + hash(leaf.metadata).slice(2) + live.proof.map(x => hash(x).slice(2)).join("");
-      const tx = { ...txFor(route.destination, route.destinationSucker, data, "Claim arriving rewards", [["REWARD TOKEN", route.rewardToken], ["RECEIVER", address(receiver)], ["EFFECT", "deliver project tokens into this Sticky project's reward receiver"]]), from: address(owner), fn: "claim((address,(uint256,bytes32,uint256,uint256,bytes32),bytes32[32]))" };
+      const expectClaim = [route.remoteBackingToken, [leaf.index.toString(), leaf.beneficiary.toLowerCase(), leaf.projectTokenCount.toString(), leaf.terminalTokenAmount.toString(), leaf.metadata.toLowerCase()], live.proof.map(x => x.toLowerCase())];
+      const tx = { ...txFor(route.destination, route.destinationSucker, data, "Claim arriving rewards", [["ARRIVAL", bound("claimData", expectClaim, { kind: "claim", decimals: route.rewardMeta?.decimals, symbol: route.rewardMeta?.symbol, names: { [address(receiver)]: "reward receiver" } })], ["REWARD TOKEN", route.rewardToken], ["EFFECT", "Delivers project tokens into this Sticky project's reward receiver."]]), from: address(owner), fn: "claim((address token, (uint256 index, bytes32 beneficiary, uint256 projectTokenCount, uint256 terminalTokenAmount, bytes32 metadata) leaf, bytes32[32] proof) claimData)" };
       await request(route.destination, "eth_call", [{ from: tx.from, to: tx.to, data: tx.data }, "latest"]);
       return tx;
     }

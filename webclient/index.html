@@ -67,6 +67,12 @@
   .brand { font-size: 15px; font-weight: 700; letter-spacing: 2px; cursor: pointer; }
   .brand span { color: var(--amber); }
   header .right { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  /* Phones: the chain picker and the connect button share the row right of the 54px drip logo. */
+  @media (max-width: 520px) {
+    header .right { gap: 8px; min-width: 0; max-width: calc(100vw - 96px); }
+    header .right #site-chain { flex: 0 1 auto; min-width: 0; max-width: 100% !important; text-overflow: ellipsis; }
+    header .right .connect-btn { flex: none; white-space: nowrap; font-size: 13px; letter-spacing: .5px; padding: 5px 10px; }
+  }
   .link { color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
   .mut { color: var(--muted); }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; position: relative; }
@@ -409,6 +415,7 @@
   .cd-summary-row { display: flex; justify-content: space-between; gap: 18px; padding: 3px 0; }
   .cd-summary-row .k { color: var(--muted); }
   .cd-summary-row .v { font-weight: 600; text-align: right; }
+  .hexv { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .cd-steps { border: 1px solid var(--line); border-radius: 6px; background: #fdffff; padding: 12px 14px; margin-bottom: 12px; }
   .cd-steps p { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
   .cd-step { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-weight: 600; }
@@ -421,9 +428,24 @@
   .cd-step.current i { background: var(--accent); border-color: var(--accent); color: #fdffff; }
   .cd-step.done i { background: var(--teal); border-color: var(--teal); color: var(--ink); }
   .cd-warn {
-    border: 1px solid #eccfc6; background: #fdf1ec; color: var(--err); border-radius: 6px;
+    border: 1px solid var(--line); color: var(--muted); border-radius: 6px;
     padding: 10px 12px; font-size: 13px; margin-bottom: 4px;
   }
+  .chains-table tr.total td { font-weight: 600; border-top: 1px solid var(--line); }
+  .board-pages { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; font-size: 13px; }
+  .board-pages button { margin: 0; padding: 4px 10px; }
+  .reward-list { display: grid; gap: 10px; margin: 8px 0 12px; }
+  .reward-card { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+  .reward-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; }
+  .reward-token { margin-left: auto; }
+  .reward-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 13px; }
+  .reward-kv dt { color: var(--muted); }
+  .reward-kv dd { margin: 0; overflow-wrap: anywhere; }
+  .reward-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .reward-actions button { margin: 0; padding: 6px 12px; }
+  @media (max-width: 520px) { .reward-kv { grid-template-columns: minmax(0, 1fr); gap: 0 0; } .reward-kv dd { margin-bottom: 6px; } }
+  .cd-warn.err { border: 2px solid #eccfc6; background: #fdf1ec; color: var(--err); font-weight: 600; }
+  .cd-block { margin: 6px 0; padding: 8px 10px; border-left: 3px solid var(--err); color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
   .cd-chain { font-size: 11px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
   .cd-contract { font-size: 12px; color: var(--muted); word-break: break-all; margin: 1px 0 4px; }
   .cd-contract b { color: var(--text); font-weight: 600; }
@@ -493,8 +515,36 @@
   .wallet-menu-balance-row { display: flex; justify-content: space-between; gap: 20px; line-height: 1.7; }
   .viewas-prompt { padding: 6px 10px 8px; }
   .viewas-prompt input { margin-bottom: 6px; }
-  .wallet-pick { display: flex; align-items: center; gap: 8px; }
-  .wallet-pick-icon { width: 18px; height: 18px; border-radius: 4px; flex: none; }
+  /* The sign-in chooser. The --jb-connect-* tokens are what Signa's framed sign-in themes itself from. */
+  dialog.wallet-dialog {
+    --jb-connect-bg: #f8fcfd; --jb-connect-fg: #1c2d33; --jb-connect-muted: #57727c; --jb-connect-line: #d8e7eb;
+    --jb-connect-accent: #0e7c91; --jb-connect-accent-fg: #ffffff; --jb-connect-radius: 8px; --jb-connect-pad: 20px;
+    max-width: 440px; overscroll-behavior: contain;
+  }
+  .wallet-dialog h2 { font-size: 22px; line-height: 1.2; margin: 4px 36px 16px 0; }
+  .wallet-dialog h2:focus { outline: none; }
+  .wallet-dialog:has(.wallet-frame) { padding-bottom: 0; }
+  button.wallet-primary { display: inline-block; margin: 0; min-height: 44px; padding: 10px 20px; }
+  .wallet-divider { margin: 16px 0 8px; color: var(--muted); font-size: 13px; }
+  .wallet-tiles { display: grid; gap: 8px; }
+  button.wallet-tile {
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 8px 12px; margin: 0;
+    background: #fdffff; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    font: inherit; font-weight: 600; letter-spacing: 0; text-align: left;
+  }
+  button.wallet-tile:hover { border-color: var(--ink); }
+  .wallet-mark { flex: none; display: grid; place-items: center; width: 22px; height: 22px; object-fit: contain; font-size: 13px; font-weight: 700; }
+  .wallet-name { min-width: 0; overflow-wrap: anywhere; }
+  .wallet-note, .wallet-status { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+  .wallet-error { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid var(--err); color: var(--err); overflow-wrap: anywhere; font-size: 13px; }
+  .wallet-frame {
+    display: block; width: calc(100% + 40px); height: 14rem; margin: 0 -20px; border: 1px solid var(--line);
+    border-width: 1px 0 0; background: var(--card); transition: height .2s ease;
+  }
+  @media (prefers-reduced-motion: reduce) { .wallet-frame { transition: none; } }
+  .wallet-viewas { display: flex; gap: 8px; align-items: center; margin-top: 16px; font-size: 13px; }
+  .wallet-viewas input { flex: 1; min-width: 0; margin: 0; }
+  .wallet-viewas button.ghost { margin: 0; flex: none; }
   .hide { display: none; }
 </style>
 </head>
@@ -682,9 +732,19 @@
             <span class="chip"><i style="background:#2fb3c7"></i>Active sticks</span>
             <div id="chart"></div>
           </section>
-          <section>
+          <section id="p-details-card" class="hide">
             <h2>Details</h2>
             <div id="token-info" class="token-summary"></div>
+          </section>
+          <section id="p-chains-card" class="hide">
+            <h2>Chains</h2>
+            <div class="table-scroll">
+              <table class="chains-table">
+                <thead><tr><th>CHAIN</th><th>BACKING</th><th>SUPPLY</th></tr></thead>
+                <tbody id="p-chains"></tbody>
+              </table>
+            </div>
+            <p class="mut" id="p-chains-note"></p>
           </section>
         </div>
 
@@ -720,10 +780,8 @@
           </section>
           <section>
             <h2>Your rewards</h2>
-            <table>
-              <thead><tr><th>WHO</th><th>TOKEN</th><th>FUNDED</th><th>AVAILABLE</th><th></th></tr></thead>
-              <tbody id="rewards-list"></tbody>
-            </table>
+            <p class="mut" id="rewards-round"></p>
+            <div id="rewards-list" class="reward-list"></div>
             <p class="mut hide" id="rewards-tenure-note">Stake-age rewards pay only stake you still hold. Claim them
               before unsticking; an allocation you exit before claiming stays in the pot.</p>
             <div class="row">
@@ -788,6 +846,11 @@
                     <tbody id="leaderboard"></tbody>
                   </table>
                 </div>
+                <div id="board-pages" class="board-pages hide">
+                  <button type="button" class="ghost" id="board-prev">Previous</button>
+                  <span class="mut" id="board-page"></span>
+                  <button type="button" class="ghost" id="board-next">Next</button>
+                </div>
               </div>
             </div>
           </section>
@@ -830,7 +893,7 @@
   <div class="create-section">
     <div class="create-section-title">OPTIONS</div>
     <label class="check"><input type="checkbox" id="d-custom-name"> Set custom token name and symbol</label>
-    <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults — "Sticky &lt;name of the locked token&gt;" and STICKY&lt;SYMBOL&gt;.</p>
+    <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults: "Sticky &lt;token name&gt;" and STICKY&lt;SYMBOL&gt;.</p>
     <div class="row hide option-detail" id="d-name-row">
       <div><label for="d-name">NAME</label><input id="d-name" placeholder="Sticky ART"></div>
       <div><label for="d-symbol">SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
@@ -846,8 +909,9 @@
         <button type="button" class="preset" data-v="custom" aria-pressed="false">CUSTOM</button>
       </div>
       <div class="row hide" id="d-reward-custom-row">
-        <div><label for="d-reward">CUSTOM (%)</label><input id="d-reward" placeholder="10" value="10"></div>
+        <div><label for="d-reward">CUSTOM (%)</label><input id="d-reward" placeholder="0 to 99.99" value="10" inputmode="decimal"></div>
       </div>
+      <p class="err hint hide" id="d-reward-error">Enter a bonus from 0 to 99.99%.</p>
       <div id="d-ratchet"></div>
       <p class="mut hint" id="d-curve-note" style="margin-top:14px"></p>
       <details class="hint" id="d-fee-details" style="margin-top:14px">
@@ -992,6 +1056,12 @@
   </div>
 </dialog>
 
+<dialog id="wallet-dialog" class="wallet-dialog" aria-labelledby="wallet-title">
+  <button id="wallet-close" class="dlg-x" aria-label="Close">✕</button>
+  <h2 id="wallet-title" tabindex="-1">Sign in</h2>
+  <div id="wallet-body"></div>
+</dialog>
+
 <dialog id="confirm-dialog" aria-labelledby="cd-title">
   <button id="cd-close" class="dlg-x" aria-label="Close">✕</button>
   <div class="cd-eyebrow">Transaction sequence</div>
@@ -1018,13 +1088,17 @@
   <span id="tx-status-message"></span>
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
-<script src="config.js?v=128"></script>
-<script src="runtime.js?v=128"></script>
-<script src="tx-safe.js?v=128"></script>
-<script src="tx-engine.js?v=128"></script>
-<script src="relayr.js?v=128"></script>
-<script src="launch-session.js?v=128"></script>
-<script src="bridge.js?v=128"></script>
-<script src="app.js?v=128"></script>
+<script src="config.js?v=131"></script>
+<script src="runtime.js?v=131"></script>
+<script src="calldata.js?v=131"></script>
+<script src="tx-safe.js?v=131"></script>
+<script src="tx-engine.js?v=131"></script>
+<script src="relayr.js?v=131"></script>
+<script src="launch-plan.js?v=131"></script>
+<script src="center-intents.js?v=131"></script>
+<script src="launch-session.js?v=131"></script>
+<script src="bridge.js?v=131"></script>
+<script src="wallet-chooser.js?v=131"></script>
+<script src="app.js?v=131"></script>
 </body>
 </html>

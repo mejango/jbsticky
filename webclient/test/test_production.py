@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,22 @@ build = module("sticky_build", ROOT / "build-config.py")
 server = module("sticky_server", ROOT / "serve.py")
 DEPLOYER = "0x" + "12" * 20
 OTHER = "0x" + "34" * 20
+# The 8-chain deployment shape. Addresses change on redeploy; these tests check shape only.
+FROM_BLOCKS = {1: "26057164", 10: "157386536", 8453: "51791252", 42161: "508887149",
+               11155111: "11781859", 11155420: "49284433", 84532: "47301559", 421614: "312706619"}
+LIVE_ENV = {
+    "STICKY_DEPLOYER": "0xdA38Ec48B5b1d186B02BA99F297e95153BEE33a9",
+    "STICKY_DISTRIBUTOR": "0xc62b3fED668Cd8a3879ba34890a67C48a52b1Bb8",
+    "STICKY_REWARD_RECEIVER_FACTORY": "0xF65743b76C062762D19eecb4Ab5C7a943e128720",
+    "STICKY_AUTOSTICK_ADAPTER": "0x9B091e21d25c424De67751F4b6Ae8494351218C5",
+    **{f"STICKY_FROM_BLOCK_{chain_id}": block for chain_id, block in FROM_BLOCKS.items()},
+}
+SIGNA_ENV = {
+    "STICKY_CENTER_WALLET_ENABLED": "true",
+    "STICKY_CENTER_WALLET_MANIFEST_ID": "base-wallet:v1",
+    "STICKY_CENTER_WALLET_MANIFEST_REVISION": "0x" + "ab" * 32,
+    "STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI": "2000000000000000",
+}
 
 
 class ConfigTests(unittest.TestCase):
@@ -53,6 +70,27 @@ class ConfigTests(unittest.TestCase):
         for field in ("rpcUrl", "distributor", "rewardReceiverFactory", "autoStickAdapter"):
             self.assertEqual(config[field], config["chains"]["8453"][field])
         self.assertNotIn("deployer", config["chains"]["1"])
+
+    def test_live_configuration_covers_all_eight_chains_without_fixtures(self):
+        config = build.build_config(LIVE_ENV)
+        self.assertIs(config["demoMode"], False)
+        self.assertEqual(set(config["chains"]), {str(chain_id) for chain_id in FROM_BLOCKS})
+        for chain_id, block in FROM_BLOCKS.items():
+            entry = config["chains"][str(chain_id)]
+            with self.subTest(chain=chain_id):
+                self.assertEqual(entry["fromBlock"], block)
+                for field, variable in (("deployer", "STICKY_DEPLOYER"), ("distributor", "STICKY_DISTRIBUTOR"),
+                                        ("rewardReceiverFactory", "STICKY_REWARD_RECEIVER_FACTORY"),
+                                        ("autoStickAdapter", "STICKY_AUTOSTICK_ADAPTER")):
+                    self.assertEqual(entry[field], LIVE_ENV[variable])
+        self.assertFalse([key for key in config if key != "demoMode" and (key.startswith("demo") or key.endswith("Overrides"))])
+
+    def test_app_fallback_rpcs_match_build_config(self):
+        source = (ROOT / "app.js").read_text(encoding="utf-8")
+        origins = source[source.index("const ORIGINS = ["):source.index("const chainById")]
+        found = {int(chain_id.replace("_", "")): url
+                 for chain_id, url in re.findall(r'chainId: ([0-9_]+),.*?rpcUrl: "([^"]+)"', origins)}
+        self.assertEqual(found, build.PUBLIC_RPC)
 
     def test_rpc_override_takes_precedence_over_dwellir(self):
         config = build.build_config({"STICKY_DEPLOYER": DEPLOYER, "NEXT_PUBLIC_DWELLIR_API_KEY": "public-key",
@@ -103,6 +141,71 @@ class ConfigTests(unittest.TestCase):
                                     env={}, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(target.read_text(), "existing")
+
+class CenterListingConfigTests(unittest.TestCase):
+    def test_defaults_to_juicebox_center(self):
+        self.assertEqual(build.build_config({"STICKY_DEPLOYER": DEPLOYER})["centerUrl"], "https://juicebox.center")
+
+    def test_accepts_another_https_origin(self):
+        config = build.build_config({"STICKY_DEPLOYER": DEPLOYER, "STICKY_CENTER_URL": "https://dev.juicebox.center"})
+        self.assertEqual(config["centerUrl"], "https://dev.juicebox.center")
+
+    def test_rejects_anything_but_an_https_origin(self):
+        for value in ("http://juicebox.center", "http://localhost:3000", "https://juicebox.center/",
+                      "https://juicebox.center/v1", "https://user@juicebox.center", "juicebox.center", "https://Juicebox.center"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "STICKY_CENTER_URL must be an HTTPS origin"):
+                build.build_config({"STICKY_DEPLOYER": DEPLOYER, "STICKY_CENTER_URL": value})
+
+
+class SignaConfigTests(unittest.TestCase):
+    def config(self, **overrides):
+        return build.build_config({"STICKY_DEPLOYER": DEPLOYER, **SIGNA_ENV, **overrides})
+
+    def test_off_unless_enabled(self):
+        for env in ({}, {"STICKY_CENTER_WALLET_ENABLED": "false"},
+                    {"STICKY_CENTER_WALLET_ENABLED": "false", "STICKY_CENTER_WALLET_ISSUER": "https://evil.example"}):
+            with self.subTest(env=env):
+                self.assertIsNone(build.build_config({"STICKY_DEPLOYER": DEPLOYER, **env})["centerWallet"])
+
+    def test_enabled_defaults_to_the_signa_pins(self):
+        self.assertEqual(self.config()["centerWallet"], {
+            "issuer": "https://signa.center", "audience": "https://api.signa.center",
+            "manifest": {"id": "base-wallet:v1", "revision": "0x" + "ab" * 32},
+            "maximumNetworkFee": "2000000000000000",
+        })
+
+    def test_local_signa_is_allowed_over_http_loopback_only(self):
+        wallet = self.config(STICKY_CENTER_WALLET_ISSUER="http://localhost:3000",
+                             STICKY_CENTER_WALLET_AUDIENCE="http://127.0.0.1:3001")["centerWallet"]
+        self.assertEqual((wallet["issuer"], wallet["audience"]), ("http://localhost:3000", "http://127.0.0.1:3001"))
+
+    def test_rejects_anything_but_the_pinned_https_signa(self):
+        cases = [
+            {"STICKY_CENTER_WALLET_ENABLED": "yes"},
+            {"STICKY_CENTER_WALLET_ISSUER": "https://evil.example"},
+            {"STICKY_CENTER_WALLET_AUDIENCE": "https://evil.example"},
+            {"STICKY_CENTER_WALLET_AUDIENCE": "http://localhost:3001"},
+            {"STICKY_CENTER_WALLET_ISSUER": "https://signa.center/"},
+            {"STICKY_CENTER_WALLET_ISSUER": "https://signa.center:443"},
+            {"STICKY_CENTER_WALLET_ISSUER": "http://signa.center"},
+            {"STICKY_CENTER_WALLET_ISSUER": "https://user@signa.center"},
+            {"STICKY_CENTER_WALLET_ISSUER": "http://localhost:3000", "STICKY_CENTER_WALLET_AUDIENCE": "http://localhost:3000"},
+            {"STICKY_CENTER_WALLET_ISSUER": "http://localhost:3000", "STICKY_CENTER_WALLET_AUDIENCE": "http://example.com"},
+            {"STICKY_CENTER_WALLET_MANIFEST_ID": ""},
+            {"STICKY_CENTER_WALLET_MANIFEST_ID": "has space"},
+            {"STICKY_CENTER_WALLET_MANIFEST_ID": "x" * 129},
+            {"STICKY_CENTER_WALLET_MANIFEST_REVISION": "0x" + "0" * 64},
+            {"STICKY_CENTER_WALLET_MANIFEST_REVISION": "0x" + "AB" * 32},
+            {"STICKY_CENTER_WALLET_MANIFEST_REVISION": "0x" + "ab" * 31},
+            {"STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI": ""},
+            {"STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI": "0"},
+            {"STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI": "01"},
+            {"STICKY_CENTER_WALLET_MAXIMUM_NETWORK_FEE_WEI": str(2**256)},
+        ]
+        for case in cases:
+            with self.subTest(case=case), self.assertRaises(ValueError) as error:
+                self.config(**case)
+            self.assertNotIn("evil.example", str(error.exception))
 
 
 class ServerTests(unittest.TestCase):
@@ -237,6 +340,81 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(self.request(app=app)["body"].decode(), self.document)
         finally:
             os.chdir(previous)
+
+    def signa_app(self):
+        build.write_config(build.build_config({"STICKY_DEPLOYER": DEPLOYER, **SIGNA_ENV}), self.root / "config.js")
+        (self.root / "center-callback.html").write_text("<main>callback</main>")
+        (self.root / "center-callback.js").write_text("// callback")
+        (self.root / "center-connect.js").write_text("// sdk")
+        return server.create_app(self.root)
+
+    def test_page_policy_lets_the_page_reach_juicebox_center(self):
+        # Center listings, RPCs and Relayr are fetched from the page; only scripts are pinned to 'self'.
+        for app in (None, self.signa_app()):
+            policy = self.request(app=app)["headers"]["Content-Security-Policy"]
+            with self.subTest(policy=policy):
+                self.assertNotIn("connect-src", policy)
+                self.assertNotIn("default-src", policy)
+
+    def test_without_signa_pages_refuse_framing_forms_and_referrers(self):
+        headers = self.request()["headers"]
+        self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+        self.assertIn("form-action 'none'", headers["Content-Security-Policy"])
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        (self.root / "center-callback.html").write_text("<main>callback</main>")
+        app = server.create_app(self.root)
+        for path in ("/center/callback", "/center-callback.html"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(path, app=app)["status"], 404)
+
+    def test_signa_pages_post_only_to_signa_and_send_their_origin(self):
+        app = self.signa_app()
+        self.assertTrue(app.ready)
+        for path in ("/", "/app.js", "/healthz", "/missing"):
+            with self.subTest(path=path):
+                headers = self.request(path, app=app)["headers"]
+                self.assertEqual(headers["Referrer-Policy"], "strict-origin")
+                self.assertEqual(headers["X-Frame-Options"], "DENY")
+                self.assertEqual(headers["Content-Security-Policy"],
+                                 "script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; "
+                                 "form-action https://signa.center")
+
+    def test_callback_is_frameable_by_this_site_only_and_never_stored(self):
+        app = self.signa_app()
+        for method in ("GET", "HEAD"):
+            result = self.request("/center/callback", method=method, app=app,
+                                  headers={"QUERY_STRING": "code=secret&state=s&iss=https%3A%2F%2Fsigna.center"})
+            with self.subTest(method=method):
+                self.assertEqual(result["status"], 200)
+                self.assertIn("text/html", result["headers"]["Content-Type"])
+                self.assertEqual(result["headers"]["Cache-Control"], "no-store")
+                self.assertEqual(result["headers"]["Referrer-Policy"], "strict-origin")
+                self.assertEqual(result["headers"]["X-Frame-Options"], "SAMEORIGIN")
+                csp = result["headers"]["Content-Security-Policy"]
+                self.assertIn("frame-ancestors 'self'", csp)
+                self.assertIn("form-action 'none'", csp)
+                self.assertIn("script-src 'self'", csp)
+        self.assertEqual(self.request("/center/callback", app=app)["body"], b"<main>callback</main>")
+        for path in ("/center-callback.html", "/center/callback/", "/center/"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(path, app=app)["status"], 404)
+
+    def test_signa_build_is_not_ready_without_its_callback_files(self):
+        self.signa_app()
+        for name in ("center-callback.html", "center-callback.js", "center-connect.js"):
+            with self.subTest(name=name):
+                moved = self.root / name
+                content = moved.read_bytes()
+                moved.unlink()
+                self.assertFalse(server.create_app(self.root).ready)
+                moved.write_bytes(content)
+
+    def test_unusable_issuer_in_config_is_not_ready_and_never_reaches_a_header(self):
+        (self.root / "config.js").write_text('window.STICKY_CONFIG = ' + json.dumps({
+            "demoMode": False, "deployer": DEPLOYER, "centerWallet": {"issuer": "https://signa.center; script-src *"}}) + ';\n')
+        app = server.create_app(self.root)
+        self.assertFalse(app.ready)
+        self.assertIn("form-action 'none'", self.request(app=app)["headers"]["Content-Security-Policy"])
 
     def test_production_startup_refuses_invalid_configuration(self):
         (self.root / "config.js").unlink()

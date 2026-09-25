@@ -168,3 +168,44 @@ test('transaction lock prevents a cancel/resume race between tabs',async()=>{
 test('a failed cancellation tombstone write retains the active transaction plan',async()=>{
  const f=fixture();const session=await f.engine.prepare('Bridge',[{...tx,sessionTag:'bridge'}]);const set=f.storage.setItem;f.storage.setItem=(key,value)=>{if(key.includes('.discarded.'))throw Error('quota');return set(key,value);};await assert.rejects(f.engine.discardUnsubmitted(session.id),/quota/);assert.equal(f.engine.load().id,session.id);assert.equal(f.engine.wasDiscarded(session.id),false);
 });
+test('a review closed before anything was sent leaves no saved plan',async()=>{
+ const f=fixture();const updates=[];f.options.onUpdate=s=>updates.push(s);
+ const engine=createEngine(f.options);const session=await engine.prepare('Stick',[tx]);
+ const result=await engine.run({review:async()=>false});
+ assert.equal(result.cancelled,true);
+ assert.equal(await engine.discardIfUnsent(session.id),true);
+ assert.equal(engine.load(),null);assert.equal(updates.at(-1),null);assert.equal(f.sends,0);
+});
+test('a plan refused in the wallet is dropped on close; nothing was signed',async()=>{
+ const f=fixture();await f.engine.prepare('Stick',[tx]);
+ const orig=f.wallet.request;f.wallet.request=async args=>{if(args.method==='eth_sendTransaction')throw Object.assign(Error('rejected'),{code:4001});return orig(args);};
+ await assert.rejects(f.engine.run({review}),/cancelled/);
+ assert.equal(f.engine.load().steps[0].state,'rejected');
+ assert.equal(await f.engine.discardIfUnsent(),true);
+ assert.equal(f.engine.load(),null);
+});
+test('a plan with a sent or in-flight step keeps its saved record and banner',async()=>{
+ // A confirmed first step, then a refusal: something was sent, so the plan stays.
+ const f=fixture();await f.engine.prepare('Sequence',[tx,{...tx,data:'0x5678'}]);
+ let prompts=0;const orig=f.wallet.request;
+ f.wallet.request=async args=>{if(args.method==='eth_sendTransaction'&&++prompts===2)throw Object.assign(Error('rejected'),{code:4001});return orig(args);};
+ await assert.rejects(f.engine.run({review}),/cancelled/);
+ assert.equal(await f.engine.discardIfUnsent(),false);
+ assert.deepEqual(f.engine.load().steps.map(s=>s.state),['confirmed','rejected']);
+ // An unknown wallet outcome (possibly sent) stays too.
+ const g=fixture();await g.engine.prepare('Stick',[tx]);
+ g.setNext(()=>{throw Error('network');});
+ await assert.rejects(g.engine.run({review}),/unknown/);
+ assert.equal(await g.engine.discardIfUnsent(),false);
+ assert.equal(g.engine.load().steps[0].state,'unknown');
+ // A pending hash stays.
+ const p=fixture();p.setMined(false);await p.engine.prepare('Stick',[tx]);
+ await p.engine.run({review}).catch(()=>{});
+ assert.ok(['pending','unknown'].includes(p.engine.load().steps[0].state));
+ assert.equal(await p.engine.discardIfUnsent(),false);
+ // Tagged launch and bridge plans keep their own recovery records.
+ const t=fixture();await t.engine.prepare('Launch',[{...tx,sessionTag:'launch-1'}]);
+ await t.engine.run({review:async()=>false});
+ assert.equal(await t.engine.discardIfUnsent(),false);
+ assert.ok(t.engine.load());
+});
