@@ -16,6 +16,7 @@ import {JBClaimContext} from "@bananapus/distributor-v6/src/structs/JBClaimConte
 import {JBRewardRoundData} from "@bananapus/distributor-v6/src/structs/JBRewardRoundData.sol";
 import {JBVestingData} from "@bananapus/distributor-v6/src/structs/JBVestingData.sol";
 import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {mulDiv} from "@prb/math/src/Common.sol";
@@ -137,7 +138,8 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
             IREVOwner(address(0)),
             initialRoundDuration,
             initialVestingRounds,
-            initialClaimDuration
+            initialClaimDuration,
+            ERC2771Context(address(controller)).trustedForwarder()
         )
     {
         // Tenure claims read live tranches, so a pot whose eligible holders all exited can only ever recycle by
@@ -560,7 +562,7 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
             token: token,
             amount: tokenAmount,
             vestingReleaseRound: ctx.vestingReleaseRound,
-            caller: msg.sender
+            caller: _msgSender()
         });
     }
 
@@ -729,7 +731,7 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
             }
 
             // Credit only the balance delta so fee-on-transfer tokens cannot over-promise.
-            amount = _acceptErc20FundsFrom({token: token, from: msg.sender, amount: amount});
+            amount = _acceptErc20FundsFrom({token: token, from: _msgSender(), amount: amount});
         }
 
         // Book the accepted amount as the current round's pot.
@@ -753,7 +755,7 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
         // funding and claim entry point rejects calls while an inbound transfer is being measured.
         // forge-lint: disable-next-item(reentrancy-events)
         emit Fund({
-            hook: hook, groupId: groupId, token: token, round: currentRound(), amount: amount, caller: msg.sender
+            hook: hook, groupId: groupId, token: token, round: currentRound(), amount: amount, caller: _msgSender()
         });
     }
 
@@ -842,8 +844,8 @@ contract StickyDistributor is JBDistributor, IStickyDistributor {
         for (uint256 i; i < tokenIds.length;) {
             // Fail on the first token ID the caller does not control; the rest are never read.
             // forge-lint: disable-next-item(require-revert-in-loop)
-            if (!_canClaim({hook: hook, tokenId: tokenIds[i], account: msg.sender})) {
-                revert JBDistributor_NoAccess({hook: hook, tokenId: tokenIds[i], account: msg.sender});
+            if (!_canClaim({hook: hook, tokenId: tokenIds[i], account: _msgSender()})) {
+                revert JBDistributor_NoAccess({hook: hook, tokenId: tokenIds[i], account: _msgSender()});
             }
 
             unchecked {

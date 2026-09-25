@@ -66,7 +66,7 @@ contract StickyHookUnitTest is Test {
     //*********************************************************************//
 
     function setUp() public {
-        _hook = new StickyHook({directory: _directory, deployer: _deployer});
+        _hook = new StickyHook({directory: _directory, deployer: _deployer, trustedForwarder: address(0)});
         vm.prank(_deployer);
         _hook.setTokenFor({projectId: _PROJECT_ID, token: _token});
         vm.mockCall({

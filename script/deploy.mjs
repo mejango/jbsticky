@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 // Match the reviewed source checkouts used by CI; local file dependencies have no npm integrity hash.
 export const dependencies = {
   '@bananapus/core-v6': 'feff600654aee6fb1747dded692f18068b2230a6',
-  '@bananapus/distributor-v6': '79af754e642b648347aba0c7df8a3398215e74a5',
+  '@bananapus/distributor-v6': '44d6d5d2e7cca77422ee0ac4909cf42ccf7839b5',
 };
 
 export function verifyDependencies(spawn = spawnSync) {

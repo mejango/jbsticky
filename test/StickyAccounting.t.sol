@@ -79,7 +79,7 @@ contract StickyAccountingTest is Test {
 
     function setUp() public {
         IJBDirectory directory = IJBDirectory(makeAddr("directory"));
-        _hook = new StickyHook({directory: directory, deployer: address(this)});
+        _hook = new StickyHook({directory: directory, deployer: address(this), trustedForwarder: address(0)});
         _token = new StickyToken({
             name: "Sticky",
             symbol: "STICKY",

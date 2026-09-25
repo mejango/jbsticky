@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 import {IJBController} from "@bananapus/core-v6/src/interfaces/IJBController.sol";
 import {IJBDirectory} from "@bananapus/core-v6/src/interfaces/IJBDirectory.sol";
 import {IJBMultiTerminal} from "@bananapus/core-v6/src/interfaces/IJBMultiTerminal.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {Script} from "forge-std/Script.sol";
 
 import {StickyAutoStick} from "../../src/StickyAutoStick.sol";
@@ -188,6 +189,7 @@ abstract contract StickyDeployment is Script {
     /// @return network The core artifact folder name.
     function _network(uint256 chainId) internal pure returns (string memory network) {
         if (chainId == 1) return "ethereum";
+        // forge-lint: disable-next-line(literal-instead-of-constant)
         if (chainId == 10) return "optimism";
         if (chainId == 8453) return "base";
         if (chainId == 42_161) return "arbitrum";
@@ -273,6 +275,7 @@ abstract contract StickyDeployment is Script {
             address(adapter.DEPLOYER()) != deployed.deployer || address(adapter.DISTRIBUTOR()) != deployed.distributor
                 || address(adapter.HOOK()) != deployed.hook || address(adapter.TERMINAL()) != address(core.terminal)
                 || address(adapter.TOKENS()) != address(core.controller.TOKENS())
+                || adapter.trustedForwarder() != _forwarderOf(core)
         ) {
             revert StickyDeployment_BindingMismatch({target: deployed.autoStick, binding: "adapter dependencies"});
         }
@@ -290,6 +293,7 @@ abstract contract StickyDeployment is Script {
         _requireCode(address(core.controller.RULESETS()));
         _requireCode(address(core.controller.SPLITS()));
         _requireCode(address(core.terminal.STORE()));
+        _requireCode(_forwarderOf(core));
         if (
             address(core.controller.DIRECTORY()) != address(core.directory)
                 || address(core.terminal.DIRECTORY()) != address(core.directory)
@@ -301,6 +305,7 @@ abstract contract StickyDeployment is Script {
                 || address(core.terminal.PROJECTS()) != address(core.controller.PROJECTS())
                 || address(core.terminal.TOKENS()) != address(core.controller.TOKENS())
                 || address(core.terminal.SPLITS()) != address(core.controller.SPLITS())
+                || ERC2771Context(address(core.terminal)).trustedForwarder() != _forwarderOf(core)
         ) {
             revert StickyDeployment_BindingMismatch({target: address(core.controller), binding: "core dependencies"});
         }
@@ -390,17 +395,25 @@ abstract contract StickyDeployment is Script {
         return abi.encode(core.controller, core.directory, hook, uint256(7 days), uint256(4), uint48(2 * 365 days));
     }
 
+    /// @notice The core meta-transaction forwarder every Sticky contract must trust.
+    /// @param core The core dependencies.
+    /// @return forwarder The controller's trusted forwarder.
+    function _forwarderOf(StickyCoreDeployment memory core) private view returns (address forwarder) {
+        forwarder = ERC2771Context(address(core.controller)).trustedForwarder();
+    }
+
     /// @notice The number of immutable bindings explicitly checked for each deployment artifact.
     /// @param name The compiled artifact name.
     /// @return count The expected number of distinct compiler immutable groups.
     function _immutableCount(string memory name) private pure returns (uint256 count) {
         bytes32 nameHash = keccak256(bytes(name));
         // forge-lint: disable-next-line(literal-instead-of-constant)
-        if (nameHash == keccak256("StickyDeployer")) return 4;
-        if (nameHash == keccak256("StickyHook")) return 2;
-        if (nameHash == keccak256("StickyDistributor")) return 9;
+        if (nameHash == keccak256("StickyDeployer")) return 5;
+        if (nameHash == keccak256("StickyHook")) return 3;
+        // forge-lint: disable-next-line(literal-instead-of-constant)
+        if (nameHash == keccak256("StickyDistributor")) return 10;
         if (nameHash == keccak256("StickyRewardReceiverFactory")) return 1;
-        if (nameHash == keccak256("StickyAutoStick")) return 5;
+        if (nameHash == keccak256("StickyAutoStick")) return 6;
         revert StickyDeployment_InvalidArtifact(name);
     }
 
@@ -483,6 +496,7 @@ abstract contract StickyDeployment is Script {
                 || address(factory.TOKENS()) != address(core.controller.TOKENS())
                 || address(factory.HOOK()) != deployed.hook || hook.DEPLOYER() != deployed.deployer
                 || address(hook.DIRECTORY()) != address(core.directory)
+                || factory.trustedForwarder() != _forwarderOf(core) || hook.trustedForwarder() != _forwarderOf(core)
         ) {
             revert StickyDeployment_BindingMismatch({
                 target: deployed.deployer, binding: "factory and hook dependencies"
@@ -506,6 +520,7 @@ abstract contract StickyDeployment is Script {
             address(distributor.DIRECTORY()) != address(core.directory)
                 || address(distributor.CONTROLLER()) != address(core.controller)
                 || address(distributor.STICKY_HOOK()) != deployed.hook
+                || distributor.trustedForwarder() != _forwarderOf(core)
                 || distributor.EPOCH_DURATION() != StickyHook(deployed.hook).EPOCH_DURATION()
                 || address(distributor.REV_LOANS()) != address(0) || address(distributor.REV_OWNER()) != address(0)
                 // forge-lint: disable-next-line(literal-instead-of-constant)

@@ -730,7 +730,8 @@ contract StickyDistributorUnitTest is TestBaseWorkflow {
             revOwner: IREVOwner(address(0)),
             initialRoundDuration: _ROUND_DURATION,
             initialVestingRounds: _VESTING_ROUNDS,
-            initialClaimDuration: _CLAIM_DURATION
+            initialClaimDuration: _CLAIM_DURATION,
+            trustedForwarder: address(0)
         });
         assertEq(stock.STARTING_TIMESTAMP(), _distributor.STARTING_TIMESTAMP());
 
