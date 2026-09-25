@@ -24,6 +24,29 @@
   const unfinished = (session) => session.steps.some((step) => step.state !== "confirmed");
   const protectedSession = (session) => !session.acknowledged && session.steps.some((step) => step.tx.sessionTag);
 
+  // JSON-safe copy with sorted keys, so a saved plan re-normalizes to the same bytes.
+  function plain(value, depth = 0) {
+    if (depth > 6) throw new Error("Saved transaction review is too deep.");
+    if (Array.isArray(value)) return value.map((item) => plain(item, depth + 1));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, plain(value[key], depth + 1)]));
+    }
+    if (typeof value === "bigint") return value.toString();
+    if (value === null || ["string", "number", "boolean"].includes(typeof value)) return value;
+    throw new Error("Saved transaction review has an unsupported value.");
+  }
+  function reviewValue(value) {
+    if (!value || typeof value !== "object") return String(value);
+    if (typeof value.param === "string") {
+      return {
+        param: value.param,
+        ...(Object.hasOwn(value, "expect") ? { expect: plain(value.expect) } : {}),
+        ...(value.fmt && typeof value.fmt === "object" ? { fmt: plain(value.fmt) } : {}),
+      };
+    }
+    return { text: String(value.text), title: String(value.title) };
+  }
+
   function normalizeTx(tx) {
     if (!tx || !Number.isSafeInteger(Number(tx.chainId)) || Number(tx.chainId) <= 0) throw new Error("Invalid transaction chain.");
     if (!ADDRESS.test(tx.from) || !ADDRESS.test(tx.to) || /^0x0{40}$/i.test(tx.to)) throw new Error("Invalid transaction sender or recipient.");
@@ -37,12 +60,13 @@
       chainId: Number(tx.chainId), from: tx.from.toLowerCase(), to: tx.to.toLowerCase(),
       data: (tx.data || "0x").toLowerCase(), value: quantity(tx.value ?? "0x0"), rpcUrl: url.href,
       label: String(tx.label || "Transaction"), fn: String(tx.fn || ""),
-      // A value is text, or { text, title } for a shortened address with the full one kept.
-      args: Array.isArray(tx.args) ? tx.args.map(([key, value]) => [String(key), value && typeof value === "object"
-        ? { text: String(value.text), title: String(value.title) } : String(value)]) : [],
+      // A value is text, { text, title } for a shortened address with the full one kept, or a row bound to a
+      // calldata argument, { param, expect, fmt }, which the review decodes and checks before sending.
+      args: Array.isArray(tx.args) ? tx.args.map(([key, value]) => [String(key), reviewValue(value)]) : [],
       ...(tx.chainLabel ? { chainLabel: String(tx.chainLabel) } : {}),
       ...(tx.contractName ? { contractName: String(tx.contractName) } : {}),
       ...(tx.valueLabel ? { valueLabel: String(tx.valueLabel) } : {}),
+      ...(tx.valueNote ? { valueNote: String(tx.valueNote) } : {}),
       ...(tx.sessionTag ? { sessionTag: String(tx.sessionTag) } : {}),
     };
   }

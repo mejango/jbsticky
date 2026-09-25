@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const Calldata = require('../calldata.js');
 
 const source = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
 const address = (digit) => `0x${digit.repeat(40)}`;
@@ -20,6 +21,8 @@ const FUND_TOPIC = '0x171d1972970e548ead487a3a60cfbdfffd130a21513e44dfcd87789659
 const uint = (value) => `0x${BigInt(value).toString(16).padStart(64, '0')}`;
 const words = (...values) => `0x${values.map((value) => uint(value).slice(2)).join('')}`;
 const mintQuote = (mint) => words(...Array(9).fill(0), mint, 0, 384, 0);
+// The rows the confirm dialog shows: decoded from the calldata and checked against the review.
+const shown = (tx) => Calldata.review(tx).rows;
 const arg = (data, index) => BigInt(`0x${data.slice(10 + index * 64, 10 + (index + 1) * 64)}`);
 
 function functionSource(name) {
@@ -37,7 +40,7 @@ const names = [
   'claimAndStick', 'settleArrivals', 'stake', 'curveReclaim', 'previewStickMint', 'unstake', 'transferSticky',
   'readTranchePage', 'poolBacking', 'homeSecuredSeries', 'asStatusLine', 'renderStickQuote',
   'decodeGroupId', 'isValidGroupId', 'groupIdFromWeeks', 'groupLabel', 'groupSentence', 'groupNote', 'fundGroupId',
-  'rewardStakeOf', 'discoverFunding', 'rewardRows', 'stakedRewardGroups', 'vestableRewardGroups', 'groupListLabel',
+  'rewardStakeOf', 'discoverFunding', 'rewardRows', 'stakedRewardGroups', 'vestableRewardGroups',
   'autoStickState',
 ];
 
@@ -47,7 +50,10 @@ function fixture(overrides = {}) {
   const plans = [];
   const reads = [];
   const context = vm.createContext({
-    TextEncoder, TextDecoder, Uint8Array, console,
+    TextEncoder, TextDecoder, Uint8Array, console, StickyCalldata: Calldata,
+    bind: (param, expect, fmt) => Calldata.arg(param, expect, fmt),
+    named: (...pairs) => Object.fromEntries(pairs.filter(([a]) => a).map(([a, n]) => [a.toLowerCase(), n])),
+    contractNameOf: () => 'a contract',
     ctx: { chainId: 1, currentId: 12n, terminal: TERMINAL, hook: RECEIVER_FACTORY, store: DISTRIBUTOR, autoStick: null },
     window: {},
     $: (id) => {
@@ -78,7 +84,8 @@ function fixture(overrides = {}) {
       if (method === 'eth_getBlockByNumber') return { timestamp: uint(1000) };
       throw new Error(`unexpected RPC ${method}`);
     },
-    confirmAndRun: async (title, txs, summary) => { plans.push({ title, txs, summary }); return true; },
+    // Every plan must decode and match its review, as the confirm dialog requires before sending.
+    confirmAndRun: async (title, txs, summary) => { for (const tx of txs) Calldata.review(tx); plans.push({ title, txs, summary }); return true; },
     txStatus() {}, renderRewards: async () => {}, renderProject: async () => {}, renderTrustedSenders: async () => {},
   });
   const selectorsStart = source.indexOf('const SEL =');
@@ -262,7 +269,7 @@ test('sufficient allowances skip approval but explicit lower caps are honored', 
 test('review freezes sender and chain and rejects async account/project changes', async () => {
   const { context: c, plans } = fixture();
   const action = c.beginAction();
-  await c.reviewAction(action, 'test', [{ to: TOKEN, data: '0x' }]);
+  await c.reviewAction(action, 'test', [{ to: TOKEN, data: '0x095ea7b3' + '0'.repeat(128) }]);
   assert.equal(plans[0].txs[0].from, HOLDER);
   assert.equal(plans[0].txs[0].chainId, 1);
   c.ctx.currentId = 99n;
@@ -540,7 +547,7 @@ test('funding passes the chosen group, describes it, and rejects windows the dis
   assert.equal(arg(tx.data, 1), BigInt(TOKEN));
   assert.equal(arg(tx.data, 2), 5000000n);
   assert.equal(arg(tx.data, 3), 4008n);
-  assert.ok(tx.args.some(([label, value]) => label === 'WHO' && value === 'Staked 4–8 weeks (group 4008)'));
+  assert.ok(shown(tx).some(([label, value]) => label === 'WHO' && value === 'Staked 4–8 weeks (group 4008)'));
   assert.ok(plans[0].summary.some(([label, value]) => label === 'How' && /between 4 weeks and 8 weeks old/.test(value)));
   c.$('r-min-weeks').value = '0';
   c.$('r-max-weeks').value = '4';
@@ -571,7 +578,7 @@ test('receiver prediction and settlement are per group', async () => {
   assert.equal(arg(plans[0].txs[0].data, 0), BigInt(STICKY));
   assert.equal(arg(plans[0].txs[0].data, 1), 4000n);
   assert.equal(arg(plans[0].txs[0].data, 2), BigInt(OTHER));
-  assert.ok(plans[0].txs[0].args.some(([label, value]) => label === 'WHO' && value === 'Staked 4+ weeks (group 4000)'));
+  assert.ok(shown(plans[0].txs[0]).some(([label, value]) => label === 'WHO' && value === 'Staked 4+ weeks (group 4000)'));
   c.$('r-min-weeks').value = '0';
   c.$('r-max-weeks').value = '4';
   await assert.rejects(c.settleArrivals(), /minimum of at least 1/);
@@ -592,7 +599,7 @@ test('per-group claims collect from that group and warn that exiting forfeits a 
   assert.equal(arg(tx.data, 0), BigInt(STICKY));
   assert.equal(arg(tx.data, 1), 4008n);
   assert.equal(arg(tx.data, 4), BigInt(HOLDER));
-  assert.ok(tx.args.some(([label, value]) => label === 'GROUP' && value === '4008 — Staked 4–8 weeks'));
+  assert.ok(shown(tx).some(([label, value]) => label === 'GROUP' && value === 'Staked 4–8 weeks (group 4008)'));
   assert.ok(tx.args.some(([label, value]) => label === 'FORFEIT' && /still hold/.test(value)));
 });
 
@@ -666,7 +673,7 @@ test('auto-stick status, compounding, and vesting pass the groups holding underl
   await c.autoStickNow();
   const compound = plans.at(-1).txs[0];
   assert.equal(compound.data, `0x8244fb99${c.encode(['uint256', 'address', 'uint256[]'], [12n, HOLDER, [4000n, 4008n]])}`);
-  assert.ok(compound.args.some(([label, value]) => label === 'GROUPS' && value === 'Staked 4+ weeks, Staked 4–8 weeks'));
+  assert.ok(shown(compound).some(([label, value]) => label === 'GROUPS' && value === 'Staked 4+ weeks, Staked 4–8 weeks'));
   await c.claimAndStick();
   const stick = plans.at(-1).txs.at(-1);
   assert.equal(stick.data, `0x40b5a05d${c.encode(['uint256', 'uint256[]'], [12n, [4000n, 4008n]])}`);

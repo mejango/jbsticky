@@ -1668,6 +1668,11 @@ function contractNameOf(addr) {
 }
 
 let confirmResolve = null;
+// Why the reviewed plan cannot be sent, or "" when every step decoded and matched its review.
+let confirmBlocked = "";
+// Dialogs the review replaced; they come back when the review closes without completing.
+let confirmReturnTo = [];
+let confirmCompleted = false;
 let confirmPlan = [];
 let confirmSummary = [];
 let confirmSession = null;
@@ -1712,32 +1717,54 @@ function renderConfirmSteps() {
   if (recovery) recovery.classList.toggle("hide", !uncertain);
 }
 
+// Every row a transaction shows comes from its decoded calldata and value, never from the builder's inputs.
+// A step whose calldata cannot be decoded, or disagrees with its review, blocks the whole plan.
+function reviewedRows(tx) {
+  const { rows, decoded } = StickyCalldata.review(tx);
+  const from = tx.from || txAccount();
+  const value = BigInt(tx.value || 0);
+  const out = [["FROM", from], ...rows];
+  if (value > 0n) out.push(["VALUE", `${formatUnits(value, 18, 18)} ETH${tx.valueNote ? ` (${tx.valueNote})` : ""}`]);
+  return { rows: out, decoded };
+}
+
 function renderConfirm() {
   $("cd-summary").innerHTML = confirmSummary
     .map(([k, v]) => `<div class="cd-summary-row"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`)
     .join("");
   renderConfirmSteps();
-  $("cd-warn").textContent = confirmPlan.length > 1
-    ? "These are the exact transactions that will be sent to your wallet. Nothing is signed until you confirm each one. Review before signing."
-    : "This is the exact transaction that will be sent to your wallet. Nothing is signed until you confirm. Review before signing.";
+  confirmBlocked = "";
+  const multiple = confirmPlan.length > 1;
   $("cd-body").innerHTML = confirmPlan
     .map((tx, i) => {
       const chain = tx.chainLabel || chainById(tx.chainId ?? ctx.chainId)?.label || "";
-      const step = confirmPlan.length > 1 ? `${i + 1}. ` : "";
-      const rows = [["FROM", tx.from || txAccount()], ...tx.args];
-      if (tx.value) rows.push(["VALUE", tx.valueLabel ?? `${BigInt(tx.value)} wei`]);
+      const step = multiple ? `${i + 1}. ` : "";
+      let reviewed = null, problem = "";
+      try { reviewed = reviewedRows(tx); } catch (error) {
+        problem = error instanceof StickyCalldata.CalldataError ? error.message : `This transaction could not be checked: ${error.message}`;
+        confirmBlocked ||= multiple ? `Step ${i + 1}: ${problem}` : problem;
+      }
+      const fn = reviewed ? reviewed.decoded.canonical : tx.fn;
       return `<div class="txstep">`
         + (chain ? `<div class="cd-chain">${esc(chain)}</div>` : "")
         + `<div class="cd-contract"><b>${esc(tx.contractName || contractNameOf(tx.to))}</b> | ${esc(tx.to)}</div>`
         + `<h3>${step}${esc(tx.label)}</h3>`
-        + `<table><tbody>`
-        + rows.map(([k, v]) => `<tr><th style="width:104px">${esc(k)}</th><td>${reviewValue(v)}</td></tr>`).join("")
-        + `</tbody></table>`
+        + (problem ? `<p class="cd-block" role="alert">${esc(problem)}</p>` : "")
+        + (reviewed ? `<table><tbody>`
+          + reviewed.rows.map(([k, v]) => `<tr><th style="width:104px">${esc(k)}</th><td>${reviewValue(v)}</td></tr>`).join("")
+          + `</tbody></table>` : "")
         + `<details class="cd-raw"><summary>Show raw data</summary>`
-        + `<div class="rawbox">function: ${esc(tx.fn)}\nfrom: ${esc(tx.from || txAccount())}\nto: ${tx.to}\nvalue: ${tx.value ? BigInt(tx.value) : 0} wei\ndata: ${tx.data}</div></details>`
+        + `<div class="rawbox">function: ${esc(fn)}\nfrom: ${esc(tx.from || txAccount())}\nto: ${tx.to}\nvalue: ${tx.value ? BigInt(tx.value) : 0} wei\ndata: ${tx.data}</div></details>`
         + `</div>`;
     })
     .join("");
+  $("cd-warn").textContent = confirmBlocked
+    ? "Sending is blocked. The transaction data does not match this review."
+    : multiple
+      ? "Every row is read back from the exact data your wallet will sign. Nothing is signed until you confirm each one."
+      : "Every row is read back from the exact data your wallet will sign. Nothing is signed until you confirm.";
+  $("cd-warn").classList.toggle("err", Boolean(confirmBlocked));
+  $("cd-confirm").disabled = Boolean(confirmBlocked);
 }
 
 // Show the consent dialog for a transaction plan. Resolves true only if the user confirms.
@@ -1747,6 +1774,7 @@ function confirmTxs(title, txs, summary = []) {
   confirmPlan = txs;
   confirmSummary = summary;
   confirmProgress = -1;
+  confirmCompleted = false;
   $("cd-title").textContent = title;
   $("cd-confirm").disabled = false;
   $("cd-confirm").textContent = confirmSession?.steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state))
@@ -1756,11 +1784,31 @@ function confirmTxs(title, txs, summary = []) {
   $("confirm-dialog").querySelectorAll(".inline-status").forEach((notice) => notice.remove());
   renderConfirm();
   const answer = new Promise((resolve) => { confirmResolve = resolve; });
-  if (!$("confirm-dialog").open) $("confirm-dialog").showModal();
+  if (!$("confirm-dialog").open) {
+    replaceOpenDialogs();
+    $("confirm-dialog").showModal();
+  }
   return answer;
 }
 
+// Dialogs replace each other: the review closes the dialog it came from and brings it back if cancelled.
+function replaceOpenDialogs() {
+  const open = [...document.querySelectorAll("dialog[open]")].filter((dialog) => dialog.id !== "confirm-dialog");
+  for (const dialog of open) { try { dialog.close(); } catch {} }
+  confirmReturnTo = [...new Set([...confirmReturnTo, ...open])];
+}
+function restoreReplacedDialogs() {
+  const back = confirmReturnTo;
+  confirmReturnTo = [];
+  if (confirmCompleted) return;
+  for (const dialog of back) if (dialog.isConnected && !dialog.open) dialog.showModal();
+}
+
 function settleConfirm(ok) {
+  if (ok && confirmBlocked) {
+    inlineStatus($("cd-confirm"), confirmBlocked, "err");
+    return;
+  }
   if (!ok) {
     txRunCancelled = true;
     try { $("confirm-dialog").close(); } catch {}
@@ -1796,6 +1844,7 @@ async function runSavedTransactions(session, originalTxs, hooks = {}) {
     if (result.cancelled) return false;
     confirmProgress = result.session.steps.length;
     renderConfirmSteps();
+    confirmCompleted = true;
     try { $("confirm-dialog").close(); } catch {}
     renderTxRecovery(result.session);
     return true;
@@ -1900,12 +1949,14 @@ async function auditPrompt() {
     "",
   ];
   confirmPlan.forEach((tx, i) => {
+    let rows;
+    try { rows = reviewedRows(tx).rows.slice(1); } catch (error) { rows = [["review error", error.message]]; }
     lines.push(
       `Transaction ${i + 1} of ${confirmPlan.length}: ${tx.label}`,
       `- chain id: ${tx.chainId ?? ctx.chainId}`,
       `- to: ${tx.to} (expected to be ${tx.contractName || contractNameOf(tx.to)})`,
       `- function: ${tx.fn}`,
-      ...tx.args.map(([k, v]) => `- ${k.toLowerCase()}: ${v?.title ? `${v.text} (${v.title})` : v}`),
+      ...rows.map(([k, v]) => `- ${k.toLowerCase()}: ${v?.title ? `${v.text} (${v.title})` : v}`),
       `- value: ${tx.value ? BigInt(tx.value) : 0} wei`,
       `- raw calldata: ${tx.data}`,
       "",
@@ -1959,9 +2010,9 @@ async function setTrust(sender, trusted) {
     to: ctx.hook,
     fn: "setTrustedSenderFor(uint256 projectId, address sender, bool trusted)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["SENDER", sender],
-      ["TRUSTED", trusted ? "yes — they can add stakes to your position" : "no — they can no longer add stakes to your position"],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["SENDER", bind("sender", sender)],
+      ["TRUSTED", bind("trusted", trusted, { yes: "yes, they can add stakes to your position", no: "no, they can no longer add stakes to your position" })],
     ],
     data: SEL.setTrustedSenderFor + word(ctx.currentId) + encAddress(sender) + word(trusted ? 1 : 0),
   }];
@@ -2496,6 +2547,11 @@ const rewardTokens = {}; // projectId -> Set of reward token addresses
 
 const NATIVE_REWARD_TOKEN = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
+// A review row bound to a calldata argument. The confirm dialog shows the decoded value and blocks a mismatch.
+const bind = (param, expect, fmt) => StickyCalldata.arg(param, expect, fmt);
+// Names shown next to addresses in a review, keyed by lowercase address.
+const named = (...pairs) => Object.fromEntries(pairs.filter(([address]) => address).map(([address, name]) => [address.toLowerCase(), name]));
+
 function actionAddress(value, label = "address") {
   const address = String(value || "").trim();
   if (!/^0x[0-9a-fA-F]{40}$/.test(address) || /^0x0{40}$/i.test(address)) {
@@ -2661,7 +2717,10 @@ async function tokenApprovalTxs(token, spender, amount, meta, template = null, e
       label: value === 0n ? `Reset ${meta.symbol} allowance` : (template?.label || `Approve ${pretty}`),
       to: token,
       fn: "approve(address spender, uint256 amount)",
-      args: [["SPENDER", spender], ["ALLOWANCE", pretty]],
+      args: [
+        ["SPENDER", bind("spender", spender, { names: named([spender, contractNameOf(spender)]) })],
+        ["ALLOWANCE", bind("amount", value, { kind: "units", unlimited: true, decimals: meta.decimals, symbol: meta.symbol })],
+      ],
       data: SEL.approve + encode(["address", "uint256"], [spender, value]),
     };
   };
@@ -2829,13 +2888,14 @@ async function fundRewards() {
     to: distributor(),
     fn: "fund(address hook, address token, uint256 amount, uint256 groupId)",
     args: [
-      ["STUCK IN", `${info.stToken} — ${stickyLabel(info)}`],
-      ["REWARD", pretty],
-      ["WHO", who],
+      ["STUCK IN", bind("hook", info.stToken, { names: named([info.stToken, stickyLabel(info)]) })],
+      ["REWARD TOKEN", bind("token", tokenAddr, { names: named([tokenAddr, meta.symbol]) })],
+      ["AMOUNT", bind("amount", amount, { kind: "units", decimals: meta.decimals, symbol: meta.symbol })],
+      ["WHO", bind("groupId", groupId, { kind: "group" })],
       ["SPLIT", groupSentence(groupId)],
     ],
     data: SEL.fund + encode(["address", "address", "uint256", "uint256"], [info.stToken, tokenAddr, amount, groupId]),
-    ...(native ? { value: `0x${amount.toString(16)}`, valueLabel: pretty } : {}),
+    ...(native ? { value: `0x${amount.toString(16)}`, valueNote: "the reward itself" } : {}),
   });
   if (!(await reviewAction(action, `Fund stuck holders — ${pretty}`, txs, [["Send", pretty], ["To", who], ["How", groupSentence(groupId)]]))) return;
   try { $("fund-dialog").close(); } catch {}
@@ -2862,11 +2922,14 @@ async function claimReward(tokenAddr, groupId = 0n) {
     to: distributor(),
     fn: "collectVestedRewards(address hook, uint256 groupId, uint256[] tokenIds, address[] tokens, address beneficiary)",
     args: [
-      ["HOLDER", holder], ["GROUP", `${groupId} — ${groupLabel(groupId)}`],
-      ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`], ["BENEFICIARY", holder],
+      ["STUCK IN", bind("hook", info.stToken, { names: named([info.stToken, stickyLabel(info)]) })],
+      ["HOLDER", bind("tokenIds", [BigInt(holder)], { kind: "holders" })],
+      ["GROUP", bind("groupId", groupId, { kind: "group" })],
+      ["REWARD TOKEN", bind("tokens", [tokenAddr], { names: named([tokenAddr, meta.symbol]) })],
+      ["BENEFICIARY", bind("beneficiary", holder)],
       ["READY", `${formatUnits(collectable, meta.decimals, meta.decimals)} ${meta.symbol}`],
-      ["EFFECT", "collects unlocked rewards and starts vesting any eligible past rounds; current-round rewards remain locked"],
-      ...(groupId === 0n ? [] : [["FORFEIT", "a stake-age allocation pays only stake you still hold; exit before claiming and it stays in the pot"]]),
+      ["EFFECT", "Collects unlocked rewards and starts vesting finished rounds. This round's rewards stay locked until it ends."],
+      ...(groupId === 0n ? [] : [["FORFEIT", "Stake-age rewards pay only stake you still hold. Unstick before claiming and they stay in the pot."]]),
     ],
     data: SEL.collectVestedRewards
       + encode(["address", "uint256", "uint256[]", "address[]", "address"], [info.stToken, groupId, [BigInt(holder)], [tokenAddr], holder]),
@@ -2934,9 +2997,6 @@ async function vestableRewardGroups(info, holder) {
   return groups.filter((_, index) => flags[index]);
 }
 
-function groupListLabel(groupIds) {
-  return groupIds.map((groupId) => groupLabel(groupId)).join(", ");
-}
 
 async function autoStickState() {
   if (ctx.currentId === null || !autoStickAdapter() || !account()) return null;
@@ -3061,9 +3121,9 @@ function asApproveTx(info, amount) {
     to: info.stakedToken,
     fn: "approve(address spender, uint256 amount)",
     args: [
-      ["SPENDER", `${autoStickAdapter()} — StickyAutoStick`],
-      ["ALLOWANCE", pretty],
-      ["SCOPE", "only rewards it just delivered to you, only to stick them for you"],
+      ["SPENDER", bind("spender", autoStickAdapter(), { names: named([autoStickAdapter(), "StickyAutoStick"]) })],
+      ["ALLOWANCE", bind("amount", amount, { kind: "units", unlimited: true, decimals: info.decimals, symbol: info.symbol })],
+      ["SCOPE", "Only rewards it just delivered to you, only to stick them for you."],
     ],
     data: SEL.approve + encode(["address", "uint256"], [autoStickAdapter(), amount]),
   };
@@ -3077,9 +3137,9 @@ function asTrustTx(info, trusted) {
     to: ctx.hook,
     fn: "setTrustedSenderFor(uint256 projectId, address sender, bool trusted)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["SENDER", `${autoStickAdapter()} — StickyAutoStick`],
-      ["TRUSTED", trusted ? "yes — it can add stakes to your position" : "no"],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["SENDER", bind("sender", autoStickAdapter(), { names: named([autoStickAdapter(), "StickyAutoStick"]) })],
+      ["TRUSTED", bind("trusted", trusted, { yes: "yes, it can add stakes to your position", no: "no" })],
     ],
     data: SEL.setTrustedSenderFor + word(ctx.currentId) + encAddress(autoStickAdapter()) + word(trusted ? 1 : 0),
   };
@@ -3098,13 +3158,13 @@ function asConfigTx(info, enabled, minimum, cooldown) {
     to: autoStickAdapter(),
     fn: "setConfigFor(uint256 projectId, bool enabled, uint128 minimumAmount, uint48 cooldown)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["ENABLED", enabled ? "yes" : "no"],
-      ["MINIMUM", `${formatUnits(minimum, info.decimals, info.decimals)} ${info.symbol}`],
-      ["COOLDOWN", formatDuration(cooldown)],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["ENABLED", bind("enabled", enabled)],
+      ["MINIMUM", bind("minimumAmount", minimum, { kind: "units", decimals: info.decimals, symbol: info.symbol })],
+      ["COOLDOWN", bind("cooldown", cooldown, { kind: "duration" })],
       ["EFFECT", enabled
-        ? "rewards can only be added to your sticky position — never sent elsewhere or taken by the keeper"
-        : "future rewards stay claimable normally"],
+        ? "Rewards can only be added to your Sticky position. They are never sent elsewhere or taken by the keeper."
+        : "Future rewards stay claimable as usual."],
     ],
     data: SEL.asSetConfigFor + word(ctx.currentId) + word(enabled ? 1 : 0) + word(minimum) + word(cooldown),
   };
@@ -3227,13 +3287,13 @@ async function autoStickNow() {
     to: autoStickAdapter(),
     fn: "compoundFor(uint256 projectId, address holder, uint256[] groupIds)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["HOLDER", holder],
-      ["GROUPS", groupListLabel(groupIds)],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["HOLDER", bind("holder", holder)],
+      ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
       ["READY", `${formatUnits(state.collectable, info.decimals)} ${info.symbol}`],
       ["ESTIMATED STICKY TOKENS", `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
-      ["ISSUANCE", "uses the current backing price when executed; a zero-token mint reverts"],
-      ["EFFECT", `collects your unlocked ${info.symbol} rewards and sticks them for you in a new tranche`],
+      ["ISSUANCE", "Priced at the backing when it runs. A mint of zero tokens reverts."],
+      ["EFFECT", `Collects your unlocked ${info.symbol} rewards and sticks them for you in a new tranche.`],
     ],
     data: SEL.asCompoundFor + encode(["uint256", "address", "uint256[]"], [ctx.currentId, holder, groupIds]),
   }];
@@ -3257,10 +3317,10 @@ async function beginAutoStickVesting() {
     to: autoStickAdapter(),
     fn: "beginVestingFor(uint256 projectId, address holder, uint256[] groupIds)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["HOLDER", holder],
-      ["GROUPS", groupListLabel(groupIds)],
-      ["EFFECT", `starts the unlock schedule for your ${info.symbol} rewards — no tokens move`],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["HOLDER", bind("holder", holder)],
+      ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
+      ["EFFECT", `Starts the unlock schedule for your ${info.symbol} rewards. No tokens move.`],
     ],
     data: SEL.asBeginVestingFor + encode(["uint256", "address", "uint256[]"], [ctx.currentId, holder, groupIds]),
   }];
@@ -3296,11 +3356,11 @@ async function claimAndStick() {
     to: autoStickAdapter(),
     fn: "stickRewardsFor(uint256 projectId, uint256[] groupIds)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["GROUPS", groupListLabel(groupIds)],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["GROUPS", bind("groupIds", groupIds, { kind: "groups" })],
       ["CLAIM", pretty],
-      ["ISSUANCE", "uses the current backing price when executed; a zero-token mint reverts"],
-      ["EFFECT", `your unlocked ${info.symbol} rewards stick for you in a new tranche, in the same transaction`],
+      ["ISSUANCE", "Priced at the backing when it runs. A mint of zero tokens reverts."],
+      ["EFFECT", `Your unlocked ${info.symbol} rewards stick for you in a new tranche, in the same transaction.`],
     ],
     data: SEL.asStickRewardsFor + encode(["uint256", "uint256[]"], [ctx.currentId, groupIds]),
   });
@@ -3335,12 +3395,12 @@ async function settleArrivals() {
     to: receiverFactoryAddr,
     fn: "settleFor(address stickyToken, uint256 groupId, address token)",
     args: [
-      ["STUCK IN", `${info.stToken} — ${stickyLabel(info)}`],
-      ["WHO", `${groupLabel(groupId)} (group ${groupId})`],
-      ["REWARD TOKEN", `${tokenAddr} — ${meta.symbol}`],
+      ["STUCK IN", bind("stickyToken", info.stToken, { names: named([info.stToken, stickyLabel(info)]) })],
+      ["WHO", bind("groupId", groupId, { kind: "group" })],
+      ["REWARD TOKEN", bind("token", tokenAddr, { names: named([tokenAddr, meta.symbol]) })],
       ["AMOUNT", `${formatUnits(pending, meta.decimals, meta.decimals)} ${meta.symbol}`],
       ["RECEIVER", receiver],
-      ["EFFECT", "the receiver's whole balance becomes this round's rewards for that group"],
+      ["EFFECT", "The receiver's whole balance becomes this round's rewards for that group."],
     ],
     data: SEL.settleFor + encode(["address", "uint256", "address"], [info.stToken, groupId, tokenAddr]),
   }];
@@ -3377,9 +3437,10 @@ async function transferSticky() {
     to: info.stToken,
     fn: "transfer(address to, uint256 amount)",
     args: [
-      ["RECIPIENT", recipient], ["AMOUNT", pretty],
-      ["STREAK", "the transferred tokens start a new tranche now for the recipient; your remaining tranches keep their timestamps"],
-      ["FULL TRANSFER", "sending your entire balance ends your current streak"],
+      ["RECIPIENT", bind("to", recipient)],
+      ["AMOUNT", bind("amount", amount, { kind: "units", decimals: 18, symbol: info.stSymbol })],
+      ["STREAK", "The moved tokens start a new tranche now for the recipient. Your remaining tranches keep their dates."],
+      ["FULL TRANSFER", "Sending your whole balance ends your current streak."],
     ],
     data: "0xa9059cbb" + encode(["address", "uint256"], [recipient, amount]),
   };
@@ -3414,11 +3475,13 @@ async function stake() {
     to: ctx.terminal,
     fn: "pay(uint256 projectId, address token, uint256 amount, address beneficiary, uint256 minReturnedTokens, string memo, bytes metadata)",
     args: [
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["TOKEN", `${info.stakedToken} — ${info.symbol}`],
-      ["AMOUNT", pretty],
-      ["BENEFICIARY", beneficiary],
-      ["MINIMUM STICKY TOKENS", `${formatUnits(expectedMint, 18, 18)} ${info.stSymbol}`],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["TOKEN", bind("token", info.stakedToken, { names: named([info.stakedToken, info.symbol]) })],
+      ["AMOUNT", bind("amount", amount, { kind: "units", decimals: info.decimals, symbol: info.symbol })],
+      ["BENEFICIARY", bind("beneficiary", beneficiary)],
+      ["MINIMUM STICKY TOKENS", bind("minReturnedTokens", expectedMint, { kind: "units", decimals: 18, symbol: info.stSymbol })],
+      ["MEMO", bind("memo", "")],
+      ["METADATA", bind("metadata", "0x")],
     ],
     data: SEL.pay
       + encode(
@@ -3569,13 +3632,14 @@ async function unstake() {
     to: ctx.terminal,
     fn: "cashOutTokensOf(address holder, uint256 projectId, uint256 cashOutCount, address tokenToReclaim, uint256 minTokensReclaimed, address beneficiary, bytes metadata)",
     args: [
-      ["HOLDER", holder],
-      ["PROJECT", `${ctx.currentId} — ${stickyLabel(info)}`],
-      ["UNWIND", pretty],
-      ["RECLAIM AS", `${info.stakedToken} — ${info.symbol}`],
-      ["MINIMUM RECEIVED", receive],
-      ["BENEFICIARY", holder],
-      ...(reclaim === 0n ? [["EFFECT", "your sticky tokens are burned and no underlying tokens are returned"]] : []),
+      ["HOLDER", bind("holder", holder)],
+      ["PROJECT", bind("projectId", ctx.currentId, { note: stickyLabel(info) })],
+      ["UNSTICK", bind("cashOutCount", count, { kind: "units", decimals: 18, symbol: info.stSymbol })],
+      ["RECLAIM AS", bind("tokenToReclaim", info.stakedToken, { names: named([info.stakedToken, info.symbol]) })],
+      ["MINIMUM RECEIVED", bind("minTokensReclaimed", reclaim, { kind: "units", decimals: info.decimals, symbol: info.symbol })],
+      ["BENEFICIARY", bind("beneficiary", holder)],
+      ["METADATA", bind("metadata", "0x")],
+      ...(reclaim === 0n ? [["EFFECT", "Your Sticky tokens are burned and no underlying tokens come back."]] : []),
     ],
     data: encodeUnstake(reclaim),
   });
@@ -3595,6 +3659,48 @@ async function deployStreaks() {
     }
     await prepareStickyLaunch();
   });
+}
+
+// One chain's deployStickyFor, reviewed from its decoded calldata.
+function launchDeployTx(target, { token, tokenSymbol, name, symbol, projectUri, reward, soulbound }) {
+  const { granters } = target;
+  return {
+    label: `Deploy ${symbol} on ${target.name}`,
+    chainId: target.chainId,
+    chainLabel: target.label,
+    contractName: "StickyDeployer",
+    to: target.deployer,
+    fn: "deployStickyFor(address stakedToken, string name, string symbol, string projectUri, uint256 cashOutTaxRate, address[] granters, bool soulbound)",
+    args: [
+      ["LOCKS", bind("stakedToken", token, { names: named([token, tokenSymbol]) })],
+      ["NAME", bind("name", name)],
+      ["SYMBOL", bind("symbol", symbol)],
+      ["STICKINESS BONUS", bind("cashOutTaxRate", reward, { kind: "bps", zero: "None", note: "cash out tax. Part of each unstick stays with the holders who remain" })],
+      ["TRUSTED SENDERS", bind("granters", granters, { names: named([target.autoStickAdapter, "AutoStick, each holder opts in"]) })],
+      ["TRANSFERS", bind("soulbound", soulbound, { yes: "Locked. The token can never change hands.", no: "Unlocked. Transfers restart the stickiness clock." })],
+      ["LISTING", bind("projectUri", projectUri, { kind: "uri" })],
+    ],
+    value: `0x${target.fee.toString(16)}`,
+    valueNote: "project creation fee",
+    data: SEL.deployStickyFor
+      + encode(
+        ["address", "string", "string", "string", "uint256", "address[]", "bool"],
+        [token, name, symbol, projectUri, reward, granters, soulbound],
+      ),
+  };
+}
+
+// The one Relayr prepayment that funds a multichain launch.
+function relayrPaymentTx(session, details) {
+  return {
+    chainId: details.chainId, rpcUrl: session.fundingRpcs[details.chainId], from: session.owner,
+    to: details.target, data: details.calldata, value: `0x${details.amount.toString(16)}`, sessionTag: session.id,
+    label: `Pay Relayr to create ${session.symbol}`, contractName: "Relayr payment contract", fn: "prepayment(bytes16 bundle, uint40 deadline)",
+    valueNote: "covers the quoted gas and creation fees on every chain",
+    args: [["LAUNCH", session.symbol], ["CHAINS", session.targets.map((target) => target.name).join(", ")],
+      ["QUOTE", bind("bundle", "0x" + details.bundleUuid.replaceAll("-", ""), { kind: "uuid" })],
+      ["PAY BY", bind("deadline", details.deadline, { kind: "time" })]],
+  };
 }
 
 async function prepareStickyLaunch() {
@@ -3651,33 +3757,7 @@ async function prepareStickyLaunch() {
     environment: createEnvironment,
     chains: chainIds,
   }))}`;
-  const txs = targets.map((target) => {
-    const { granters } = target;
-    return {
-      label: `Deploy ${symbol} on ${target.name}`,
-      chainId: target.chainId,
-      chainLabel: target.label,
-      contractName: "StickyDeployer",
-      to: target.deployer,
-      fn: "deployStickyFor(address stakedToken, string name, string symbol, string projectUri, uint256 cashOutTaxRate, address[] granters, bool soulbound)",
-      args: [
-        ["LOCKS", { text: `${shortAddr(token)} (${tokenSymbol})`, title: token }],
-        ["NAME", name],
-        ["SYMBOL", symbol],
-        ["STICKINESS BONUS", reward > 0n ? `${pct(reward)} cash out tax. Part of each unstick stays with the holders who remain.` : "None"],
-        ["TRUSTED SENDERS", humanGranters.length ? humanGranters.join(", ") : "None"],
-        ["AUTO-STICK", { text: `AutoStick ${shortAddr(target.autoStickAdapter)}, trusted. Each holder still opts in.`, title: target.autoStickAdapter }],
-        ["TRANSFERS", soulbound ? "Locked. The token can never change hands." : "Unlocked. Transfers restart the stickiness clock."],
-      ],
-      value: `0x${target.fee.toString(16)}`,
-      valueLabel: `${formatUnits(target.fee, 18)} ETH project creation fee`,
-      data: SEL.deployStickyFor
-        + encode(
-          ["address", "string", "string", "string", "uint256", "address[]", "bool"],
-          [token, name, symbol, projectUri, reward, granters, soulbound],
-        ),
-    };
-  });
+  const txs = targets.map((target) => launchDeployTx(target, { token, tokenSymbol, name, symbol, projectUri, reward, soulbound }));
   const owner = txAccount();
   if (!/^0x[0-9a-fA-F]{40}$/.test(owner || "")) throw new Error("Connect a wallet to create a Sticky token.");
   const fundingRpcs = Object.fromEntries(chainsForEnvironment(createEnvironment)
@@ -3976,14 +4056,7 @@ function chooseStickyLaunchPayment(options, session) {
 }
 async function runStickyLaunchPayment(session, options) {
   const details = stickyLaunchRelayr().paymentDetails(session.paymentIntent, session.quote.bundle_uuid, { allowExpired: options.recovering });
-  const tx = {
-    chainId: details.chainId, rpcUrl: session.fundingRpcs[details.chainId], from: session.owner,
-    to: details.target, data: details.calldata, value: `0x${details.amount.toString(16)}`, sessionTag: session.id,
-    label: `Pay Relayr to create ${session.symbol}`, contractName: "Relayr payment contract", fn: "Pay this Relayr launch quote",
-    valueLabel: `${formatUnits(details.amount, 18, 18)} ETH`,
-    args: [["LAUNCH", session.symbol], ["CHAINS", session.targets.map((target) => target.name).join(", ")],
-      ["QUOTE", session.quote.bundle_uuid], ["TOTAL", `${formatUnits(details.amount, 18, 18)} ETH`]],
-  };
+  const tx = relayrPaymentTx(session, details);
   return runStickyLaunchWallet(session, [tx], options);
 }
 async function runStickyLaunchWallet(session, txs, { recovering, beforeSend }) {
@@ -4503,6 +4576,7 @@ function route() {
   try { $("trust-dialog").close(); } catch {}
   try { $("fund-dialog").close(); } catch {}
   try { $("autostick-dialog").close(); } catch {}
+  confirmReturnTo = [];
   if (confirmResolve) settleConfirm(false);
   if (!ctx.loaded) return;
   const accountMatch = location.hash.match(/^#\/account\/(0x[0-9a-fA-F]{40})$/);
@@ -4813,7 +4887,10 @@ $("cd-audit").onclick = guard(async () => {
 });
 $("tx-status-close").onclick = () => txStatus("");
 $("confirm-dialog").oncancel = (event) => { event.preventDefault(); settleConfirm(false); };
-$("confirm-dialog").addEventListener("close", () => { if (confirmResolve) settleConfirm(false); });
+$("confirm-dialog").addEventListener("close", () => {
+  if (confirmResolve) settleConfirm(false);
+  restoreReplacedDialogs();
+});
 // Clicking the backdrop (the dialog element itself, not its children) closes the dialog.
 $("create-dialog").onclick = (event) => {
   if (event.target === $("create-dialog")) $("create-dialog").close();
