@@ -1409,6 +1409,8 @@ function chartSvg(logs, info, projectId) {
     return `<line x1="${gx}" y1="20" x2="${gx}" y2="${H - 24}" stroke="#d8e7eb" stroke-dasharray="2 4"/>`
       + `<text x="${gx}" y="${H - 8}" fill="#64808a" font-size="9" text-anchor="middle">${date(t0 + span * fraction)}</text>`;
   }).join("");
+  // Each series is scaled to its own peak, so the top line means both peaks, and each caption names its peak
+  // in its own unit and color. There is no shared numeric axis to label.
   const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;cursor:crosshair" tabindex="0" role="img" aria-label="Active sticks and total stuck over time">
     ${guides}
     <line x1="${PAD}" y1="${(20 + H - 24) / 2}" x2="${W - 10}" y2="${(20 + H - 24) / 2}" stroke="#d8e7eb" stroke-dasharray="2 4"/>
@@ -1416,9 +1418,9 @@ function chartSvg(logs, info, projectId) {
     <line x1="${PAD}" y1="20" x2="${PAD}" y2="${H - 24}" stroke="#e2d7bd"/>
     <path d="${path(yStaked, "staked")}" fill="none" stroke="#1c2d33" stroke-width="1.3" opacity="0.75"/>
     <path d="${path(yStreaks, "streaks")}" fill="none" stroke="#2fb3c7" stroke-width="2"/>
-    <text x="${PAD - 6}" y="${yStreaks(maxStreaks) + 4}" fill="#64808a" font-size="10" text-anchor="end">${maxStreaks}</text>
+    <text x="${PAD}" y="14" fill="#1a8fa1" font-size="10" font-weight="600">Peak: ${maxStreaks} active stick${maxStreaks === 1 ? "" : "s"}</text>
+    <text x="${W - 10}" y="14" fill="#1c2d33" font-size="10" font-weight="600" text-anchor="end">Peak: ${formatUnits(maxStaked, 18, 2)} ${esc(info.stSymbol)} stuck</text>
     <text x="${PAD - 6}" y="${H - 21}" fill="#64808a" font-size="10" text-anchor="end">0</text>
-    <text x="${W - 10}" y="16" fill="#1c2d33" font-size="10" text-anchor="end">max ${formatUnits(maxStaked, 18, 0)} ${esc(info.stSymbol)}</text>
     <text x="${PAD}" y="${H - 8}" fill="#64808a" font-size="10">${date(t0)}</text>
     <text x="${W - 10}" y="${H - 8}" fill="#64808a" font-size="10" text-anchor="end">now</text>
     <g id="chart-hover" style="display:none;pointer-events:none">
@@ -1622,9 +1624,16 @@ async function renderProject(projectId) {
   if (!ctx.loaded) return;
   ++viewSequence;
   clearHomeSecuredChart();
+  const changed = ctx.currentId !== projectId;
   ctx.currentId = projectId;
   ctx.pool = null;
   const current = currentView();
+  // A different project never shows the last one's details, board, or feed while its own load.
+  if (changed) {
+    $("p-details-card").classList.add("hide");
+    $("p-chains-card").classList.add("hide");
+    for (const id of ["token-info", "p-activity", "leaderboard", "pie"]) $(id).innerHTML = "";
+  }
   $("view-home").classList.add("hide");
   $("view-project").classList.remove("hide");
   // A verified handle stays in the address bar while tabs change and across post-transaction refreshes.
@@ -1689,8 +1698,8 @@ async function renderProject(projectId) {
   const chart = chartSvg(logs, info, projectId);
   $("chart").innerHTML = chart.svg;
   chart.bind?.($("chart"));
-  await refreshPosition();
-  if (!current()) return;
+  // The holder's position loads on its own; Details, the board and Latest never wait on it.
+  refreshPosition().catch((error) => { if (current()) status(error.message, "err"); });
 
   // OWNERS: token info, pie, leaderboard.
   const granters = [...new Set(scanned.all.filter((log) => log.topics[0] === TOPIC.SetGranter).map((log) => decAddress(log.topics[2])))];
@@ -1715,6 +1724,7 @@ async function renderProject(projectId) {
   const copySymbol = (symbol, address) =>
     `<button type="button" class="token-copy" data-address="${address}" data-copy-address="${address}" `
       + `aria-label="Copy ${esc(symbol)} token address">${esc(symbol)}</button>`;
+  $("p-details-card").classList.remove("hide");
   $("token-info").innerHTML =
     `<div class="token-meta-row">`
       + meta("Token", `${esc(info.stName)} (${copySymbol(info.stSymbol, info.stToken)})`)
@@ -2027,7 +2037,11 @@ async function runSavedTransactions(session, originalTxs, hooks = {}) {
     });
     confirmSession = result.session;
     if (originalTxs) result.session.steps.forEach((step, index) => { originalTxs[index].receipt = step.receipt; });
-    if (result.cancelled) return false;
+    if (result.cancelled) {
+      // Closed before anything was sent: no saved plan, no banner.
+      await getTxEngine().discardIfUnsent(result.session.id).catch(() => {});
+      return false;
+    }
     confirmProgress = result.session.steps.length;
     renderConfirmSteps();
     confirmCompleted = true;
@@ -5224,6 +5238,8 @@ $("confirm-dialog").addEventListener("close", () => {
   if ($("confirm-dialog").open) return;
   if (confirmResolve) settleConfirm(false);
   restoreReplacedDialogs();
+  // A plan left after a wallet refusal is dropped on close if nothing was signed or sent.
+  if (txEngine && !txEngine.isBusy()) txEngine.discardIfUnsent().catch(() => {});
 });
 // Clicking the backdrop (the dialog element itself, not its children) closes the dialog.
 $("create-dialog").onclick = (event) => {

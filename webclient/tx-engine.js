@@ -445,6 +445,26 @@
       });
     }
 
+    // A plan the user closed before anything reached a wallet leaves nothing behind. Every step must be
+    // unsent (ready, or refused in the wallet) with no hash, wallet reference, or submission evidence.
+    // Tagged plans (launches, bridges) keep their own recovery records and are never dropped here.
+    // A wallet refusal (4001) keeps its write-ahead evidence but never produced a transaction.
+    const neverSent = (entry) => !entry.hash && !entry.reportedHash && !entry.receipt
+      && (entry.state === "rejected" || (entry.state === "ready" && !entry.submission));
+    function unsent(session) {
+      return session.steps.every((step) => !step.tx.sessionTag && neverSent(step) && step.attempts.every(neverSent));
+    }
+    async function discardIfUnsent(sessionId) {
+      return lock(async () => {
+        const session = load();
+        if (!session || (sessionId && session.id !== sessionId) || !unsent(session)) return false;
+        storage.removeItem(key);
+        if (storage.getItem(key) !== null) throw new Error("Transaction recovery data could not be cleared.");
+        options.onUpdate?.(null);
+        return true;
+      });
+    }
+
     async function clear() {
       return lock(async () => {
         const session = load();
@@ -464,7 +484,7 @@
       });
     }
 
-    return { load, prepare, run, recover, clear, acknowledge, discardUnsubmitted, wasDiscarded, isBusy: () => busy };
+    return { load, prepare, run, recover, clear, acknowledge, discardUnsubmitted, discardIfUnsent, wasDiscarded, isBusy: () => busy };
   }
   return { createEngine, normalizeTx, samePlan, validateSession, STORAGE_KEY, LOCK_NAME };
 });
