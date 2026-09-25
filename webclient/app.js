@@ -4537,7 +4537,7 @@ $("create-toggle").onclick = () => {
   rewardChoice = "10";
   for (const preset of document.querySelectorAll("[data-v]")) selectPreset(preset, preset.dataset.v === "10");
   $("d-reward-custom-row").classList.add("hide");
-  $("d-soulbound").value = "1";
+  $("d-soulbound").value = "0";
   soulboundHint();
   dTokenResolved = null;
   setTokenMeta("");
