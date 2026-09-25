@@ -582,7 +582,7 @@ test('reward groups encode and label stake-age windows exactly like the distribu
   assert.equal(c.groupLabel(4008n), 'Staked 4–8 weeks');
   assert.match(c.groupSentence(0n), /Everyone holding at the round's snapshot/);
   assert.match(c.groupSentence(1000n), /at least 1 week old/);
-  assert.match(c.groupSentence(4008n), /between 4 weeks and 8 weeks old[\s\S]*forfeits/);
+  assert.match(c.groupSentence(4008n), /between 4 weeks and 8 weeks old[\s\S]*forfeit their share/);
   assert.equal(c.groupNote('4', '8').groupId, 4008n);
   assert.match(c.groupNote('8', '4').text, /at least the minimum/);
   assert.equal(c.groupNote('8', '4').groupId, null);
@@ -831,7 +831,7 @@ test('a reward position reads claimable, vesting, and the vesting entries that s
 test('reward copy states the round end, the next unlock, the last unlock, and funding by date', () => {
   const { context: c } = fixture();
   const meta = { decimals: 6, symbol: 'ART' };
-  assert.equal(c.roundSentence(clock), `Round 2 ends ${c.dateTimeLabel(clock.endsAt)}. Rewards funded this round are split when it ends. `
+  assert.equal(c.roundSentence(clock), `Round 2 ends ${c.dateTimeLabel(clock.endsAt)}. `
     + 'Your share then vests over 4 rounds, a quarter each week, starting when you collect.');
   const lines = Object.fromEntries(c.rewardLines({ collectable: 1_000_000n, vesting: 3_000_000n, earned: 2_000_000n,
     nextUnlockAt: clock.startOf(3n), unlockedAt: clock.startOf(6n) }, meta, 30_000_000n, 10_000_000n, clock));
