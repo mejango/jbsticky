@@ -86,6 +86,42 @@ an address for reads: positions, rewards and the account page. Every transaction
 for a browser wallet ("This action needs an external wallet."), because Signa's review
 covers only Base USDC payments and Sticky's stick pays the project's own token.
 
+## Creating a Sticky token
+
+Pick the token by address or by Juicebox project ID. A plain ID (`5`) resolves to that
+project's ERC-20 on every selected chain and must name the same token on each; a
+chain-prefixed ID (`base:5`) resolves once on that chain. Either way the token must
+have the same address, name, symbol and decimals everywhere the launch goes.
+
+Options: a custom name and symbol (defaults "Sticky <token name>" and STICKY<SYMBOL>),
+a stickiness bonus of 0, 5, 10 or 25% or a custom 0 to 99.99%, trusted senders,
+transfers Unlocked (default) or Locked, and the chains. AutoStick is a trusted sender
+on every launch, so a chain without a configured AutoStick helper can't be selected.
+
+Each chain hands out its own next project ID, and the Sticky token address includes it,
+so IDs and token addresses differ across chains. The project URI carries a `launchId`
+shared by every chain of one launch, and the launch steps link each chain's project.
+
+### Juicebox Center listing
+
+Each launch is listed on Juicebox Center as a signed project intent (format
+`sticky.center/deploy.v1`). After you confirm the deployment review, your wallet
+signs Center's message for the exact calls (`personal_sign`; wallet addresses only,
+so a Safe or other contract account launches unlisted), and the launch is then sent
+as before: directly for one chain, or through one Relayr bundle for several. Each
+chain's deployment is recorded on Center (`POST /v1/intents/:id/deployments`) once it
+has 2 confirmations.
+
+Center refusing or being unreachable never blocks a launch. The launch says "Not
+listed on Juicebox Center" and offers a retry. The listing ID and what was recorded
+live in the saved launch, so a reload resumes without publishing or recording twice.
+
+Center sponsors a launch only through the V6 ERC-2771 forwarder. When every selected
+chain is one Center sponsors and `StickyDeployer.isTrustedForwarder(forwarder)` is
+true on each, the site publishes the listing and asks Center to deploy it; you send
+no transaction. Today's StickyDeployer does not trust the forwarder, so launches are
+self-paid. Set `STICKY_CENTER_URL` to another HTTPS origin to use a different Center.
+
 ## Transactions and recovery
 
 Multichain creation requests a Relayr prepaid quote for the frozen deployment

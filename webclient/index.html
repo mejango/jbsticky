@@ -864,7 +864,7 @@
   <div class="create-section">
     <div class="create-section-title">OPTIONS</div>
     <label class="check"><input type="checkbox" id="d-custom-name"> Set custom token name and symbol</label>
-    <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults — "Sticky &lt;name of the locked token&gt;" and STICKY&lt;SYMBOL&gt;.</p>
+    <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults: "Sticky &lt;token name&gt;" and STICKY&lt;SYMBOL&gt;.</p>
     <div class="row hide option-detail" id="d-name-row">
       <div><label for="d-name">NAME</label><input id="d-name" placeholder="Sticky ART"></div>
       <div><label for="d-symbol">SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
@@ -880,8 +880,9 @@
         <button type="button" class="preset" data-v="custom" aria-pressed="false">CUSTOM</button>
       </div>
       <div class="row hide" id="d-reward-custom-row">
-        <div><label for="d-reward">CUSTOM (%)</label><input id="d-reward" placeholder="10" value="10"></div>
+        <div><label for="d-reward">CUSTOM (%)</label><input id="d-reward" placeholder="0 to 99.99" value="10" inputmode="decimal"></div>
       </div>
+      <p class="err hint hide" id="d-reward-error">Enter a bonus from 0 to 99.99%.</p>
       <div id="d-ratchet"></div>
       <p class="mut hint" id="d-curve-note" style="margin-top:14px"></p>
       <details class="hint" id="d-fee-details" style="margin-top:14px">
@@ -1058,14 +1059,16 @@
   <span id="tx-status-message"></span>
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
-<script src="config.js?v=129"></script>
-<script src="runtime.js?v=129"></script>
-<script src="tx-safe.js?v=129"></script>
-<script src="tx-engine.js?v=129"></script>
-<script src="relayr.js?v=129"></script>
-<script src="launch-session.js?v=129"></script>
-<script src="bridge.js?v=129"></script>
-<script src="wallet-chooser.js?v=129"></script>
-<script src="app.js?v=129"></script>
+<script src="config.js?v=130"></script>
+<script src="runtime.js?v=130"></script>
+<script src="tx-safe.js?v=130"></script>
+<script src="tx-engine.js?v=130"></script>
+<script src="relayr.js?v=130"></script>
+<script src="launch-plan.js?v=130"></script>
+<script src="center-intents.js?v=130"></script>
+<script src="launch-session.js?v=130"></script>
+<script src="bridge.js?v=130"></script>
+<script src="wallet-chooser.js?v=130"></script>
+<script src="app.js?v=130"></script>
 </body>
 </html>

@@ -347,10 +347,13 @@
         && (expected.from === undefined || same(tx.from, address(expected.from)));
       const wrapped = !direct && expected.from !== undefined ? safeOutcome(evidence, { from: address(expected.from), to: entry.target, data: entry.data, value: entry.value,
         ...(expected.safeTxHash !== undefined ? { safeTxHash: expected.safeTxHash } : {}) }) : null;
-      if (!direct && !wrapped) fail("The transaction does not match the saved Sticky deployment.");
+      // A sponsored launch arrives through the ERC-2771 forwarder, which carries the exact call.
+      const forwarded = !direct && !wrapped && expected.forwarder !== undefined && same(tx.to, address(expected.forwarder))
+        && typeof tx.input === "string" && tx.input.toLowerCase().includes(entry.data.slice(2));
+      if (!direct && !wrapped && !forwarded) fail("The transaction does not match the saved Sticky deployment.");
       if (wrapped === "failure" && (receipt.status === "0x0" || expected.safeTxHash === undefined)) return { status: "unresolved", hash: hash.toLowerCase() };
       if (receipt.status === "0x0" || wrapped === "failure") return { status: "reverted", hash: hash.toLowerCase(), finalized: await isFinalized(entry.chain, receipt) };
-      const deployCaller = wrapped ? address(expected.from) : tx.from;
+      const deployCaller = forwarded ? null : wrapped ? address(expected.from) : tx.from;
       if (!Array.isArray(receipt.logs)) fail("The Sticky deployment receipt has no logs.");
       const logs = receipt.logs.filter((log) => same(log.address, entry.target) && same(log.topics?.[0], DEPLOY_TOPIC));
       if (logs.length !== 1) fail("The receipt does not identify exactly one Sticky deployment.");
@@ -365,7 +368,7 @@
       const deployedToken = abiAddress(data.slice(0, 64));
       if (!projectId || deployedToken === "0x" + "0".repeat(40) || !same(abiAddress(deployed.topics[2].slice(2)), token)
         || BigInt("0x" + data.slice(64, 128)) !== tax || BigInt("0x" + data.slice(128, 192)) !== (expected.soulbound ? 1n : 0n)
-        || !same(abiAddress(data.slice(192, 256)), deployCaller)) fail("The Sticky deployment event differs from its exact configuration.");
+        || (deployCaller !== null && !same(abiAddress(data.slice(192, 256)), deployCaller))) fail("The Sticky deployment event differs from its exact configuration.");
       const creations = receipt.logs.filter((log) => same(log.address, projects) && same(log.topics?.[0], CREATE_EVENT));
       if (creations.length !== 1) fail("The receipt does not prove canonical project creation.");
       const created = creations[0];

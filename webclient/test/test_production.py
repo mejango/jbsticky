@@ -142,6 +142,21 @@ class ConfigTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(target.read_text(), "existing")
 
+class CenterListingConfigTests(unittest.TestCase):
+    def test_defaults_to_juicebox_center(self):
+        self.assertEqual(build.build_config({"STICKY_DEPLOYER": DEPLOYER})["centerUrl"], "https://juicebox.center")
+
+    def test_accepts_another_https_origin(self):
+        config = build.build_config({"STICKY_DEPLOYER": DEPLOYER, "STICKY_CENTER_URL": "https://dev.juicebox.center"})
+        self.assertEqual(config["centerUrl"], "https://dev.juicebox.center")
+
+    def test_rejects_anything_but_an_https_origin(self):
+        for value in ("http://juicebox.center", "http://localhost:3000", "https://juicebox.center/",
+                      "https://juicebox.center/v1", "https://user@juicebox.center", "juicebox.center", "https://Juicebox.center"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "STICKY_CENTER_URL must be an HTTPS origin"):
+                build.build_config({"STICKY_DEPLOYER": DEPLOYER, "STICKY_CENTER_URL": value})
+
+
 class SignaConfigTests(unittest.TestCase):
     def config(self, **overrides):
         return build.build_config({"STICKY_DEPLOYER": DEPLOYER, **SIGNA_ENV, **overrides})
@@ -332,6 +347,14 @@ class ServerTests(unittest.TestCase):
         (self.root / "center-callback.js").write_text("// callback")
         (self.root / "center-connect.js").write_text("// sdk")
         return server.create_app(self.root)
+
+    def test_page_policy_lets_the_page_reach_juicebox_center(self):
+        # Center listings, RPCs and Relayr are fetched from the page; only scripts are pinned to 'self'.
+        for app in (None, self.signa_app()):
+            policy = self.request(app=app)["headers"]["Content-Security-Policy"]
+            with self.subTest(policy=policy):
+                self.assertNotIn("connect-src", policy)
+                self.assertNotIn("default-src", policy)
 
     def test_without_signa_pages_refuse_framing_forms_and_referrers(self):
         headers = self.request()["headers"]

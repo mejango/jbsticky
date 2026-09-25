@@ -1673,6 +1673,8 @@ let confirmSummary = [];
 let confirmSession = null;
 let confirmProgress = -1;
 let txRunCancelled = false;
+// Non-transaction steps shown before the transactions, like signing the launch listing.
+let confirmPreSteps = [];
 
 function renderConfirmSteps() {
   const card = $("cd-steps");
@@ -1686,13 +1688,16 @@ function renderConfirmSteps() {
   const uncertain = steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state));
   const intro = done === steps.length ? "All transactions confirmed."
     : uncertain ? "The submitted step will be checked before any remaining transaction is sent."
-      : `${steps.length - done} transaction${steps.length - done === 1 ? "" : "s"} remain. Confirmed steps will not be repeated.`;
-  card.innerHTML = `<p>${esc(intro)}</p>` + steps.map((step, i) => {
+      : `${steps.length - done} transaction${steps.length - done === 1 ? " remains" : "s remain"}. Confirmed steps will not be repeated.`;
+  const offset = confirmPreSteps.length;
+  card.innerHTML = `<p>${esc(intro)}</p>` + confirmPreSteps.map((step, i) =>
+    `<div class="cd-step ${step.state}"><i>${step.state === "done" ? "✓" : i + 1}</i><span>${esc(step.label)}<br><small>${esc(step.note)}</small></span></div>`,
+  ).join("") + steps.map((step, i) => {
     const state = step.state === "confirmed" ? "done" : ["pending", "submitting", "unknown"].includes(step.state) ? "current" : "pending";
     const chain = chainById(step.tx.chainId);
     const reference = step.hash ? ` <span class="mut">${esc(step.hash.slice(0, 12))}…</span>` : "";
     const link = step.hash && chain?.explorer ? ` <a href="${esc(chain.explorer)}/tx/${esc(step.hash)}" target="_blank" rel="noopener noreferrer">View</a>` : "";
-    return `<div class="cd-step ${state}"><i>${state === "done" ? "✓" : i + 1}</i><span>${esc(step.tx.label)}<br><small>${esc(labels[step.state])}${reference}${link}</small></span></div>`;
+    return `<div class="cd-step ${state}"><i>${state === "done" ? "✓" : offset + i + 1}</i><span>${esc(step.tx.label)}<br><small>${esc(labels[step.state])}${reference}${link}</small></span></div>`;
   }).join("");
   const recovery = $("cd-recovery");
   if (recovery) recovery.classList.toggle("hide", !uncertain);
@@ -1762,15 +1767,18 @@ function settleConfirm(ok) {
   }
 }
 
-async function runSavedTransactions(session, originalTxs) {
+async function runSavedTransactions(session, originalTxs, hooks = {}) {
   txRunCancelled = false;
   confirmSession = session;
   try {
     const result = await getTxEngine().run({
       sessionId: session.id,
-      review: (saved) => {
+      review: async (saved) => {
         confirmSession = saved;
-        return confirmTxs(saved.title, saved.steps.map((step) => step.tx), saved.summary);
+        const ok = await confirmTxs(saved.title, saved.steps.map((step) => step.tx), saved.summary);
+        // Runs after consent and before the first transaction is sent.
+        if (ok && hooks.afterReview) await hooks.afterReview();
+        return ok;
       },
       shouldContinue: () => !txRunCancelled,
     });
@@ -1804,7 +1812,9 @@ async function confirmAndRun(title, txs, summary = [], hooks = {}) {
   });
   const session = await getTxEngine().prepare(title, frozen, summary);
   await hooks.onPrepared?.(session);
-  return runSavedTransactions(session, txs);
+  confirmPreSteps = hooks.preSteps || [];
+  try { return await runSavedTransactions(session, txs, hooks); }
+  finally { confirmPreSteps = []; }
 }
 
 async function resumeSavedTransactions() {
@@ -2011,40 +2021,58 @@ async function loadStickyRuntime(chainId) {
     throw new Error(`Sticky is not deployed at ${deployment.deployer} on ${chain.name}`);
   }
   const controller = decAddress(await viewAt(deployment, deployment.deployer, SEL.CONTROLLER));
-  const projects = decAddress(await viewAt(deployment, controller, SEL.PROJECTS));
-  await Promise.all([controller, projects].map(async address => {
+  const [projects, tokens] = await Promise.all([
+    viewAt(deployment, controller, SEL.PROJECTS).then(decAddress),
+    viewAt(deployment, controller, SEL.TOKENS).then(decAddress),
+  ]);
+  await Promise.all([controller, projects, tokens].map(async address => {
     StickyRuntime.address(address);
     const code = await rpcAt(deployment.rpcUrl, "eth_getCode", [address, "latest"]);
     if (!code || code === "0x") throw new Error(`A required Sticky contract is missing on ${chain.name}`);
   }));
   const fee = decUint(await viewAt(deployment, projects, SEL.creationFee));
+  // Every launch trusts AutoStick, so a chain without it cannot launch.
   const adapter = deployment.autoStickAdapter;
-  if (adapter) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(adapter)) {
-      throw new Error(`the auto-stick adapter configured for ${chain.name} is invalid`);
-    }
-    const adapterCode = await rpcAt(deployment.rpcUrl, "eth_getCode", [adapter, "latest"]);
-    if (!adapterCode || adapterCode === "0x") {
-      throw new Error(`the auto-stick adapter is not deployed at ${adapter} on ${chain.name}`);
-    }
-    const [adapterDeployer, adapterDistributor, hook, adapterHook] = await Promise.all([
-      viewAt(deployment, adapter, "0xc1b8411a").then(decAddress),
-      viewAt(deployment, adapter, SEL.DISTRIBUTOR).then(decAddress),
-      viewAt(deployment, deployment.deployer, SEL.HOOK).then(decAddress),
-      viewAt(deployment, adapter, SEL.HOOK).then(decAddress),
-    ]);
-    if (adapterDeployer.toLowerCase() !== deployment.deployer.toLowerCase() || hook.toLowerCase() !== adapterHook.toLowerCase()
-      || !deployment.distributor || adapterDistributor.toLowerCase() !== deployment.distributor.toLowerCase()) {
-      throw new Error(`The auto-stick adapter on ${chain.name} does not match this Sticky deployment and distributor.`);
-    }
+  StickyLaunchPlan.launchGranters([], adapter, chain.name);
+  const adapterCode = await rpcAt(deployment.rpcUrl, "eth_getCode", [adapter, "latest"]);
+  if (!adapterCode || adapterCode === "0x") {
+    throw new Error(`the auto-stick adapter is not deployed at ${adapter} on ${chain.name}`);
   }
-  return { ...chain, ...deployment, controller, projects, fee, autoStickAdapter: adapter || "" };
+  const [adapterDeployer, adapterDistributor, hook, adapterHook] = await Promise.all([
+    viewAt(deployment, adapter, "0xc1b8411a").then(decAddress),
+    viewAt(deployment, adapter, SEL.DISTRIBUTOR).then(decAddress),
+    viewAt(deployment, deployment.deployer, SEL.HOOK).then(decAddress),
+    viewAt(deployment, adapter, SEL.HOOK).then(decAddress),
+  ]);
+  if (adapterDeployer.toLowerCase() !== deployment.deployer.toLowerCase() || hook.toLowerCase() !== adapterHook.toLowerCase()
+    || !deployment.distributor || adapterDistributor.toLowerCase() !== deployment.distributor.toLowerCase()) {
+    throw new Error(`The auto-stick adapter on ${chain.name} does not match this Sticky deployment and distributor.`);
+  }
+  return { ...chain, ...deployment, controller, projects, tokens, fee, autoStickAdapter: adapter };
+}
+
+// One runtime check per chain while the create dialog is open.
+let launchRuntimes = new Map();
+function launchRuntime(chainId) {
+  if (!launchRuntimes.has(chainId)) {
+    const pending = loadStickyRuntime(chainId);
+    pending.catch(() => launchRuntimes.delete(chainId));
+    launchRuntimes.set(chainId, pending);
+  }
+  return launchRuntimes.get(chainId);
 }
 
 let createEnvironment = "production";
 let createChainIds = new Set(chainsForEnvironment(createEnvironment).map((chain) => chain.chainId));
-const launchChainConfigured = (chain) => window.STICKY_CONFIG?.demoMode === true
-  || /^0x[0-9a-fA-F]{40}$/.test(stickyDeploymentFor(chain.chainId).deployer || "");
+// Why a chain can't launch, or "" when it can. AutoStick is a granter on every launch.
+function launchChainBlocker(chain) {
+  if (window.STICKY_CONFIG?.demoMode === true) return "";
+  const deployment = stickyDeploymentFor(chain.chainId);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(deployment.deployer || "")) return "not deployed";
+  if (!StickyLaunchPlan.isAddress(deployment.autoStickAdapter)) return "no auto-stick helper";
+  return "";
+}
+const launchChainConfigured = (chain) => !launchChainBlocker(chain);
 
 function renderCreateChains() {
   const chains = chainsForEnvironment(createEnvironment);
@@ -2054,7 +2082,7 @@ function renderCreateChains() {
     `<label class="chain-option"><input type="checkbox" data-create-chain="${chain.chainId}"`
       + `${createChainIds.has(chain.chainId) ? " checked" : ""}${launchChainConfigured(chain) ? "" : " disabled"}>`
       + `<span class="chain-option-icon" aria-hidden="true">${CHAIN_ICON_SVG[chain.icon]}</span>`
-      + `<span>${esc(chain.name)}${launchChainConfigured(chain) ? "" : " — unavailable"}</span></label>`,
+      + `<span>${esc(chain.name)}${launchChainConfigured(chain) ? "" : ` <span class="mut">(${esc(launchChainBlocker(chain))})</span>`}</span></label>`,
   ).join("");
   syncCreateChainValidity();
 }
@@ -3561,21 +3589,10 @@ async function deployStreaks() {
 }
 
 async function prepareStickyLaunch() {
-  const token = dTokenResolved ?? $("d-token").value.trim();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(token)) throw new Error("enter a token address or a Juicebox project id");
-  const rewardPercent = $("d-add-reward").checked ? effectiveRewardPct() : 0;
-  if (!Number.isFinite(rewardPercent) || rewardPercent < 0 || rewardPercent > 100) {
-    throw new Error("stickiness bonus must be between 0% and 100%");
-  }
-  const reward = parseUnits(String(rewardPercent), 2);
+  const reward = $("d-add-reward").checked ? StickyLaunchPlan.bonusBasisPoints(rewardChoice, $("d-reward").value) : 0n;
   const soulbound = $("d-soulbound").value === "1";
-  // Launch-time trusted senders (Extras). The auto-stick adapter is appended below regardless.
-  const humanGranters = $("d-add-granters").checked
-    ? ($("d-granters").value || "").split(",").map((value) => value.trim()).filter(Boolean)
-    : [];
-  for (const granter of humanGranters) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(granter)) throw new Error(`bad airdrop sender: ${granter}`);
-  }
+  // Launch-time trusted senders (Extras). AutoStick is appended on every chain.
+  const humanGranters = $("d-add-granters").checked ? StickyLaunchPlan.parseSenders($("d-granters").value) : [];
 
   const selectedChains = chainsForEnvironment(createEnvironment)
     .filter((chain) => createChainIds.has(chain.chainId));
@@ -3583,34 +3600,39 @@ async function prepareStickyLaunch() {
     renderCreateChains();
     throw new Error("choose at least one chain");
   }
+  for (const chain of selectedChains) {
+    const blocker = launchChainBlocker(chain);
+    if (blocker) throw new Error(`${chain.name} can't launch Sticky: ${blocker}.`);
+  }
   if (!walletAccount && selectedChains.some((chain) => chain.chainId !== ctx.chainId)) {
     throw new Error("connect a wallet to deploy on more than the connected chain");
   }
 
   status(`checking ${selectedChains.length} ${selectedChains.length === 1 ? "chain" : "chains"}…`);
-  const targets = await Promise.all(selectedChains.map(async (chain) => {
+  const runtimes = await Promise.all(selectedChains.map((chain) => launchRuntime(chain.chainId).catch((error) => {
+    throw new Error(`${chain.name}: ${error.message}`);
+  })));
+  const { address: token } = await resolveLaunchToken($("d-token").value, runtimes.map((runtime) => runtime.chainId));
+  const targets = await Promise.all(runtimes.map(async (runtime) => {
     try {
-      const runtime = await loadStickyRuntime(chain.chainId);
       const [tokenSymbol, tokenName, tokenDecimals] = await Promise.all([
         viewAt(runtime, token, SEL.symbol).then(decString),
         viewAt(runtime, token, SEL.name).then(decString),
         viewAt(runtime, token, SEL.decimals).then((value) => Number(decUint(value))),
       ]);
-      return { ...runtime, tokenSymbol, tokenName, tokenDecimals };
+      return { ...runtime, tokenSymbol, tokenName, tokenDecimals,
+        granters: StickyLaunchPlan.launchGranters(humanGranters, runtime.autoStickAdapter, runtime.name) };
     } catch (error) {
-      throw new Error(`${chain.name}: ${error.message}`);
+      throw new Error(`${runtime.name}: ${error.message}`);
     }
   }));
-  const [{ tokenSymbol, tokenName, tokenDecimals }] = targets;
-  for (const target of targets.slice(1)) {
-    if (target.tokenSymbol !== tokenSymbol || target.tokenName !== tokenName || target.tokenDecimals !== tokenDecimals) {
-      throw new Error(`${target.name}: ${token} does not match the token deployed on ${targets[0].name}`);
-    }
-  }
+  const { tokenSymbol, tokenName } = StickyLaunchPlan.checkSameToken(targets);
+  status("");
 
   const useCustom = $("d-custom-name").checked;
-  const name = (useCustom && $("d-name").value.trim()) || `Sticky ${tokenName}`;
-  const symbol = (useCustom && $("d-symbol").value.trim()) || `STICKY${tokenSymbol.toUpperCase()}`;
+  const defaults = StickyLaunchPlan.defaultNames(tokenName, tokenSymbol);
+  const name = (useCustom && $("d-name").value.trim()) || defaults.name;
+  const symbol = (useCustom && $("d-symbol").value.trim()) || defaults.symbol;
   const chainIds = targets.map((target) => target.chainId);
   const launchId = crypto.randomUUID();
   const projectUri = `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({
@@ -3621,11 +3643,7 @@ async function prepareStickyLaunch() {
     chains: chainIds,
   }))}`;
   const txs = targets.map((target) => {
-    const granters = [...humanGranters];
-    if (target.autoStickAdapter
-      && !granters.some((granter) => granter.toLowerCase() === target.autoStickAdapter.toLowerCase())) {
-      granters.push(target.autoStickAdapter);
-    }
+    const { granters } = target;
     return {
       label: `Deploy ${symbol} on ${target.name}`,
       chainId: target.chainId,
@@ -3637,11 +3655,9 @@ async function prepareStickyLaunch() {
         ["LOCKS", `${token} — ${tokenSymbol}`],
         ["NAME", name],
         ["SYMBOL", symbol],
-        ["CASH OUT TAX", reward === 10000n ? "100% — unsticking permanently returns zero underlying tokens" : reward > 0n ? `${pct(reward)} — reclaim depends on backing and the share of supply unstuck` : "none"],
+        ["STICKINESS BONUS", reward > 0n ? `${pct(reward)} cash out tax; part of each unstick stays with the holders who remain` : "none"],
         ["TRUSTED SENDERS", humanGranters.length ? humanGranters.join(", ") : "none"],
-        ["AUTO-STICK", target.autoStickAdapter
-          ? `pre-approved through ${target.autoStickAdapter}; each holder still opts in`
-          : "unavailable — no auto-stick adapter is configured"],
+        ["AUTO-STICK", `${target.autoStickAdapter}, trusted; each holder still opts in`],
         ["TRANSFERS", soulbound ? "locked" : "unlocked — transfers restart the stickiness clock"],
       ],
       value: `0x${target.fee.toString(16)}`,
@@ -3658,8 +3674,12 @@ async function prepareStickyLaunch() {
   const fundingRpcs = Object.fromEntries(chainsForEnvironment(createEnvironment)
     .map((chain) => [chain.chainId, stickyDeploymentFor(chain.chainId).rpcUrl])
     .filter(([, url]) => typeof url === "string" && url));
+  const { mode, center } = await launchListingPlan({ owner, targets, listing: {
+    calls: txs.map(({ chainId, to, data }) => ({ chainId, to, data })), owner, name, symbol,
+    stakedToken: token, stakedTokenSymbol: tokenSymbol, cashOutTaxRate: reward, soulbound, launchId, projectUri,
+  } });
   stickyLaunchController().prepare({
-    id: launchId, owner, mode: targets.length > 1 ? "relayr" : "direct", name, symbol,
+    id: launchId, owner, mode, center, name, symbol,
     tokenSymbol, environment: createEnvironment, fundingRpcs,
     summary: [["Create", `${name} (${symbol})`], ["Backed by", tokenSymbol],
       ["On", targets.map((target) => target.name).join(", ")]],
@@ -3674,6 +3694,77 @@ async function prepareStickyLaunch() {
   await stickyLaunchController().run();
 }
 
+
+// A launch is listed on Juicebox Center. Center sponsors it only when every chain is one it
+// sponsors and StickyDeployer trusts the V6 forwarder there; otherwise the wallet pays.
+async function launchListingPlan({ owner, targets, listing }) {
+  const selfPaid = targets.length > 1 ? "relayr" : "direct";
+  if (!window.STICKY_CONFIG?.centerUrl || !window.StickyCenter) {
+    return { mode: selfPaid, center: { state: "unavailable", reason: "Juicebox Center is not configured on this site." } };
+  }
+  const envelope = StickyCenter.buildEnvelope(listing);
+  const code = await rpcAt(targets[0].rpcUrl, "eth_getCode", [owner, "latest"]).catch(() => null);
+  if (code !== "0x" && !/^0xef0100[0-9a-fA-F]{40}$/.test(code || "")) {
+    return { mode: selfPaid, center: { state: "unavailable", envelope,
+      reason: "Juicebox Center lists launches signed by a wallet address, and this account is a contract." } };
+  }
+  const sponsored = await StickyCenter.sponsoredPlan({ chainIds: targets.map((target) => target.chainId), isTrusted: async (chainId) => {
+    const target = targets.find((item) => item.chainId === chainId);
+    return decUint(await viewAt(target, target.deployer, StickyCenter.IS_TRUSTED_FORWARDER, encAddress(StickyCenter.FORWARDER))) === 1n;
+  } });
+  return { mode: sponsored ? "center" : selfPaid, center: { state: "pending", envelope } };
+}
+
+// Center's answers in plain words; its own text is kept for the record.
+function centerRefusal(error) {
+  if (!(error instanceof StickyCenter.CenterError)) return error.message;
+  if (error.code === "unreachable") return "Juicebox Center could not be reached, or does not accept listings from this site yet.";
+  if (error.code === "forbidden_origin") return "Juicebox Center does not accept listings from this site yet.";
+  if (error.status === 429) return "Juicebox Center's listing limit is reached. Try again later.";
+  if (error.code === "mismatch" || error.code === "malformed") return error.message;
+  return `Juicebox Center refused the listing (${error.code}).`;
+}
+let listingStepNote = "";
+function setListingStep(note) {
+  listingStepNote = note;
+  if (confirmPreSteps.length) {
+    confirmPreSteps = confirmPreSteps.map((step) => ({ ...step, state: note === "Waiting for wallet" ? "current" : note === "Signed" ? "done" : "pending", note: note || step.note }));
+    if ($("confirm-dialog").open) renderConfirmSteps();
+  }
+  if ($("sticky-launch-dialog")?.open) renderStickyLaunchRecovery();
+}
+async function signListing(owner, message) {
+  if (!activeProvider || walletKind !== "injected") throw new Error("Connect a wallet to sign the launch listing.");
+  if (txAccount().toLowerCase() !== owner.toLowerCase()) throw new Error(`Connect ${owner} to sign the launch listing.`);
+  setListingStep("Waiting for wallet");
+  try {
+    const signature = await activeProvider.request({ method: "personal_sign", params: [StickyCenter.utf8Hex(message), owner] });
+    setListingStep("Signed");
+    return signature;
+  } catch (error) {
+    setListingStep("Not signed");
+    throw error?.code === 4001 ? new Error("You declined the listing signature.") : error;
+  }
+}
+function stickyLaunchListing() {
+  const apiUrl = window.STICKY_CONFIG?.centerUrl;
+  if (!apiUrl || !window.StickyCenter) return null;
+  const client = StickyCenter.createClient({ apiUrl });
+  const plain = async (fn) => { try { return await fn(); } catch (error) { throw new Error(centerRefusal(error)); } };
+  return {
+    forwarder: StickyCenter.FORWARDER,
+    async publish(session) {
+      const prepared = await plain(() => client.prepare(session.center.envelope));
+      const signature = await signListing(session.owner, prepared.message);
+      const intent = await plain(() => client.publish(prepared, session.owner, signature));
+      return { intentId: intent.id };
+    },
+    record: (session, chainId, result) => plain(() => client.record(session.center.intentId,
+      { chainId, projectId: result.projectId, transactionHash: result.hash })),
+    deploy: (session) => client.requestDeploy(session.center.intentId, session.targets.map((target) => target.chainId)),
+    status: (session) => plain(() => client.get(session.center.intentId)),
+  };
+}
 
 // Launch state is independent of the editable create form and survives reloads.
 let stickyLaunchControllerInstance = null;
@@ -3695,7 +3786,7 @@ function stickyLaunchRelayr() {
 }
 function stickyLaunchController() {
   return stickyLaunchControllerInstance ||= StickyLaunch.createController({
-    store: stickyLaunchStore(), relayr: stickyLaunchRelayr(),
+    store: stickyLaunchStore(), relayr: stickyLaunchRelayr(), listing: stickyLaunchListing(),
     choosePayment: chooseStickyLaunchPayment,
     runPayment: runStickyLaunchPayment,
     runDirect: (session, options) => runStickyLaunchWallet(session, session.txs, options),
@@ -3741,7 +3832,7 @@ function ensureStickyLaunchUI() {
       <button type="button" class="ghost" id="sl-check-hash">Verify transaction</button>
     </details><details style="margin-top:16px"><summary>Review saved deployment transactions</summary><div id="sl-transactions"></div></details>
     <div class="dlg-actions"><button type="button" class="ghost" id="sl-clear">Discard draft</button>
-      <button type="button" class="ghost" id="sl-refresh">Check progress</button><button type="button" id="sl-resume">Continue launch</button></div>`;
+      <button type="button" class="ghost" id="sl-refresh">Check progress</button><button type="button" class="ghost hide" id="sl-list">List on Juicebox Center</button><button type="button" id="sl-resume">Continue launch</button></div>`;
   document.body.appendChild(dialog);
   const banner = document.createElement("div");
   banner.id = "sticky-launch-banner";
@@ -3762,6 +3853,7 @@ function ensureStickyLaunchUI() {
     await stickyLaunchController().run();
   }));
   $("sl-refresh").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().refresh()));
+  $("sl-list").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().list()));
   $("sl-check-hash").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().addHash(Number($("sl-chain").value), $("sl-hash").value.trim())));
   $("sl-clear").onclick = guard(() => withStickyLaunchLock(async () => {
     const saved = stickyLaunchStore().load();
@@ -3793,7 +3885,7 @@ function renderStickyLaunchRecovery() {
     $("sticky-launch-banner").classList.remove("hide");
     $("sl-banner-text").textContent = "A saved launch needs recovery.";
     $("sl-error").textContent = error.message;
-    for (const id of ["sl-clear", "sl-resume", "sl-refresh", "sl-check-hash"]) $(id).disabled = true;
+    for (const id of ["sl-clear", "sl-resume", "sl-refresh", "sl-check-hash", "sl-list"]) $(id).disabled = true;
     return;
   }
   $("sticky-launch-banner").classList.toggle("hide", !session);
@@ -3807,12 +3899,23 @@ function renderStickyLaunchRecovery() {
     : session.paymentConfirmed ? "Your payment is confirmed. Relayr is deploying on the selected chains. Keep this saved launch until every chain confirms."
     : session.paymentIntent ? "Your saved payment is being recovered. Check your wallet and use Continue launch to verify its result."
     : session.published && !session.quote ? (stickyLaunchBusy ? "Getting a launch quote from Relayr…" : "Relayr may have received this launch, but its quote ID was not returned. Submitting again could deploy duplicates. Keep this recovery record.")
+    : session.mode === "center" ? (session.center?.deployRequested ? "Juicebox Center is deploying on the selected chains. No transaction from you." : "Sign the launch listing. Juicebox Center then deploys it and pays the fees.")
     : session.mode === "relayr" ? (session.quote ? "Choose where to pay this launch quote. One payment covers the quoted destination gas and creation fees." : "Getting funding options for your saved launch…")
     : "Review the saved deployment, then confirm it in your wallet.";
-  $("sl-progress").innerHTML = session.targets.map((target, i) => {
-    const result = session.results[target.chainId];
-    return `<div class="cd-step ${result?.status === "confirmed" ? "done" : "pending"}"><i>${result?.status === "confirmed" ? "✓" : i + 1}</i><span>${esc(target.name)}${result?.status === "confirmed" ? ` — <a class="link" href="?chain=${target.chainId}#/project/${esc(result.projectId)}">project #${esc(result.projectId)}</a>` : " — awaiting confirmation"}</span></div>`;
-  }).join("");
+  const listing = listingRow(session);
+  $("sl-progress").innerHTML = (listing
+    ? `<div class="cd-step ${listing.state}"><i>${listing.state === "done" ? "✓" : 1}</i><span>${esc(listing.label)}<br><small>${esc(listing.note)}</small></span></div>` : "")
+    + session.targets.map((target, i) => {
+      const result = session.results[target.chainId];
+      const step = listing ? i + 2 : i + 1;
+      const recorded = session.center?.recorded?.[target.chainId];
+      return `<div class="cd-step ${result?.status === "confirmed" ? "done" : "pending"}"><i>${result?.status === "confirmed" ? "✓" : step}</i><span>${esc(target.name)}: `
+        + (result?.status === "confirmed"
+          ? `<a class="link" href="?chain=${target.chainId}#/project/${esc(result.projectId)}">project #${esc(result.projectId)}</a>${recorded ? " <small>listed</small>" : ""}`
+          : "awaiting confirmation") + `</span></div>`;
+    }).join("");
+  $("sl-list").classList.toggle("hide", session.center?.state !== "unlisted");
+  $("sl-list").disabled = stickyLaunchBusy;
   const currentChain = $("sl-chain").value;
   $("sl-chain").innerHTML = session.targets.map((target) => `<option value="${target.chainId}">${esc(target.name)}</option>`).join("");
   if (session.targets.some((target) => String(target.chainId) === currentChain)) $("sl-chain").value = currentChain;
@@ -3826,6 +3929,21 @@ function renderStickyLaunchRecovery() {
   $("sl-check-hash").disabled = stickyLaunchBusy || done;
   $("sl-recovery").classList.toggle("hide", done);
   if (session.lastStatusError) $("sl-error").textContent = session.lastStatusError;
+}
+// The listing's line in the launch steps, or null when there is none to show.
+function listingRow(session) {
+  const center = session.center;
+  if (!center) return null;
+  const label = "Sign the launch listing";
+  if (center.state === "pending") return { label, state: listingStepNote === "Waiting for wallet" ? "current" : "pending",
+    note: listingStepNote === "Waiting for wallet" ? "Waiting for wallet" : "Lists it on Juicebox Center. Free, no transaction." };
+  if (center.state === "published") {
+    const waiting = Object.values(session.results).some((result) => result.status === "confirmed")
+      && session.targets.some((target) => session.results[target.chainId]?.status === "confirmed" && !center.recorded[target.chainId]);
+    return { label: "Listed on Juicebox Center", state: "done", note: waiting ? "Recording each deployment after 2 confirmations." : `Listing ${center.intentId}` };
+  }
+  if (center.state === "unlisted") return { label: "Not listed on Juicebox Center", state: "pending", note: center.error || "Your launch works without it. List it any time." };
+  return { label: "Not listed on Juicebox Center", state: "pending", note: center.reason || "" };
 }
 function chooseStickyLaunchPayment(options, session) {
   // A quote can finish after the launch review was closed. Preserve it without trapping a lock.
@@ -3859,15 +3977,22 @@ async function runStickyLaunchPayment(session, options) {
   };
   return runStickyLaunchWallet(session, [tx], options);
 }
-async function runStickyLaunchWallet(session, txs, { recovering }) {
+async function runStickyLaunchWallet(session, txs, { recovering, beforeSend }) {
   if (txAccount()?.toLowerCase() !== session.owner.toLowerCase()) throw new Error(`Connect ${session.owner} to resume this launch.`);
   const engine = getTxEngine();
   const pending = engine.load();
   const matching = pending?.steps.every((step) => step.tx.sessionTag === session.id)
     && pending.steps.length === txs.length;
   if (recovering && !matching) throw new Error("The saved wallet transaction record is missing or belongs to another action. Keep this launch saved and recover its execution transaction; a new payment will not be sent.");
+  // The listing is signed after this review is confirmed and before the wallet sends anything.
+  const preSteps = session.center?.state === "pending"
+    ? [{ label: "Sign the launch listing", note: "Lists it on Juicebox Center. Free, no transaction.", state: "pending" }] : [];
   let completed;
-  try { completed = await confirmAndRun(`Create ${session.symbol}`, txs, session.summary); }
+  // Dialogs replace each other: the review takes the launch dialog's place until it closes.
+  const launchDialog = $("sticky-launch-dialog");
+  const reopen = Boolean(launchDialog?.open);
+  if (reopen) launchDialog.close();
+  try { completed = await confirmAndRun(`Create ${session.symbol}`, txs, session.summary, { preSteps, afterReview: beforeSend }); }
   catch (error) {
     // A failure before this tagged plan exists cannot have submitted this launch.
     const after = engine.load();
@@ -3877,6 +4002,7 @@ async function runStickyLaunchWallet(session, txs, { recovering }) {
     }
     throw error;
   }
+  finally { if (reopen) showStickyLaunchDialog(); }
   const latest = engine.load();
   const receipt = txs[0].receipt || latest?.steps[0]?.receipt;
   if (!completed && latest?.steps.every((step) => ["ready", "rejected"].includes(step.state))) return { status: "cancelled" };
@@ -3886,7 +4012,7 @@ async function runStickyLaunchWallet(session, txs, { recovering }) {
 async function pollStickyLaunchProgress() {
   try {
     const saved = stickyLaunchStore().load();
-    if (!stickyLaunchBusy && saved?.quote && !StickyLaunch.complete(saved) && navigator.locks) {
+    if (!stickyLaunchBusy && StickyLaunch.needsPolling(saved) && navigator.locks) {
       await navigator.locks.request("sticky-launch-write", { ifAvailable: true }, async (lock) => {
         if (!lock || stickyLaunchBusy) return;
         stickyLaunchBusy = true;
@@ -4476,9 +4602,8 @@ $("deploy").onclick = guard(deployStreaks);
 // Cash out curve: y = x((1-r) + rx) — proportional at r=0, bonding-curved as the reward grows.
 let rewardChoice = "10";
 let lockedSymbol = "";
-// The TOKEN TO LOCK field also accepts a Juicebox project id (optionally chain-prefixed, e.g. eth:5) and
-// resolves it to the project's token. Whatever resolves is echoed subtly below the field.
-let dTokenResolved = null;
+// The token field also takes a Juicebox project ID (5, or chain-prefixed like base:5). What it
+// resolves to is echoed below the field.
 let dTokenLookup = 0;
 const CHAIN_ALIASES = {
   eth: 1, ethereum: 1, mainnet: 1, op: 10, optimism: 10, base: 8453, arb: 42_161, arbitrum: 42_161,
@@ -4493,74 +4618,60 @@ function setTokenMeta(html, isError) {
   meta.innerHTML = html || "";
 }
 
+// Reads a project's ERC-20 on one chain through that chain's JBTokens.
+async function launchTokenOf(chainId, projectId) {
+  const runtime = await launchRuntime(chainId);
+  return decAddress(await viewAt(runtime, runtime.tokens, SEL.tokenOf, word(projectId)));
+}
+const launchChainName = (chainId) => chainById(chainId)?.name || `chain ${chainId}`;
+const selectedLaunchChainIds = () => chainsForEnvironment(createEnvironment)
+  .filter((chain) => createChainIds.has(chain.chainId)).map((chain) => chain.chainId);
+
+// Resolves the TOKEN TO MAKE STICKY field. A project ID resolves on every selected chain.
+async function resolveLaunchToken(input, chainIds) {
+  const parsed = StickyLaunchPlan.parseTokenInput(input, CHAIN_ALIASES);
+  if (parsed.kind === "address") return { address: parsed.address, chainIds, projectId: null };
+  if (parsed.kind === "unknown-chain") throw new Error(`Unknown chain "${parsed.prefix}". Try eth, op, base or arb.`);
+  if (parsed.kind !== "project") throw new Error("Enter a token address or a Juicebox project ID.");
+  const resolved = await StickyLaunchPlan.resolveProjectToken({ projectId: parsed.projectId, chainId: parsed.chainId,
+    targetChainIds: chainIds, tokenOfAt: launchTokenOf, nameOf: launchChainName });
+  return { ...resolved, projectId: parsed.projectId };
+}
+
 async function resolveLockToken() {
   const input = $("d-token").value.trim();
   const lookup = ++dTokenLookup;
   lockedSymbol = "";
-  dTokenResolved = null;
   setTokenMeta("");
-  if (!input || !ctx.loaded) return;
-
-  // A project id, optionally chain-prefixed: resolve it to the project's token on the connected chain.
-  const idMatch = input.match(/^(?:([a-zA-Z-]+):)?(\d+)$/);
-  let addr = input;
-  let projectNote = "";
-  if (idMatch) {
-    const [, prefix, id] = idMatch;
-    if (prefix) {
-      const wanted = CHAIN_ALIASES[prefix.toLowerCase().replace(/[^a-z]/g, "")];
-      if (!wanted) return setTokenMeta(`Unknown chain "${esc(prefix)}" — try eth, op, base, or arb.`, true);
-      if (wanted !== ctx.chainId) {
-        return setTokenMeta(`That project lives on ${esc(chainLabelOf(wanted))} — this app is connected to `
-          + `${esc(chainLabelOf(ctx.chainId))}. Switch networks to lock its token.`, true);
-      }
-    }
-    try {
-      addr = decAddress(await view(ctx.tokens, SEL.tokenOf, word(BigInt(id))));
-    } catch {
-      addr = "0x0000000000000000000000000000000000000000";
-    }
-    if (lookup !== dTokenLookup) return;
-    if (addr === "0x0000000000000000000000000000000000000000") {
-      return setTokenMeta(`No token found for Juicebox project #${esc(id)} on ${esc(chainLabelOf(ctx.chainId))}.`, true);
-    }
-    projectNote = ` | using its token ${esc(shortAddr(addr))}`;
-  } else if (!/^0x[0-9a-fA-F]{40}$/.test(input)) {
-    return;
-  }
-
-  // Read the token, and check whether it's a Juicebox project's token for the subtle metadata line.
-  let symbol = "";
-  let name = "";
+  renderCurve();
+  const parsed = StickyLaunchPlan.parseTokenInput(input, CHAIN_ALIASES);
+  if (parsed.kind === "empty" || parsed.kind === "invalid" || !ctx.loaded) return;
+  const chainIds = selectedLaunchChainIds();
+  if (!chainIds.length) return;
+  let resolved, symbol = "", name = "";
   try {
+    resolved = await resolveLaunchToken(input, chainIds);
+    const runtime = await launchRuntime(resolved.chainIds[0]);
     [symbol, name] = await Promise.all([
-      view(addr, SEL.symbol).then(decString),
-      view(addr, SEL.name).then(decString).catch(() => ""),
+      viewAt(runtime, resolved.address, SEL.symbol).then(decString),
+      viewAt(runtime, resolved.address, SEL.name).then(decString).catch(() => ""),
     ]);
-  } catch {
-    if (lookup === dTokenLookup && idMatch) setTokenMeta(`Project #${esc(idMatch[2])}'s token is not readable.`, true);
-    return; // not an ERC-20 (yet)
+  } catch (error) {
+    if (lookup !== dTokenLookup) return;
+    if (parsed.kind === "address" && !resolved) return; // not an ERC-20 (yet)
+    return setTokenMeta(esc(resolved ? `This token is not readable on ${launchChainName(resolved.chainIds[0])}.` : error.message), true);
   }
   if (lookup !== dTokenLookup) return;
   lockedSymbol = symbol;
-  dTokenResolved = addr;
-
-  let projectId = 0n;
-  try {
-    projectId = decUint(await view(ctx.tokens, SEL.projectIdOf, encAddress(addr)));
-  } catch {}
-  if (lookup !== dTokenLookup) return;
-  if (projectId > 0n) {
-    const metadata = await resolveProjectMetadata(addr).catch(() => null);
-    if (lookup !== dTokenLookup) return;
-    const projectName = metadata?.name ? `${metadata.name} | ` : "";
-    setTokenMeta(`${tokenLogo(addr, symbol)} <span>${esc(projectName)}${esc(name || symbol)} (${esc(symbol)}) | `
-      + `Juicebox project #${projectId}${projectNote}</span>`);
-    hydrateLogos().catch(() => {});
-  } else {
-    setTokenMeta(`${tokenLogo(addr, symbol)} <span>${esc(name || symbol)} (${esc(symbol)})</span>`);
-    hydrateLogos().catch(() => {});
-  }
+  const defaults = StickyLaunchPlan.defaultNames(name || symbol, symbol);
+  $("d-name").placeholder = defaults.name;
+  $("d-symbol").placeholder = defaults.symbol;
+  const where = resolved.projectId === null ? ""
+    : ` | project #${resolved.projectId}'s token on ${resolved.chainIds.map(launchChainName).join(", ")}`;
+  setTokenMeta(`${tokenLogo(resolved.address, symbol)} <span>${esc(name || symbol)} (${esc(symbol)})${esc(where)}`
+    + `${resolved.projectId === null ? "" : ` | ${esc(shortAddr(resolved.address))}`}</span>`);
+  renderCurve();
+  hydrateLogos().catch(() => {});
 }
 $("d-token").addEventListener("input", () => { resolveLockToken().catch(() => {}); });
 $("d-environment").onchange = (event) => selectCreateEnvironment(event.target.value);
@@ -4573,17 +4684,19 @@ $("d-chains").onchange = (event) => {
   syncCreateChainValidity();
   resolveLockToken().catch(() => {});
 };
-function effectiveRewardPct() {
-  return rewardChoice === "custom" ? Number($("d-reward").value || "0") : Number(rewardChoice);
+// The chosen bonus in basis points, or null while a custom value is invalid.
+function rewardBasisPoints() {
+  try { return StickyLaunchPlan.bonusBasisPoints(rewardChoice, $("d-reward").value); }
+  catch { return null; }
 }
 function renderCurve() {
-  const r = Math.min(1, Math.max(0, effectiveRewardPct() / 100));
+  const basisPoints = rewardBasisPoints();
+  $("d-reward-error")?.classList.toggle("hide", basisPoints !== null);
+  const r = Number(basisPoints ?? 0n) / 10000;
   const note = $("d-curve-note");
   if (note) {
     const sym = lockedSymbol ? ` ${lockedSymbol}` : "";
-    note.textContent = r === 1
-      ? "At 100%, unsticking returns no underlying tokens. This setting is permanent."
-      : r > 0
+    note.textContent = r > 0
         ? `Example: if each sticky token is backed by 1${sym}, unsticking 100 returns about ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. Unsticking a large share of the supply returns a different amount, so the unstick screen always shows the exact amount before you confirm.`
         : "No cash out tax: unsticks return a proportional share of the pool. Donations can increase backing.";
   }
@@ -4602,7 +4715,7 @@ function renderBonusSplit(r, o = {}) {
   const rho0 = o.rho0 || 1;
   const sym = o.sym ?? (lockedSymbol || "");
   const stSym = o.stSym
-    ?? (($("d-custom-name")?.checked && $("d-symbol").value.trim()) || (sym ? `st${sym}` : ""));
+    ?? (($("d-custom-name")?.checked && $("d-symbol").value.trim()) || (sym ? StickyLaunchPlan.defaultNames("", sym).symbol : ""));
   const value = 100 * rho0;
   const stays = value * r;
   const fee = (value - stays) * 0.025;
@@ -4636,7 +4749,9 @@ $("d-soulbound").onchange = soulboundHint;
 $("d-custom-name").onchange = () => {
   $("d-name-row").classList.toggle("hide", !$("d-custom-name").checked);
   $("d-name-hint").classList.toggle("hide", !$("d-custom-name").checked);
+  renderCurve();
 };
+$("d-symbol").oninput = renderCurve;
 $("d-add-reward").onchange = () => {
   $("d-reward-wrap").classList.toggle("hide", !$("d-add-reward").checked);
   $("d-reward-hint").classList.toggle("hide", !$("d-add-reward").checked);
@@ -4670,7 +4785,7 @@ $("create-toggle").onclick = () => {
   $("d-reward-custom-row").classList.add("hide");
   $("d-soulbound").value = "0";
   soulboundHint();
-  dTokenResolved = null;
+  launchRuntimes = new Map();
   setTokenMeta("");
   selectCreateEnvironment(chainById(ctx.chainId)?.environment || "production");
   $("create-dialog").showModal();

@@ -37,6 +37,8 @@ SIGNA_AUDIENCE = "https://api.signa.center"
 LOCAL_ORIGIN = re.compile(r"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[1-9][0-9]{0,4})?\Z")
 HTTPS_ORIGIN = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[1-9][0-9]{0,4})?\Z")
 ZERO_ADDRESS = "0x" + "0" * 40
+# Juicebox Center lists launches (project intents). Its API is served from the site origin.
+CENTER_URL = "https://juicebox.center"
 
 
 def address(value, name):
@@ -63,6 +65,12 @@ def endpoint(value, name):
 def block_number(value, name):
     if value != "earliest" and not re.fullmatch(r"(?:0x[0-9a-fA-F]+|[0-9]+)", value):
         raise ValueError(f"{name} must be earliest or a nonnegative block number")
+    return value
+
+
+def center_url(value):
+    if not HTTPS_ORIGIN.fullmatch(value):
+        raise ValueError("STICKY_CENTER_URL must be an HTTPS origin, like https://juicebox.center")
     return value
 
 
@@ -154,6 +162,7 @@ def build_config(environ):
         "bendystrawUrl": endpoint(env("NEXT_PUBLIC_BENDYSTRAW_URL", default="https://bendystraw.up.railway.app"), "NEXT_PUBLIC_BENDYSTRAW_URL"),
         "testnetBendystrawUrl": endpoint(env("NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL", default="https://testnet.bendystraw.xyz"), "NEXT_PUBLIC_TESTNET_BENDYSTRAW_URL"),
         "centerWallet": center_wallet(env),
+        "centerUrl": center_url(env("STICKY_CENTER_URL", default=CENTER_URL)),
     }
 
 
@@ -183,7 +192,8 @@ def main():
     print(f"config.js generated: {'demo' if config['demoMode'] else 'live'}, "
           f"default chain {config['defaultChainId']}, "
           f"{sum(bool(entry.get('deployer')) for entry in config['chains'].values())} configured deployment chains, "
-          f"Signa sign-in {'on' if config['centerWallet'] else 'off'}")
+          f"Signa sign-in {'on' if config['centerWallet'] else 'off'}, "
+          f"listings on {config['centerUrl']}")
 
 
 if __name__ == "__main__":

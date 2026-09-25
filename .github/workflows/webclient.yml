@@ -61,6 +61,7 @@ jobs:
               assert entry["deployer"] == os.environ["STICKY_DEPLOYER"], chain_id
               assert entry["fromBlock"] == os.environ[f"STICKY_FROM_BLOCK_{chain_id}"], chain_id
           assert config["centerWallet"]["issuer"] == "https://signa.center", config["centerWallet"]
+          assert config["centerUrl"] == "https://juicebox.center", config["centerUrl"]
           PY
       - name: Verify production entry point
         run: |
