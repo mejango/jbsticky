@@ -110,7 +110,7 @@ function abiString(text) {
 }
 
 // Two testnets with Sticky configured, one production chain that must never be touched.
-function siblingFixture({ opProjects }) {
+function siblingFixture({ opProjects, index = null }) {
   const calls = [];
   const deployer = addr('d');
   const chains = {
@@ -142,12 +142,18 @@ function siblingFixture({ opProjects }) {
     ],
     stickyDeploymentFor: (chainId) => chains[chainId] || {},
     rpcAt,
-  }, ['parseStickyProjectUri', 'chainRuntime', 'deployedProjectsOn', 'launchIdOf', 'siblingOn', 'launchSiblings', 'siblingTotals']);
+    window: { STICKY_CONFIG: { testnetBendystrawUrl: 'https://testnet.test' } },
+    // Bendystraw is down unless the test hands it an index.
+    StickyRuntime: { ...Runtime, stickyIndex: async () => { if (!index) throw new Error('Bendystraw is down'); return index; } },
+    chainReader: async (chainId) => ({ chainId }),
+  }, ['parseStickyProjectUri', 'chainRuntime', 'indexedChain', 'stickyIndexFor', 'rememberStartBlock', 'deployedProjectsOn', 'launchIdOf', 'siblingOn', 'launchSiblings', 'siblingTotals']);
   vm.runInContext(`
     const chainById = (chainId) => ORIGINS.find((origin) => origin.chainId === Number(chainId));
     const chainsForEnvironment = (environment) => ORIGINS.filter((origin) => origin.environment === environment);
     const viewAt = (deployment, to, selector, args = "") => rpcAt(deployment.rpcUrl, "eth_call", [{ to, data: selector + args }, "latest"]);
     const chainRuntimeCache = new Map(); const deployedCache = new Map(); const launchIdCache = new Map(); const siblingCache = new Map();
+    const indexCache = new Map(); const startBlockCache = new Map(); const INDEX_TTL = 60000;
+    const bendystrawUrl = () => window.STICKY_CONFIG.testnetBendystrawUrl;
   `, c);
   return { c, calls };
 }
@@ -170,6 +176,32 @@ test('a multichain launch finds its sibling by launch id, tax and transfer mode,
   const before = calls.length;
   await c.launchSiblings(12n, info);
   assert.equal(calls.length, before);
+});
+
+test('with Bendystraw, siblings come from its project list; only launches past its indexed block are scanned', async () => {
+  const opProjects = [
+    { id: 3, tax: 500n, soulbound: false, uri: uriFor('other-launch') },
+    { id: 4, tax: 0n, soulbound: false, uri: uriFor(LAUNCH) }, // same launch id, different tax: not a sibling
+    { id: 5, tax: 500n, soulbound: false, uri: uriFor(LAUNCH) },
+  ];
+  const index = new Map([[11155420, { block: 0x30n, projects: opProjects.map((p) => ({ projectId: BigInt(p.id), version: 6, metadataUri: p.uri })) }]]);
+  const { c, calls } = siblingFixture({ opProjects: [], index });
+  c.projectInfo = async (id) => { calls.push({ method: 'projectInfo', id }); const p = opProjects.find((row) => BigInt(row.id) === BigInt(id)); return { reward: p.tax, soulbound: p.soulbound }; };
+  const rpcAt = c.rpcAt;
+  c.rpcAt = async (url, method, params) => {
+    const data = params?.[0]?.data;
+    if (method === 'eth_call' && data?.startsWith('0xa312889b')) {
+      calls.push({ chainId: 11155420, method, params });
+      return abiString(BigInt('0x' + data.slice(10, 74)) === 12n ? uriFor(LAUNCH) : opProjects.find((p) => BigInt(p.id) === BigInt('0x' + data.slice(10, 74)))?.uri || '');
+    }
+    return rpcAt(url, method, params);
+  };
+  const siblings = await c.launchSiblings(12n, { reward: 500n, soulbound: false });
+  assert.deepEqual(Array.from(siblings, (row) => [row.chainId, row.projectId]), [[84532, 12n], [11155420, 5n]]);
+  const scans = calls.filter((call) => call.method === 'eth_getLogs');
+  assert.ok(scans.length > 0 && scans.every((call) => call.params[0].fromBlock === '0x31'), 'the tail from the indexed block, not the deployment block');
+  // Bendystraw's uri skips project 3 without a read; 4 and 5 are confirmed onchain.
+  assert.deepEqual(calls.filter((call) => call.method === 'projectInfo').map((call) => Number(call.id)), [4, 5]);
 });
 
 test('a single-chain project, or one whose uri carries no launch id, has no siblings to scan', async () => {
@@ -223,6 +255,7 @@ test('a project view scans the hook once; granters and trusted senders reuse it,
     attachTimestamps: async (logs) => logs,
     $: (id) => { if (!fields.has(id)) fields.set(id, { innerHTML: '', querySelectorAll: () => [] }); return fields.get(id); },
     view: async () => '0x' + word(1),
+    projectStartBlock: async (chainId, projectId) => `start:${chainId}:${projectId}`,
   }, ['projectLogs', 'renderTrustedSenders']);
   const T = c.TOPIC;
   const trust = (who, sender) => ({ topics: [T.SetTrustedSender, '0x' + word(7), '0x' + word(BigInt(who)), '0x' + word(BigInt(sender))], data: '0x' + word(1) });
@@ -231,7 +264,7 @@ test('a project view scans the hook once; granters and trusted senders reuse it,
     trust(holder, addr('6')), trust(HOLDER_B, addr('7')), trust(holder, addr('5')),
     { topics: [T.Staked, '0x' + word(7), '0x' + word(BigInt(holder))], data: '0x' },
   ];
-  c.getLogs = async (address, topics) => { scans.push(topics); return all.filter((log) => [].concat(topics[0]).includes(log.topics[0])); };
+  c.getLogs = async (address, topics, from) => { assert.equal(from, 'start:84532:7'); scans.push(topics); return all.filter((log) => [].concat(topics[0]).includes(log.topics[0])); };
   vm.runInContext(`const POSITION_TOPICS = [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded];
     const cachedProjectLogs = (projectId) => ctx.projectLogs?.chainId === ctx.chainId && ctx.projectLogs.projectId === BigInt(projectId) ? ctx.projectLogs : null;`, c);
   const scanned = await c.projectLogs(7n);

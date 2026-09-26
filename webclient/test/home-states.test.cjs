@@ -54,7 +54,7 @@ function card(chainId, id, extra = {}) {
     pool: { sigma: 10n ** 18n }, ...extra,
   };
 }
-const chainResult = (chainId, cards = [], extra = {}) => ({ chainId, cards, logs: [], prices: new Map(), activity: [], airdrops: [], ...extra });
+const chainResult = (chainId, cards = [], extra = {}) => ({ chainId, cards, moves: [], prices: new Map(), activity: [], airdrops: [], ...extra });
 
 function fixture({ chain = null, deployed = [1, 10, 8453, 84532, 11155420], hash = '#/' } = {}) {
   const elements = new Map();
@@ -288,7 +288,7 @@ test('the chart caption shows only when the chart has a value', () => {
   assert.match(functionSource('mountHomeSecuredChart'), /\$\("home-secured-note"\)\.classList\.toggle\("hide", !series\.hasValue\);/);
 });
 
-test('one chain\'s home data reads its own deployer, hook, and prices', async () => {
+test('without Bendystraw, one chain\'s home data scans its own deployer, then its hook from the first launch', async () => {
   const c = fixture();
   const reader = { chainId: 8453, deployer: 'D', hook: 'H', projects: {} };
   const calls = [];
@@ -296,7 +296,8 @@ test('one chain\'s home data reads its own deployer, hook, and prices', async ()
     TOPIC: { DeploySticky: 'deploy' }, POSITION_TOPICS: ['p'],
     decUint: value => BigInt(value),
     chainReader: async chainId => { calls.push(['reader', chainId]); return reader; },
-    getLogsOn: async (on, address) => { calls.push(['logs', address]); return address === 'D' ? [{ topics: ['deploy', '37'] }] : [{ topics: ['p', '37'] }]; },
+    getLogsOn: async (on, address, _topics, from) => { calls.push(['logs', address, from]); return address === 'D' ? [{ topics: ['deploy', '37'], blockNumber: '0x99' }] : [{ topics: ['p', '37'] }]; },
+    logMoves: (logs) => logs.map((log) => ({ chainId: log.chainId })),
     attachTimestamps: async logs => logs,
     projectInfo: async (id, on) => { assert.equal(on, reader); return card(8453, id).info; },
     poolBacking: async (_id, _info, on) => { assert.equal(on, reader); return { supply: 5n, sigma: 6n }; },
@@ -306,14 +307,14 @@ test('one chain\'s home data reads its own deployer, hook, and prices', async ()
     activityItems: async (_logs, _include, on) => { assert.equal(on, reader); return []; },
     airdropItems: async (_logs, on) => { assert.equal(on, reader); return []; },
   });
-  vm.runInContext(functionSource('homeChainData'), c);
-  const data = await c.homeChainData(8453);
+  vm.runInContext(functionSource('scannedHomeChainData') + functionSource('homeCards'), c);
+  const data = await c.scannedHomeChainData(8453);
   assert.equal(data.cards.length, 1);
   assert.equal(data.cards[0].key, '8453:37');
   assert.equal(data.cards[0].launchId, 'L1');
   assert.equal(data.cards[0].sticks, 1);
-  assert.equal(data.logs[0].chainId, 8453);
-  assert.deepEqual(calls, [['reader', 8453], ['logs', 'D'], ['logs', 'H'], ['prices', 8453]]);
+  assert.equal(data.moves[0].chainId, 8453);
+  assert.deepEqual(calls, [['reader', 8453], ['logs', 'D', undefined], ['logs', 'H', '0x99'], ['prices', 8453]]);
 });
 
 test('a chain whose projects all fail to read is an error for that chain', async () => {
@@ -321,12 +322,12 @@ test('a chain whose projects all fail to read is an error for that chain', async
   Object.assign(c, {
     TOPIC: { DeploySticky: 'deploy' }, POSITION_TOPICS: ['p'], decUint: value => BigInt(value),
     chainReader: async () => ({ chainId: 8453, deployer: 'D', hook: 'H' }),
-    getLogsOn: async (_on, address) => (address === 'D' ? [{ topics: ['deploy', '37'] }] : []),
+    getLogsOn: async (_on, address) => (address === 'D' ? [{ topics: ['deploy', '37'], blockNumber: '0x1' }] : []),
     attachTimestamps: async logs => logs,
     projectInfo: async () => { throw new Error('rpc down'); },
   });
-  vm.runInContext(functionSource('homeChainData'), c);
-  await assert.rejects(c.homeChainData(8453), /Could not read any Sticky token on Base/);
+  vm.runInContext(functionSource('scannedHomeChainData') + functionSource('homeCards'), c);
+  await assert.rejects(c.scannedHomeChainData(8453), /Could not read any Sticky token on Base/);
 });
 
 test('boot starts the home page without waiting for the page chain', () => {

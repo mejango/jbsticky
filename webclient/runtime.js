@@ -94,7 +94,7 @@
     let requests = 0;
     const limit = options.maxRequests || 1024;
     async function fetchRange(from, to) {
-      if (++requests > limit) throw new Error("Project history exceeds the RPC scan limit. Configure the deployment's starting block or an RPC with a larger log range.");
+      if (++requests > limit) throw new Error(`This history spans ${end - start + 1n} blocks, more than this RPC can scan in ${limit} requests.`);
       const result = await rpc("eth_getLogs", [{ ...filter, fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` }]);
       if (!Array.isArray(result)) throw new Error("The RPC returned invalid project history.");
       return result;
@@ -106,7 +106,7 @@
       const out = new Array(parts.length);
       let next = 0;
       const worker = async () => { while (next < parts.length) { const i = next++; out[i] = await range(parts[i][0], parts[i][1]); } };
-      await Promise.all(Array.from({ length: Math.min(options.concurrency || 4, parts.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(options.concurrency || 8, parts.length) }, worker));
       return out.flat();
     }
     async function range(from, to) {
@@ -136,5 +136,139 @@
       return block < 0n ? -1 : block > 0n ? 1 : Number(BigInt(a.logIndex) - BigInt(b.logIndex));
     });
   }
-  return { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs, statedRange };
+  // Bendystraw, the Juicebox indexer, answers discovery and history. It is a cache: every caller keeps a chain
+  // read for when it errors, times out or lags, and money (backing, supply, quotes) is never read from it.
+  async function graphql(url, query, variables = {}, options = {}) {
+    const fetcher = options.fetch || globalThis.fetch;
+    if (!url || typeof url !== "string") throw new Error("No Bendystraw endpoint is configured.");
+    const endpoint = /\/graphql\/?$/.test(url) ? url : `${url.replace(/\/+$/, "")}/graphql`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeout || 6000);
+    try {
+      const response = await fetcher(endpoint, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query, variables }),
+        signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error",
+      });
+      let body;
+      try { body = await response.json(); } catch { body = null; }
+      if (!response.ok || !body || typeof body !== "object") throw new Error(`Bendystraw returned HTTP ${response.status}.`);
+      if (Array.isArray(body.errors) && body.errors.length) throw new Error(`Bendystraw: ${String(body.errors[0]?.message || "query failed").slice(0, 300)}`);
+      if (!body.data || typeof body.data !== "object") throw new Error("Bendystraw returned no data.");
+      return body.data;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("Bendystraw timed out.");
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+  // Every item of one list field, following its cursor. A list longer than the page cap is an error, not a
+  // silent truncation.
+  async function graphqlItems(url, field, query, variables, options = {}) {
+    const items = [];
+    let after = null;
+    for (let page = 0; page < (options.maxPages || 20); page++) {
+      const data = await graphql(url, query, { ...variables, after }, options);
+      const list = data[field];
+      if (!list || !Array.isArray(list.items)) throw new Error(`Bendystraw returned no ${field}.`);
+      items.push(...list.items);
+      if (!list.pageInfo?.hasNextPage) return { items, data };
+      after = list.pageInfo.endCursor;
+    }
+    throw new Error(`Bendystraw has more ${field} than one page load reads.`);
+  }
+
+  const INDEX_QUERY = `query StickyIndex($owners: [String!], $after: String) {
+    _meta { status }
+    projects(where: { owner_in: $owners }, limit: 1000, after: $after) {
+      items { chainId projectId version owner metadataUri createdAt }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`;
+  // Sticky projects per chain, keyed by chain ID, with the block Bendystraw has indexed each chain through.
+  // `deployers` maps chain ID to that chain's StickyDeployer, which owns every project it launches. A chain
+  // missing from Bendystraw's status is left out, so its caller scans that chain instead.
+  async function stickyIndex(url, deployers, options = {}) {
+    const wanted = new Map(Object.entries(deployers).filter(([, deployer]) => ADDRESS.test(deployer || ""))
+      .map(([chainId, deployer]) => [Number(chainId), deployer.toLowerCase()]));
+    if (!wanted.size) return new Map();
+    const owners = [...new Set(wanted.values())];
+    const { items, data } = await graphqlItems(url, "projects", INDEX_QUERY, { owners }, options);
+    const status = data._meta?.status;
+    if (!status || typeof status !== "object") throw new Error("Bendystraw returned no indexing status.");
+    const chains = new Map();
+    for (const entry of Object.values(status)) {
+      const chainId = Number(entry?.id);
+      const block = entry?.block?.number;
+      if (!wanted.has(chainId) || !Number.isSafeInteger(block) || block < 0) continue;
+      chains.set(chainId, { block: BigInt(block), timestamp: Number(entry.block.timestamp) || 0, projects: [] });
+    }
+    for (const row of items) {
+      const chainId = Number(row?.chainId);
+      const chain = chains.get(chainId);
+      if (!chain || String(row.owner || "").toLowerCase() !== wanted.get(chainId)) continue;
+      if (!Number.isSafeInteger(row.projectId) || row.projectId <= 0) continue;
+      chain.projects.push({
+        projectId: BigInt(row.projectId), version: Number(row.version),
+        metadataUri: typeof row.metadataUri === "string" ? row.metadataUri : null, createdAt: Number(row.createdAt) || 0,
+      });
+    }
+    for (const chain of chains.values()) chain.projects.sort((a, b) => (a.projectId < b.projectId ? -1 : 1));
+    return chains;
+  }
+
+  const PAY_QUERY = `query StickyPays($where: payEventFilter, $after: String) {
+    payEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
+      items { chainId projectId version txHash logIndex timestamp caller beneficiary amount newlyIssuedTokenCount }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`;
+  const CASH_OUT_QUERY = `query StickyCashOuts($where: cashOutTokensEventFilter, $after: String) {
+    cashOutTokensEvents(where: $where, orderBy: "timestamp", orderDirection: "asc", limit: 1000, after: $after) {
+      items { chainId projectId version txHash logIndex timestamp caller holder beneficiary cashOutCount reclaimAmount }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`;
+  const bigint = (value) => { try { return BigInt(value); } catch { return null; } };
+  // Sticks (pays) and unsticks (cash outs) of the given projects, oldest first. `projects` is a list of
+  // { chainId, projectId, version }. Pays and cash outs are what change a Sticky token's supply.
+  async function stickyEvents(url, projects, options = {}) {
+    if (!projects.length) return [];
+    const groups = new Map();
+    for (const project of projects) {
+      const key = `${project.chainId}:${project.version}`;
+      if (!groups.has(key)) groups.set(key, { chainId: Number(project.chainId), version: Number(project.version), projectId_in: [] });
+      groups.get(key).projectId_in.push(Number(project.projectId));
+    }
+    // One filter per chain and version: Bendystraw ignores an OR filter and would return every project's events.
+    const lists = await Promise.all([...groups.values()].flatMap((where) => [
+      graphqlItems(url, "payEvents", PAY_QUERY, { where }, options).then(({ items }) => items.map((row) => ({ row, kind: "stick" }))),
+      graphqlItems(url, "cashOutTokensEvents", CASH_OUT_QUERY, { where }, options).then(({ items }) => items.map((row) => ({ row, kind: "unstick" }))),
+    ]));
+    const asked = new Set(projects.map((project) => `${Number(project.chainId)}:${Number(project.version)}:${Number(project.projectId)}`));
+    const rows = lists.flat().filter(({ row }) => asked.has(`${Number(row?.chainId)}:${Number(row?.version)}:${Number(row?.projectId)}`));
+    const common = (row) => ({
+      chainId: Number(row.chainId), projectId: bigint(row.projectId), ts: Number(row.timestamp),
+      txHash: String(row.txHash || ""), logIndex: Number(row.logIndex) || 0,
+    });
+    const events = rows.map(({ row, kind }) => (kind === "stick"
+      ? { ...common(row), kind, payer: String(row.caller || "").toLowerCase(), holder: String(row.beneficiary || "").toLowerCase(),
+        amount: bigint(row.amount), tokens: bigint(row.newlyIssuedTokenCount) }
+      : { ...common(row), kind, holder: String(row.holder || "").toLowerCase(), tokens: bigint(row.cashOutCount), amount: bigint(row.reclaimAmount) }));
+    if (events.some((event) => event.projectId === null || event.tokens === null || event.amount === null || !ADDRESS.test(event.holder) || !Number.isFinite(event.ts))) {
+      throw new Error("Bendystraw returned an incomplete Sticky event.");
+    }
+    return events.sort((a, b) => a.ts - b.ts || a.logIndex - b.logIndex);
+  }
+
+  const CREATE_QUERY = `query StickyCreate($where: projectCreateEventFilter) {
+    projectCreateEvents(where: $where, limit: 5) { items { txHash timestamp } }
+  }`;
+  // The transaction that created one project, for its creation block. Null when Bendystraw has none.
+  async function projectCreateTx(url, chainId, projectId, version, options = {}) {
+    const data = await graphql(url, CREATE_QUERY, { where: { chainId: Number(chainId), projectId: Number(projectId), version: Number(version) } }, options);
+    const items = data.projectCreateEvents?.items;
+    if (!Array.isArray(items)) throw new Error("Bendystraw returned no project creation.");
+    return items.length === 1 && /^0x[0-9a-fA-F]{64}$/.test(items[0].txHash || "") ? items[0].txHash : null;
+  }
+
+  return { address, assetUrl, deployment, withoutFixtures, jsonRpc, logs, statedRange, graphql, stickyIndex, stickyEvents, projectCreateTx };
 });

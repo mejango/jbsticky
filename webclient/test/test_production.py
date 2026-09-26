@@ -332,6 +332,45 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(result["status"], 405)
             self.assertEqual(result["headers"]["Allow"], "GET, HEAD")
 
+    def relay(self, path="/bendystraw/testnet/graphql", body=b'{"query":"query StickyIndex { _meta { status } }","variables":{}}',
+              method="POST", app=None):
+        import io
+        return self.request(path, method=method, app=app, headers={
+            "CONTENT_LENGTH": str(len(body)), "CONTENT_TYPE": "application/json", "wsgi.input": io.BytesIO(body)})
+
+    def test_bendystraw_relay_forwards_queries_to_the_configured_endpoint_and_shares_answers(self):
+        calls = []
+        def fetch(url, body):
+            calls.append((url, body))
+            return 200, b'{"data":{"_meta":{"status":{}}}}'
+        app = server.create_app(self.root, bendystraw_fetch=fetch)
+        for _ in range(2):
+            result = self.relay(app=app)
+            self.assertEqual(result["status"], 200)
+            self.assertEqual(json.loads(result["body"]), {"data": {"_meta": {"status": {}}}})
+            self.assertEqual(result["headers"]["Content-Type"], "application/json")
+            self.assertIn("frame-ancestors 'none'", result["headers"]["Content-Security-Policy"])
+        self.assertEqual([url for url, _ in calls], ["https://testnet.bendystraw.xyz/graphql"], "one upstream query for both")
+        self.relay("/bendystraw/production/graphql", app=app)
+        self.assertEqual(calls[-1][0], "https://bendystraw.up.railway.app/graphql")
+
+    def test_bendystraw_relay_rejects_anything_but_a_small_graphql_post(self):
+        app = server.create_app(self.root, bendystraw_fetch=lambda url, body: self.fail("must not reach Bendystraw"))
+        self.assertEqual(self.relay(method="GET", app=app)["status"], 405)
+        self.assertEqual(self.relay(body=b"x" * (server.BENDYSTRAW_MAX_BODY + 1), app=app)["status"], 413)
+        self.assertEqual(self.relay(body=b"not json", app=app)["status"], 400)
+        self.assertEqual(self.relay(body=b'{"variables":{}}', app=app)["status"], 400)
+        self.assertEqual(self.relay("/bendystraw/other/graphql", app=app)["status"], 405)
+
+    def test_bendystraw_failure_is_a_502_the_page_falls_back_from(self):
+        def down(url, body):
+            raise OSError("connection refused")
+        result = self.relay(app=server.create_app(self.root, bendystraw_fetch=down))
+        self.assertEqual(result["status"], 502)
+        self.assertEqual(json.loads(result["body"]), {"errors": [{"message": "Bendystraw is unavailable."}]})
+        result = self.relay(app=server.create_app(self.root, bendystraw_fetch=lambda url, body: (200, b"<html>")))
+        self.assertEqual(result["status"], 502)
+
     def test_root_does_not_follow_working_directory(self):
         previous = Path.cwd()
         try:
