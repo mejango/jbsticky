@@ -688,13 +688,14 @@ test('reward rows come from Fund logs, one per group and token, with hand-checke
   const funding = (groupId, token, amount) => ({
     address: DISTRIBUTOR, topics: [FUND_TOPIC, uint(BigInt(STICKY)), uint(groupId), uint(BigInt(token))], data: words(1, amount, BigInt(HOLDER)),
   });
-  const { context: c, info } = fixture({ getLogs: async (address, topics) => {
+  const { context: c, info } = fixture({ projectStartBlock: async (chainId, projectId) => `start:${chainId}:${projectId}`, getLogs: async (address, topics, from) => {
+    assert.equal(from, 'start:1:12', 'the scan starts at the project\'s creation block');
     assert.equal(address, DISTRIBUTOR);
     assert.equal(topics[0], FUND_TOPIC);
     assert.equal(topics[1], uint(BigInt(STICKY)));
     return [funding(4000, OTHER, 5), funding(0, NATIVE, 2), funding(4000, OTHER, 6)];
   } });
-  const funded = await c.discoverFunding(info);
+  const funded = await c.discoverFunding(info, 12n);
   assert.equal([...funded.values()].map((row) => `${row.groupId}:${row.token}:${row.funded}`).join(' '),
     `4000:${OTHER.toLowerCase()}:11 0:${NATIVE}:2`);
   c.rewardTokens[c.ctx.currentId.toString()] = new Set([TOKEN.toLowerCase()]);

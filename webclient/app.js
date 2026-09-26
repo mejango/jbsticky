@@ -11,6 +11,7 @@ const SEL = {
   TOKENS: "0x1d831d5c",
   TERMINAL: "0x160668af",
   PROJECTS: "0x293c4999",
+  count: "0x06661abd",
   creationFee: "0xdce0b4e4",
   stakedTokenOf: "0xdbced5db",
   deployStickyFor: "0x00d5ce37",
@@ -309,9 +310,10 @@ async function projectIdForHandle(handle) {
 const call = async (to, data) => rpc("eth_call", [{ to, data }, "latest"]);
 const view = (to, sel, args = "") => call(to, sel + args);
 const fromBlock = () => StickyRuntime.deployment(window.STICKY_CONFIG || {}, ctx.chainId).fromBlock ?? "earliest";
-const getLogs = (address, topics) => window.__DEMO_RPC
+// `from` is the block a scan starts at: a project's creation block for that project's history.
+const getLogs = (address, topics, from = fromBlock()) => window.__DEMO_RPC
   ? rpc("eth_getLogs", [{ address, topics, fromBlock: fromBlock(), toBlock: "latest" }])
-  : StickyRuntime.logs(rpc, { address, topics, fromBlock: fromBlock(), toBlock: "latest" });
+  : StickyRuntime.logs(rpc, { address, topics, fromBlock: from, toBlock: "latest" });
 
 const blockTimestamps = {};
 async function blockTimestamp(blockNumber, reader = null) {
@@ -536,25 +538,139 @@ function chainReader(chainId) {
   }
   return chainReaderCache.get(key);
 }
-const getLogsOn = (reader, address, topics) => window.__DEMO_RPC
+const getLogsOn = (reader, address, topics, from = reader.fromBlock) => window.__DEMO_RPC
   ? reader.rpc("eth_getLogs", [{ address, topics, fromBlock: reader.fromBlock, toBlock: "latest" }])
-  : StickyRuntime.logs(reader.rpc, { address, topics, fromBlock: reader.fromBlock, toBlock: "latest" });
+  : StickyRuntime.logs(reader.rpc, { address, topics, fromBlock: from, toBlock: "latest" });
 
-// Every Sticky launch on a chain: project ID, cash out tax and transfer mode from DeploySticky.
+// ----------------------------------------------------------------- bendystraw
+// Bendystraw, the Juicebox indexer, lists each environment's Sticky projects and their sticks and unsticks,
+// so a page does not scan a chain's whole history. It is a cache: a chain it has not indexed, or any
+// Bendystraw error, falls back to chain reads, and backing, supply and quotes always come from the chain.
+// The page reaches it through serve.py's same-origin relay: Bendystraw's CORS list does not include this site.
+const bendystrawUrl = (chainId) => {
+  const environment = chainById(chainId)?.environment === "testnet" ? "testnet" : "production";
+  const upstream = window.STICKY_CONFIG?.[environment === "testnet" ? "testnetBendystrawUrl" : "bendystrawUrl"];
+  return upstream ? new URL(`/bendystraw/${environment}/graphql`, location.href).href : null;
+};
+const INDEX_TTL = 60_000;
+const indexCache = new Map();
+function stickyIndexFor(chainId) {
+  const environment = chainById(chainId)?.environment;
+  const cached = indexCache.get(environment);
+  if (cached && Date.now() - cached.at < INDEX_TTL) return cached.pending;
+  const deployers = Object.fromEntries(chainsForEnvironment(environment)
+    .map((chain) => [chain.chainId, stickyDeploymentFor(chain.chainId).deployer]).filter(([, deployer]) => deployer));
+  const pending = StickyRuntime.stickyIndex(bendystrawUrl(chainId), deployers);
+  pending.catch((error) => {
+    console.warn("Bendystraw is unavailable; reading chains directly.", error);
+    if (indexCache.get(environment)?.pending === pending) indexCache.delete(environment);
+  });
+  indexCache.set(environment, { at: Date.now(), pending });
+  return pending;
+}
+// This chain's entry in the index, or null when Bendystraw fails or does not index the chain.
+async function indexedChain(chainId) {
+  if (window.__DEMO_RPC) return null;
+  try {
+    return (await stickyIndexFor(chainId)).get(Number(chainId)) || null;
+  } catch {
+    return null;
+  }
+}
+
+// Every Sticky launch on a chain, oldest first. Bendystraw lists them and a scan from the block it has indexed
+// through adds launches it has not reached yet. Without Bendystraw the chain is scanned from the deployment
+// block. Scanned launches carry their cash out tax, transfer mode and creation block from DeploySticky.
 const deployedCache = new Map();
 function deployedProjectsOn(chainId) {
   const key = Number(chainId);
-  if (!deployedCache.has(key)) {
+  const cached = deployedCache.get(key);
+  if (cached && Date.now() - cached.at < INDEX_TTL) return cached.pending;
+  const pending = (async () => {
+    const runtime = await chainRuntime(key);
+    const indexed = await indexedChain(key);
+    const first = runtime.fromBlock === "earliest" || runtime.fromBlock === undefined ? 0n : BigInt(runtime.fromBlock);
+    const from = indexed && indexed.block + 1n > first ? `0x${(indexed.block + 1n).toString(16)}` : runtime.fromBlock;
+    const logs = await StickyRuntime.logs((method, params) => rpcAt(runtime.rpcUrl, method, params),
+      { address: runtime.deployer, topics: [TOPIC.DeploySticky], fromBlock: from, toBlock: "latest" });
+    const scanned = logs.map((log) => ({
+      projectId: decUint(log.topics[1]), tax: decUint(log.data, 1), soulbound: decUint(log.data, 2) === 1n, startBlock: log.blockNumber,
+    }));
+    for (const project of scanned) rememberStartBlock(key, project.projectId, project.startBlock);
+    if (!indexed) return scanned;
+    // Bendystraw's uri narrows sibling candidates; without one the launch id is unknown and read onchain.
+    const listed = indexed.projects.map((project) => {
+      const launchId = parseStickyProjectUri(project.metadataUri)?.launchId;
+      return { projectId: project.projectId, version: project.version, launchId: typeof launchId === "string" ? launchId : undefined };
+    });
+    return [...listed, ...scanned.filter((project) => !listed.some((row) => row.projectId === project.projectId))];
+  })();
+  pending.catch(() => { if (deployedCache.get(key)?.pending === pending) deployedCache.delete(key); });
+  deployedCache.set(key, { at: Date.now(), pending });
+  return pending;
+}
+
+// The block a project was created in. A scan of one project's history starts there, not at the deployment's
+// first block. Bendystraw names the creating transaction, and its receipt, which must carry this deployer's
+// DeploySticky for the project, gives the block. Otherwise a binary search on JBProjects.count() at past
+// blocks finds it, and failing that the deployment's first block is used. Kept for the session.
+const startBlockCache = new Map();
+function rememberStartBlock(chainId, projectId, block) {
+  startBlockCache.set(`${Number(chainId)}:${BigInt(projectId)}`, Promise.resolve(block));
+}
+function projectStartBlock(chainId, projectId) {
+  const key = `${Number(chainId)}:${BigInt(projectId)}`;
+  const deployment = stickyDeploymentFor(chainId);
+  const fallback = deployment.fromBlock ?? "earliest";
+  if (window.__DEMO_RPC) return Promise.resolve(fallback);
+  if (!startBlockCache.has(key)) {
     const pending = (async () => {
-      const runtime = await chainRuntime(key);
-      const logs = await StickyRuntime.logs((method, params) => rpcAt(runtime.rpcUrl, method, params),
-        { address: runtime.deployer, topics: [TOPIC.DeploySticky], fromBlock: runtime.fromBlock, toBlock: "latest" });
-      return logs.map((log) => ({ projectId: decUint(log.topics[1]), tax: decUint(log.data, 1), soulbound: decUint(log.data, 2) === 1n }));
+      try {
+        return await createdBlockFromIndex(deployment, BigInt(projectId));
+      } catch (error) {
+        console.warn(`Could not find project ${projectId}'s creation from Bendystraw.`, error);
+      }
+      try {
+        return await createdBlockFromCount(deployment, BigInt(projectId));
+      } catch (error) {
+        console.warn(`Could not find project ${projectId}'s creation block onchain.`, error);
+      }
+      return null;
     })();
-    pending.catch(() => deployedCache.delete(key));
-    deployedCache.set(key, pending);
+    startBlockCache.set(key, pending);
+    // A failed lookup is not remembered, so the next view tries again.
+    pending.then((block) => { if (block === null && startBlockCache.get(key) === pending) startBlockCache.delete(key); });
   }
-  return deployedCache.get(key);
+  return startBlockCache.get(key).then((block) => block ?? fallback);
+}
+async function createdBlockFromIndex(deployment, projectId) {
+  const indexed = await indexedChain(deployment.chainId);
+  const version = indexed?.projects.find((project) => project.projectId === projectId)?.version ?? 6;
+  const tx = await StickyRuntime.projectCreateTx(bendystrawUrl(deployment.chainId), deployment.chainId, projectId, version);
+  if (!tx) throw new Error("Bendystraw has no creation for this project.");
+  const receipt = await rpcAt(deployment.rpcUrl, "eth_getTransactionReceipt", [tx]);
+  const deployed = Array.isArray(receipt?.logs) && receipt.logs.some((log) => !log.removed
+    && String(log.address).toLowerCase() === String(deployment.deployer).toLowerCase()
+    && log.topics?.[0] === TOPIC.DeploySticky && decUint(log.topics[1]) === projectId);
+  if (!deployed || !/^0x[0-9a-fA-F]+$/.test(receipt.blockNumber || "")) throw new Error("The creation transaction did not launch this project.");
+  return receipt.blockNumber;
+}
+async function createdBlockFromCount(deployment, projectId) {
+  const read = (method, params) => rpcAt(deployment.rpcUrl, method, params);
+  const controller = decAddress(await viewAt(deployment, deployment.deployer, SEL.CONTROLLER));
+  const projects = decAddress(await viewAt(deployment, controller, SEL.PROJECTS));
+  const countAt = async (block) => decUint(await read("eth_call", [{ to: projects, data: SEL.count }, `0x${block.toString(16)}`]));
+  const configured = deployment.fromBlock;
+  let low = configured === undefined || configured === "earliest" ? 0n : BigInt(configured);
+  let high = BigInt(await read("eth_blockNumber", []));
+  if (await countAt(high) < projectId) throw new Error("This project does not exist yet.");
+  if (await countAt(low) >= projectId) return `0x${low.toString(16)}`;
+  while (high - low > 1n) {
+    const middle = (low + high) / 2n;
+    if (await countAt(middle) >= projectId) high = middle;
+    else low = middle;
+  }
+  return `0x${high.toString(16)}`;
 }
 
 const launchIdCache = new Map();
@@ -572,12 +688,18 @@ function launchIdOf(runtime, projectId) {
 }
 
 // The first launch on a chain that shares this launch's id and settings. First, so a later copy of the uri
-// cannot displace the real sibling.
+// cannot displace the real sibling. Bendystraw's uri only narrows the candidates; the chain decides.
 async function siblingOn(chainId, launchId, info) {
   const runtime = await chainRuntime(chainId);
   for (const deployed of await deployedProjectsOn(chainId)) {
-    if (deployed.tax !== BigInt(info.reward) || deployed.soulbound !== Boolean(info.soulbound)) continue;
-    if (await launchIdOf(runtime, deployed.projectId) === launchId) return deployed.projectId;
+    if (deployed.tax !== undefined && (deployed.tax !== BigInt(info.reward) || deployed.soulbound !== Boolean(info.soulbound))) continue;
+    if (deployed.launchId !== undefined && deployed.launchId !== launchId) continue;
+    if (await launchIdOf(runtime, deployed.projectId) !== launchId) continue;
+    if (deployed.tax === undefined) {
+      const other = await projectInfo(deployed.projectId, await chainReader(chainId));
+      if (other.reward !== BigInt(info.reward) || other.soulbound !== Boolean(info.soulbound)) continue;
+    }
+    return deployed.projectId;
   }
   return null;
 }
@@ -873,15 +995,18 @@ async function projectInfo(projectId, reader = pageReader()) {
 const stickyLabel = (info) => info.stSymbol || `Sticky ${info.symbol}`;
 
 async function projectIds() {
+  if (!window.__DEMO_RPC) return (await deployedProjectsOn(ctx.chainId)).map((project) => project.projectId);
   const logs = await getLogs($("deployer").value, [TOPIC.DeploySticky]);
   return logs.map((log) => decUint(log.topics[1]));
 }
 
 const POSITION_TOPICS = [TOPIC.Staked, TOPIC.Unstaked, TOPIC.StreakStarted, TOPIC.StreakEnded];
-// Hook logs for a project (or all projects when undefined), with block timestamps attached.
-async function hookLogs(projectId) {
-  const projectTopic = projectId === undefined ? null : "0x" + word(projectId);
-  const logs = await getLogs(ctx.hook, [POSITION_TOPICS, projectTopic]);
+// One holder's position events across the given projects, from the oldest project's creation block (project
+// IDs rise with creation), with block timestamps attached.
+async function holderLogs(ids, holder) {
+  if (!ids.length) return [];
+  const oldest = ids.reduce((low, id) => (id < low ? id : low));
+  const logs = await getLogs(ctx.hook, [POSITION_TOPICS, null, "0x" + encAddress(holder)], await projectStartBlock(ctx.chainId, oldest));
   return attachTimestamps(logs);
 }
 
@@ -889,7 +1014,8 @@ async function hookLogs(projectId) {
 // all indexed by project. Timestamps are attached to position events only. Kept for the view's lifetime
 // so the 15-second position refresh never rescans history.
 async function projectLogs(projectId) {
-  const all = await getLogs(ctx.hook, [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender], "0x" + word(projectId)]);
+  const all = await getLogs(ctx.hook, [[...POSITION_TOPICS, TOPIC.SetGranter, TOPIC.SetTrustedSender], "0x" + word(projectId)],
+    await projectStartBlock(ctx.chainId, projectId));
   const position = all.filter((log) => POSITION_TOPICS.includes(log.topics[0]));
   await attachTimestamps(position);
   ctx.projectLogs = { chainId: ctx.chainId, projectId: BigInt(projectId), all, position };
@@ -1010,6 +1136,54 @@ async function airdropItems(logs, reader = pageReader()) {
   }
   return items.reverse();
 }
+
+// Home feeds from Bendystraw's events. A stick is a pay and an unstick a cash out; amounts are the Sticky
+// tokens minted or burned. Stuck tokens paid for someone else are an airdrop.
+async function indexedActivityItems(events, reader) {
+  const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
+  const items = [];
+  for (const event of events.slice(-40)) {
+    let info;
+    try {
+      info = await projectInfo(event.projectId, reader);
+    } catch {
+      continue;
+    }
+    const verb = event.kind === "unstick" ? `<span class="verb out">unstuck</span>`
+      : `<span class="verb">${event.payer === adapter ? "auto-stuck" : "stuck"}</span>`;
+    items.push({
+      ts: event.ts,
+      html: feedCard(info, reader, event.projectId, event.ts,
+        `<span class="addr">${shortAddr(event.holder)}</span> ${verb} ${formatUnits(event.tokens, 18)} ${esc(info.stSymbol)}`),
+    });
+  }
+  return items.reverse();
+}
+async function indexedAirdropItems(events, reader) {
+  const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
+  const items = [];
+  const airdrops = events.filter((event) => event.kind === "stick" && event.payer !== event.holder && event.payer !== adapter);
+  for (const event of airdrops.slice(-40)) {
+    let info;
+    try {
+      info = await projectInfo(event.projectId, reader);
+    } catch {
+      continue;
+    }
+    const self = event.holder === (account() || "").toLowerCase() ? " (you)" : "";
+    items.push({
+      ts: event.ts,
+      html: feedCard(info, reader, event.projectId, event.ts,
+        `<span class="addr">${addressLabel(event.holder)}${self}</span> received ${formatUnits(event.tokens, 18)} ${esc(info.stSymbol)}`
+        + ` from <span class="addr">${addressLabel(event.payer)}</span>`),
+    });
+  }
+  return items.reverse();
+}
+const feedCard = (info, reader, projectId, ts, line) => `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22, reader.chainId)}`
+  + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(ts)}</div>`
+  + `<div><a class="link" href="${projectHref(reader.chainId, projectId)}">${esc(stickyLabel(info))}</a> ${chainIcons([reader.chainId])}</div>`
+  + `<div>${line}</div></div></div></div>`;
 
 function configuredStickiestCards() {
   return (window.STICKY_CONFIG?.demoHomeStickiest || []).flatMap((row) => {
@@ -1209,7 +1383,19 @@ async function backingUsdPrices(cards, chainId = ctx.chainId) {
   return prices;
 }
 
-function projectStakedHistory(logs, card, now) {
+// Supply moves for the chart: { chainId, projectId, ts, delta } in Sticky token units.
+function logMoves(logs) {
+  return logs.flatMap((log) => {
+    if (log.topics[0] === TOPIC.Staked) return [{ chainId: log.chainId, projectId: decUint(log.topics[1]), ts: log.ts, delta: decUint(log.data, 1) }];
+    if (log.topics[0] === TOPIC.Unstaked) return [{ chainId: log.chainId, projectId: decUint(log.topics[1]), ts: log.ts, delta: -decUint(log.data, 0) }];
+    return [];
+  });
+}
+const eventMoves = (events) => events.map((event) => ({
+  chainId: event.chainId, projectId: event.projectId, ts: event.ts, delta: event.kind === "stick" ? event.tokens : -event.tokens,
+}));
+
+function projectStakedHistory(moves, card, now) {
   const configured = configuredChartPoints(now, card.id);
   if (configured) {
     const points = configured.map((point) => ({ ts: point.ts, value: point.staked }));
@@ -1217,12 +1403,8 @@ function projectStakedHistory(logs, card, now) {
     return points;
   }
 
-  const events = logs.flatMap((log) => {
-    if (decUint(log.topics[1]) !== card.id || (card.chainId !== undefined && log.chainId !== card.chainId)) return [];
-    if (log.topics[0] === TOPIC.Staked) return [{ ts: log.ts, delta: decUint(log.data, 1) }];
-    if (log.topics[0] === TOPIC.Unstaked) return [{ ts: log.ts, delta: -decUint(log.data, 0) }];
-    return [];
-  }).sort((a, b) => a.ts - b.ts);
+  const events = moves.filter((move) => move.projectId === card.id && (card.chainId === undefined || move.chainId === card.chainId))
+    .sort((a, b) => a.ts - b.ts);
 
   if (!events.length) {
     return [{ ts: now - 30 * 86_400, value: card.totalStaked }, { ts: now, value: card.totalStaked }];
@@ -1240,13 +1422,13 @@ function projectStakedHistory(logs, card, now) {
   return points;
 }
 
-function homeSecuredSeries(logs, cards, prices) {
+function homeSecuredSeries(moves, cards, prices) {
   const now = Math.floor(Date.now() / 1000);
   const valuedCards = cards.filter((card) => prices.has(cardKey(card)));
   const histories = valuedCards.map((card) => ({
     card,
     price: prices.get(cardKey(card)),
-    points: projectStakedHistory(logs, card, now),
+    points: projectStakedHistory(moves, card, now),
   }));
   const timestamps = [...new Set(histories.flatMap((history) => history.points.map((point) => point.ts)))]
     .sort((a, b) => a - b);
@@ -1648,13 +1830,48 @@ async function retryHome() {
   }
 }
 
-// One chain's home data: its Sticky projects as cards, its hook logs, prices, and feed items.
+// One chain's home data: its Sticky projects as cards, supply moves for the chart, prices, and feed items.
+// Bendystraw supplies the projects and their sticks and unsticks; a chain it cannot answer for is scanned.
 async function homeChainData(chainId) {
+  const indexed = await indexedChain(chainId);
+  if (!indexed) return scannedHomeChainData(chainId);
+  let projects, events;
+  try {
+    projects = await deployedProjectsOn(chainId);
+    events = projects.length ? await StickyRuntime.stickyEvents(bendystrawUrl(chainId),
+      projects.map((project) => ({ chainId: Number(chainId), projectId: project.projectId, version: project.version ?? 6 }))) : [];
+  } catch (error) {
+    console.warn(`Bendystraw could not list Sticky activity on ${chainById(chainId)?.name || chainId}; scanning the chain.`, error);
+    return scannedHomeChainData(chainId);
+  }
+  if (!projects.length) return { chainId, cards: [], moves: [], prices: new Map(), activity: [], airdrops: [] };
   const reader = await chainReader(chainId);
-  const ids = (await getLogsOn(reader, reader.deployer, [TOPIC.DeploySticky])).map((log) => decUint(log.topics[1]));
-  if (!ids.length) return { chainId, cards: [], logs: [], prices: new Map(), activity: [], airdrops: [] };
-  const logs = await attachTimestamps(await getLogsOn(reader, reader.hook, [POSITION_TOPICS, null]), 6, reader);
+  const cards = await homeCards(reader, projects.map((project) => project.projectId), (id) => indexedHolderCount(id, events));
+  const [prices, activity, airdrops] = await Promise.all([
+    backingUsdPrices(cards, reader.chainId), indexedActivityItems(events, reader), indexedAirdropItems(events, reader),
+  ]);
+  return { chainId, cards, moves: eventMoves(events), prices, activity, airdrops };
+}
+
+// The chain-only path: every DeploySticky from the deployment block, then every position event from the
+// first launch's block.
+async function scannedHomeChainData(chainId) {
+  const reader = await chainReader(chainId);
+  const deploys = await getLogsOn(reader, reader.deployer, [TOPIC.DeploySticky]);
+  const ids = deploys.map((log) => decUint(log.topics[1]));
+  if (!ids.length) return { chainId, cards: [], moves: [], prices: new Map(), activity: [], airdrops: [] };
+  const logs = await attachTimestamps(await getLogsOn(reader, reader.hook, [POSITION_TOPICS, null], deploys[0].blockNumber), 6, reader);
   for (const log of logs) log.chainId = reader.chainId;
+  const cards = await homeCards(reader, ids, (id) => holderRows(id, logs).filter((row) => row.staked > 0n).length);
+  const [prices, activity, airdrops] = await Promise.all([
+    backingUsdPrices(cards, reader.chainId), activityItems(logs, true, reader), airdropItems(logs, reader),
+  ]);
+  return { chainId, cards, moves: logMoves(logs), prices, activity, airdrops };
+}
+
+// Cards read backing and supply from the chain. A project that fails to read is left out; a chain whose
+// projects all fail is an error.
+async function homeCards(reader, ids, sticksOf) {
   const cards = (await Promise.all(ids.map(async (id) => {
     try {
       const info = await projectInfo(id, reader);
@@ -1662,17 +1879,24 @@ async function homeChainData(chainId) {
         poolBacking(id, info, reader),
         window.__DEMO_RPC ? null : launchIdOf(reader, id).catch(() => null),
       ]);
-      const sticks = holderRows(id, logs).filter((row) => row.staked > 0n).length;
-      return { id, chainId: reader.chainId, key: `${reader.chainId}:${id}`, info, pool, launchId, totalStaked: pool.supply, sticks };
+      return { id, chainId: reader.chainId, key: `${reader.chainId}:${id}`, info, pool, launchId, totalStaked: pool.supply, sticks: sticksOf(id) };
     } catch {
       return null;
     }
   }))).filter(Boolean);
-  if (!cards.length) throw new Error(`Could not read any Sticky token on ${chainById(chainId)?.name || chainId}.`);
-  const [prices, activity, airdrops] = await Promise.all([
-    backingUsdPrices(cards, reader.chainId), activityItems(logs, true, reader), airdropItems(logs, reader),
-  ]);
-  return { chainId, cards, logs, prices, activity, airdrops };
+  if (!cards.length) throw new Error(`Could not read any Sticky token on ${chainById(reader.chainId)?.name || reader.chainId}.`);
+  return cards;
+}
+
+// Holders with tokens left after their sticks and unsticks. Exact for soulbound tokens; transfers of a
+// transferable token are not in Bendystraw's events, so this is a count for display only.
+function indexedHolderCount(projectId, events) {
+  const balances = new Map();
+  for (const event of events) {
+    if (event.projectId !== BigInt(projectId)) continue;
+    balances.set(event.holder, (balances.get(event.holder) || 0n) + (event.kind === "stick" ? event.tokens : -event.tokens));
+  }
+  return [...balances.values()].filter((balance) => balance > 0n).length;
 }
 
 // Sibling projects of one multichain launch share a launchId, cash out tax and transfer mode. Each chain
@@ -1750,9 +1974,9 @@ async function renderHome() {
       else setHomeState("empty", testnet ? "No sticky tokens on testnets yet." : "No sticky tokens yet.");
       return;
     }
-    const logs = loaded.flatMap((result) => result.logs);
+    const moves = loaded.flatMap((result) => result.moves);
     const prices = new Map(loaded.flatMap((result) => [...result.prices]));
-    mountHomeSecuredChart(homeSecuredSeries(logs, cards, prices));
+    mountHomeSecuredChart(homeSecuredSeries(moves, cards, prices));
     const groups = [...groupHomeCards(cards), ...demoCards.map((card) => ({ cards: [card], totalStaked: card.totalStaked }))];
     $("projects").innerHTML = groups.map((group, i) => stickiestCardHtml(group, i + 1)).join("");
     const newest = (items) => items.sort((a, b) => b.ts - a.ts).slice(0, 40);
@@ -2342,7 +2566,7 @@ async function renderTrustedSenders() {
   const key = `${ctx.chainId}:${ctx.currentId}:${holderTopic}`;
   let scanned = cachedProjectLogs(ctx.currentId)?.all ?? (ctx.trustLogs?.key === key ? ctx.trustLogs.logs : null);
   if (!scanned) {
-    scanned = await getLogs(ctx.hook, [TOPIC.SetTrustedSender, "0x" + idArg, holderTopic]);
+    scanned = await getLogs(ctx.hook, [TOPIC.SetTrustedSender, "0x" + idArg, holderTopic], await projectStartBlock(ctx.chainId, ctx.currentId));
     ctx.trustLogs = { key, logs: scanned };
   }
   if (!isCurrent()) return;
@@ -3210,9 +3434,9 @@ async function rewardTokenMeta(addr) {
 }
 
 // Every (group, token) pair the distributor has been funded for, from its Fund logs, with the lifetime amount.
-async function discoverFunding(info) {
+async function discoverFunding(info, projectId) {
   const funded = new Map();
-  const logs = await getLogs(distributor(), [TOPIC.Fund, "0x" + encAddress(info.stToken)]);
+  const logs = await getLogs(distributor(), [TOPIC.Fund, "0x" + encAddress(info.stToken)], await projectStartBlock(ctx.chainId, projectId));
   for (const log of logs) {
     if (!log.topics?.[2] || !log.topics?.[3]) continue;
     const groupId = decUint(log.topics[2]);
@@ -3250,7 +3474,7 @@ async function renderRewards() {
   // from silently hiding funded groups. A failed scan still shows the hand-checked tokens under group 0.
   let funded = new Map();
   try {
-    funded = await discoverFunding(info);
+    funded = await discoverFunding(info, ctx.currentId);
   } catch (error) {
     console.error("reward discovery failed", error);
   }
@@ -5065,7 +5289,7 @@ async function renderAccount(address) {
   if (!ctx.loaded) return;
   const ids = await projectIds();
   if (!current()) return;
-  const logs = await hookLogs(undefined);
+  const logs = await holderLogs(ids, address);
   if (!current()) return;
   const rows = [];
   for (const id of ids) {
@@ -5093,8 +5317,7 @@ async function renderAccount(address) {
     } catch {}
   }
   $("a-positions").innerHTML = rows.length ? rows.join("") : `<div class="card-item mut">no positions yet</div>`;
-  const mine = logs.filter((log) => decAddress(log.topics[2]).toLowerCase() === address.toLowerCase());
-  const activity = await activityItems(mine, true);
+  const activity = await activityItems(logs, true);
   if (!current()) return;
   renderFeed($("a-activity"), activity);
   hydrateLogos().catch(() => {});

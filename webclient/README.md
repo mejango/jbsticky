@@ -180,19 +180,26 @@ decoding, and the review shows only decoded values. An unknown function, a hidde
 argument, or a value that differs from what the review names blocks Confirm.
 
 The holder list comes from the hook's own events (each `Staked` and `Unstaked`
-carries the resulting balance), one bounded scan per project view; the visible page
-is re-read from the hook. A multichain launch writes one `launchId` into every
-chain's `projectUri`; the project page finds each same-environment chain's project
-from its `DeploySticky` events and shows backing and supply per chain with totals.
+carries the resulting balance), one scan per project view starting at the project's
+creation block; the visible page is re-read from the hook. A multichain launch writes
+one `launchId` into every chain's `projectUri`; the project page finds each
+same-environment chain's project and shows backing and supply per chain with totals.
 Log scans follow a node's stated range limit, including HTTP 413 answers.
 
 Rewards show the current round and when it ends, and per group the amount claimable
 now, vesting with its next and last unlock dates, earned in finished rounds but not
 vesting yet, and funding. Collecting starts a 4-round unlock, a quarter per round.
 
-Bendystraw is not used: it indexes Sticky projects and their pay and cash out events,
-but not StickyHook positions, tranches or streaks, nor custom-token holders, so the
-hook log scan is needed regardless.
+Bendystraw lists each environment's Sticky projects (owned by the deployer) and their
+pays and cash outs, so the home page reads no chain history: its cards, Latest,
+Airdrops and chart come from Bendystraw, and each card's backing and supply from chain
+views. Launches past Bendystraw's indexed block are found by a short `DeploySticky`
+scan. A project's creation block comes from Bendystraw's creating transaction, checked
+against its receipt. Bendystraw does not index StickyHook positions, tranches or
+streaks, so project pages still scan the hook, from that block. Any Bendystraw error
+falls back to chain scans. The page reaches Bendystraw through `serve.py` at
+`/bendystraw/<production|testnet>/graphql`, because Bendystraw's CORS list does not
+include this site; identical queries share one answer for 15 seconds.
 
 The 100% cash out tax permanently makes unsticking return zero underlying tokens.
 The auto-stick adapter quotes issuance during execution and rejects zero-token

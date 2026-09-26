@@ -77,7 +77,7 @@ test('an obsolete home read cannot mount its chart after project navigation', as
   await new Promise(setImmediate);
   c.location.hash = '#/project/2';
   c.route();
-  chain.resolve({ chainId: 1, cards: [{ id: 1n, chainId: 1, info: {}, totalStaked: 1n }], logs: [], prices: new Map(), activity: [], airdrops: [] });
+  chain.resolve({ chainId: 1, cards: [{ id: 1n, chainId: 1, info: {}, totalStaked: 1n }], moves: [], prices: new Map(), activity: [], airdrops: [] });
   await rendering;
 });
 
