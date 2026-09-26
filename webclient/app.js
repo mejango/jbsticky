@@ -546,11 +546,12 @@ const getLogsOn = (reader, address, topics, from = reader.fromBlock) => window._
 // Bendystraw, the Juicebox indexer, lists each environment's Sticky projects and their sticks and unsticks,
 // so a page does not scan a chain's whole history. It is a cache: a chain it has not indexed, or any
 // Bendystraw error, falls back to chain reads, and backing, supply and quotes always come from the chain.
-// The page reaches it through serve.py's same-origin relay: Bendystraw's CORS list does not include this site.
+// The page reaches it through serve.py's same-origin relay, which forwards only the persisted operations in
+// bendystraw-operations.json: Bendystraw's CORS list does not include this site.
 const bendystrawUrl = (chainId) => {
-  const environment = chainById(chainId)?.environment === "testnet" ? "testnet" : "production";
-  const upstream = window.STICKY_CONFIG?.[environment === "testnet" ? "testnetBendystrawUrl" : "bendystrawUrl"];
-  return upstream ? new URL(`/bendystraw/${environment}/graphql`, location.href).href : null;
+  const network = chainById(chainId)?.environment === "testnet" ? "testnet" : "mainnet";
+  const upstream = window.STICKY_CONFIG?.[network === "testnet" ? "testnetBendystrawUrl" : "bendystrawUrl"];
+  return upstream ? new URL(`/api/bendystraw/${network}/query`, location.href).href : null;
 };
 const INDEX_TTL = 60_000;
 const indexCache = new Map();

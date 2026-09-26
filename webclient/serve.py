@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Serve the public Sticky client with Waitress and WhiteNoise."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -91,6 +92,7 @@ def readiness(root):
             candidate = root / name
             if name not in PUBLIC_ASSETS or candidate.is_symlink() or not candidate.is_file():
                 raise ValueError("missing public script")
+        bendystraw_operations(root)
         if config.get("centerWallet") is not None:
             if not wallet_origin(root):
                 raise ValueError("invalid Signa issuer")
@@ -103,12 +105,96 @@ def readiness(root):
         return {"ok": False, "error": "Client build or generated deployment configuration is incomplete"}
 
 
-BENDYSTRAW_PATH = re.compile(r"/bendystraw/(production|testnet)/graphql")
+BENDYSTRAW_PATH = re.compile(r"/api/bendystraw/(mainnet|testnet)/query")
 BENDYSTRAW_URL = re.compile(r"https://[a-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*/?")
+BENDYSTRAW_OPERATIONS = "bendystraw-operations.json"
 BENDYSTRAW_MAX_BODY = 8192
 BENDYSTRAW_MAX_RESPONSE = 8 * 1024 * 1024
 BENDYSTRAW_TIMEOUT = 8
 BENDYSTRAW_TTL = 15
+OPERATION_ID = re.compile(r"[a-f0-9]{64}")
+DECLARATIONS = re.compile(r"\s*query\s+\w+\s*(?:\(([^)]*)\))?\s*\{")
+DECLARATION = re.compile(r"\$(\w+)\s*:\s*((?:\[\s*\w+\s*!?\s*\]|\w+)\s*!?)\s*(?:,|$)")
+FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+MAX_STRING = 1024
+MAX_LIST = 100
+MAX_FIELDS = 32
+MAX_DEPTH = 3
+
+
+def bendystraw_operations(root):
+    """The checked-in operations serve.py relays: {operation id: (document, {variable: GraphQL type})}.
+
+    Raises OSError when the file is missing, and ValueError when it is empty, an id is not its document's
+    SHA-256, or a document is not a named query with parseable variables.
+    """
+    registry = json.loads((root / BENDYSTRAW_OPERATIONS).read_text(encoding="utf-8"))
+    if not isinstance(registry, dict) or not registry:
+        raise ValueError("empty Bendystraw operation registry")
+    operations = {}
+    for operation, document in registry.items():
+        if not isinstance(document, str) or hashlib.sha256(document.encode()).hexdigest() != operation:
+            raise ValueError("Bendystraw operation id does not match its document")
+        header = DECLARATIONS.match(document)
+        if not header:
+            raise ValueError("Bendystraw operation is not a named query")
+        declared = {}
+        for part in filter(None, (part.strip() for part in (header[1] or "").split(","))):
+            variable = DECLARATION.fullmatch(part)
+            if not variable:
+                raise ValueError("unparseable Bendystraw variable")
+            declared[variable[1]] = re.sub(r"\s+", "", variable[2])
+        operations[operation] = (document, declared)
+    return operations
+
+
+def plain(value):
+    return value is None or isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= MAX_STRING)
+
+
+def input_object(value, depth=0):
+    """A filter argument: a small object of scalars, lists of scalars and nested objects."""
+    if not isinstance(value, dict) or len(value) > MAX_FIELDS or depth > MAX_DEPTH:
+        return False
+    for field, item in value.items():
+        if not FIELD.fullmatch(field):
+            return False
+        if isinstance(item, list):
+            if len(item) > MAX_LIST or not all(plain(entry) for entry in item):
+                return False
+        elif isinstance(item, dict):
+            if not input_object(item, depth + 1):
+                return False
+        elif not plain(item):
+            return False
+    return True
+
+
+def variable_fits(value, kind):
+    if kind.endswith("!"):
+        return value is not None and variable_fits(value, kind[:-1])
+    if value is None:
+        return True
+    if kind.startswith("["):
+        return isinstance(value, list) and len(value) <= MAX_LIST and all(variable_fits(item, kind[1:-1]) for item in value)
+    if kind in ("String", "ID"):
+        return isinstance(value, str) and len(value) <= MAX_STRING
+    if kind == "Int":
+        return isinstance(value, int) and not isinstance(value, bool) and -2**31 <= value < 2**31
+    if kind == "Float":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if kind == "Boolean":
+        return isinstance(value, bool)
+    return input_object(value)
+
+
+def variables_fit(variables, declared):
+    return (isinstance(variables, dict) and set(variables) <= set(declared)
+            and all(variable_fits(variables.get(name), kind) for name, kind in declared.items()))
+
+
+def reject_constant(name):
+    raise ValueError(f"{name} is not JSON")
 
 
 def tls_context():
@@ -123,29 +209,37 @@ def tls_context():
 
 
 def bendystraw_upstreams(root):
-    """The configured Bendystraw GraphQL endpoints, by environment."""
+    """The configured Bendystraw GraphQL endpoints, by network."""
     try:
         config = read_config(root)
     except (OSError, ValueError, TypeError):
         return {}
     upstreams = {}
-    for environment, key in (("production", "bendystrawUrl"), ("testnet", "testnetBendystrawUrl")):
+    for network, key in (("mainnet", "bendystrawUrl"), ("testnet", "testnetBendystrawUrl")):
         url = config.get(key)
         if isinstance(url, str) and BENDYSTRAW_URL.fullmatch(url):
             url = url.rstrip("/")
-            upstreams[environment] = url if url.endswith("/graphql") else url + "/graphql"
+            upstreams[network] = url if url.endswith("/graphql") else url + "/graphql"
     return upstreams
 
 
-class BendystrawRelay:
-    """Relays the page's read-only GraphQL queries to Bendystraw, whose CORS list does not include this site.
+def error_body(message):
+    return json.dumps({"error": message}).encode()
 
-    Only the two configured endpoints are reachable. Identical queries within a few seconds share one upstream
-    answer, so many visitors cost Bendystraw one query. A failure is a 502 and the page falls back to chain reads.
+
+class BendystrawRelay:
+    """Relays the page's persisted Bendystraw queries, the same way juicebox.money and revnet.money do.
+
+    The page posts {"operation": <SHA-256 of a document>, "variables": {...}}; only documents in
+    bendystraw-operations.json are forwarded, with variables that fit their declared types, so this is not an
+    open GraphQL proxy. Bendystraw's CORS list does not include this site, and local serving goes through this
+    same relay. Identical requests within a few seconds share one upstream answer. Success is {"data": ...};
+    any failure is {"error": ...} and the page falls back to chain reads.
     """
 
-    def __init__(self, upstreams, fetch=None):
+    def __init__(self, upstreams, operations, fetch=None):
         self.upstreams = upstreams
+        self.operations = operations
         self.fetch = fetch or self.post
         self.tls = None if fetch else tls_context()
         self.cache = {}
@@ -160,32 +254,41 @@ class BendystrawRelay:
                 raise ValueError("response too large")
             return response.status, payload
 
-    def __call__(self, environment, body):
-        upstream = self.upstreams.get(environment)
+    def __call__(self, network, body):
+        upstream = self.upstreams.get(network)
         if not upstream:
-            return 404, b'{"errors":[{"message":"Bendystraw is not configured."}]}'
+            return 404, error_body("Bendystraw is not configured.")
         try:
-            query = json.loads(body)
-        except ValueError:
-            query = None
-        if not isinstance(query, dict) or not isinstance(query.get("query"), str) \
-                or not isinstance(query.get("variables", {}), (dict, type(None))):
-            return 400, b'{"errors":[{"message":"Expected a GraphQL query."}]}'
-        key = (environment, body)
+            request = json.loads(body, parse_constant=reject_constant)
+        except (ValueError, UnicodeDecodeError):
+            request = None
+        operation = request.get("operation") if isinstance(request, dict) else None
+        known = self.operations.get(operation) if isinstance(operation, str) and OPERATION_ID.fullmatch(operation) else None
+        if not known or set(request) != {"operation", "variables"} or not variables_fit(request["variables"], known[1]):
+            return 400, error_body("unknown or invalid operation")
+        variables = request["variables"]
+        key = (network, operation, json.dumps(variables, sort_keys=True, separators=(",", ":")))
         now = time.monotonic()
         with self.lock:
             hit = self.cache.get(key)
             if hit and now - hit[0] < BENDYSTRAW_TTL:
                 return 200, hit[1]
         try:
-            status, payload = self.fetch(upstream, body)
-            json.loads(payload)
+            status, payload = self.fetch(upstream, json.dumps({"query": known[0], "variables": variables}).encode())
+            answer = json.loads(payload) if status == 200 else None
         except urllib.error.HTTPError as error:
-            return 502, json.dumps({"errors": [{"message": f"Bendystraw returned HTTP {error.code}."}]}).encode()
+            return 502, error_body(f"Bendystraw returned HTTP {error.code}.")
         except (OSError, ValueError):
-            return 502, b'{"errors":[{"message":"Bendystraw is unavailable."}]}'
+            return 502, error_body("Bendystraw is unavailable.")
         if status != 200:
-            return 502, json.dumps({"errors": [{"message": f"Bendystraw returned HTTP {status}."}]}).encode()
+            return 502, error_body(f"Bendystraw returned HTTP {status}.")
+        errors = answer.get("errors") if isinstance(answer, dict) else None
+        if isinstance(errors, list) and errors:
+            message = errors[0].get("message") if isinstance(errors[0], dict) else None
+            return 502, error_body(f"Bendystraw: {str(message or 'query failed')[:300]}")
+        if not isinstance(answer, dict) or not isinstance(answer.get("data"), dict):
+            return 502, error_body("Bendystraw returned no data.")
+        payload = json.dumps({"data": answer["data"]}, separators=(",", ":")).encode()
         with self.lock:
             if len(self.cache) >= 256:
                 self.cache = {k: v for k, v in self.cache.items() if now - v[0] < BENDYSTRAW_TTL}
@@ -235,18 +338,22 @@ def create_app(root=ROOT, revision=None, bendystraw_fetch=None):
         return respond(environ, start_response, "404 Not Found", b"Not found\n")
 
     assets = PublicFiles(not_found, root)
-    relay = BendystrawRelay(bendystraw_upstreams(root) if state["ok"] else {}, bendystraw_fetch)
+    relay = BendystrawRelay(bendystraw_upstreams(root) if state["ok"] else {},
+                            bendystraw_operations(root) if state["ok"] else {}, bendystraw_fetch)
 
-    def bendystraw(environ, start_response, environment):
+    def bendystraw(environ, start_response, network):
         if environ.get("REQUEST_METHOD") != "POST":
             return respond(environ, start_response, "405 Method Not Allowed", b"Method not allowed\n", extra=[("Allow", "POST")])
+        if not environ.get("CONTENT_TYPE", "").lower().startswith("application/json"):
+            return respond(environ, start_response, "415 Unsupported Media Type", error_body("content type must be application/json"),
+                           "application/json")
         try:
             length = int(environ.get("CONTENT_LENGTH") or 0)
         except ValueError:
             length = -1
         if not 0 < length <= BENDYSTRAW_MAX_BODY:
-            return respond(environ, start_response, "413 Content Too Large", b"Query too large\n")
-        status, payload = relay(environment, environ["wsgi.input"].read(length))
+            return respond(environ, start_response, "413 Content Too Large", error_body("request is too large"), "application/json")
+        status, payload = relay(network, environ["wsgi.input"].read(length))
         reason = {200: "OK", 400: "Bad Request", 404: "Not Found", 502: "Bad Gateway"}[status]
         return respond(environ, start_response, f"{status} {reason}", payload, "application/json")
 
@@ -288,7 +395,7 @@ def main():
         raise SystemExit("Refusing to start: run build-config.py with valid deployment configuration or explicit STICKY_DEMO=true")
     port = int(os.environ.get("PORT", sys.argv[1] if len(sys.argv) > 1 else "8788"))
     host = "0.0.0.0" if "PORT" in os.environ else "127.0.0.1"
-    # Bendystraw queries are the only request bodies; each relay can hold a thread for its upstream timeout.
+    # Bendystraw operations are the only request bodies; each relay can hold a thread for its upstream timeout.
     serve(app, host=host, port=port, threads=8, connection_limit=100,
           channel_timeout=30, cleanup_interval=5, max_request_header_size=16384,
           max_request_body_size=BENDYSTRAW_MAX_BODY, ident="Sticky")

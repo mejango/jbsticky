@@ -138,21 +138,35 @@
   }
   // Bendystraw, the Juicebox indexer, answers discovery and history. It is a cache: every caller keeps a chain
   // read for when it errors, times out or lags, and money (backing, supply, quotes) is never read from it.
+  // `url` is serve.py's same-origin relay, which forwards only the persisted operations in
+  // bendystraw-operations.json. The page sends an operation's id, the SHA-256 of its document, and its
+  // variables; a document missing from that file is refused, locally as in production.
+  const operationIds = new Map();
+  function operationId(query) {
+    if (!operationIds.has(query)) {
+      operationIds.set(query, globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(query))
+        .then((digest) => [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")));
+    }
+    return operationIds.get(query);
+  }
   async function graphql(url, query, variables = {}, options = {}) {
     const fetcher = options.fetch || globalThis.fetch;
     if (!url || typeof url !== "string") throw new Error("No Bendystraw endpoint is configured.");
-    const endpoint = /\/graphql\/?$/.test(url) ? url : `${url.replace(/\/+$/, "")}/graphql`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeout || 6000);
     try {
-      const response = await fetcher(endpoint, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query, variables }),
+      const operation = await operationId(query);
+      const response = await fetcher(url, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation, variables }),
         signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error",
       });
       let body;
       try { body = await response.json(); } catch { body = null; }
+      if (typeof body?.error === "string") {
+        const message = body.error.slice(0, 300);
+        throw new Error(message.startsWith("Bendystraw") ? message : `Bendystraw: ${message}`);
+      }
       if (!response.ok || !body || typeof body !== "object") throw new Error(`Bendystraw returned HTTP ${response.status}.`);
-      if (Array.isArray(body.errors) && body.errors.length) throw new Error(`Bendystraw: ${String(body.errors[0]?.message || "query failed").slice(0, 300)}`);
       if (!body.data || typeof body.data !== "object") throw new Error("Bendystraw returned no data.");
       return body.data;
     } catch (error) {
