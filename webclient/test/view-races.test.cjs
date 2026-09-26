@@ -102,3 +102,36 @@ test('view guards also invalidate when the account or chain changes', () => {
   c.account = () => '0x' + '44'.repeat(20);
   assert.equal(second(), false);
 });
+
+test('a superseded auto-stick render leaves the card hidden, never half drawn', async () => {
+  const c = fixture(['renderAutoStick']);
+  const hidden = new Set(['autostick-card']);
+  const fields = new Map();
+  c.$ = (id) => {
+    if (!fields.has(id)) fields.set(id, { id, textContent: '', innerHTML: '', classList: {
+      add: (name) => name === 'hide' && hidden.add(id), remove: (name) => name === 'hide' && hidden.delete(id),
+      toggle: (name, on) => { if (name === 'hide') on ? hidden.add(id) : hidden.delete(id); } } });
+    return fields.get(id);
+  };
+  vm.runInContext('var AS_STATUS = { INVALID_PROJECT: 1, READY: 2 };', c);
+  const schedule = deferred();
+  c.ctx.currentId = 1n;
+  c.autoStickState = async () => ({ info: { symbol: 'CPN', decimals: 18 }, status: 2, enabled: true, minimum: 1n, cooldown: 86400 });
+  c.unlockScheduleOf = () => schedule.promise;
+  c.unlockScheduleSentence = () => '';
+  c.vestableRewardGroups = async () => [];
+  c.stickyLabel = (info) => `Sticky ${info.symbol}`;
+  c.formatUnits = String; c.formatDuration = String; c.esc = String; c.asStatusLine = () => '';
+  const rendering = c.renderAutoStick();
+  await new Promise(setImmediate);
+  c.route();
+  schedule.resolve(null);
+  await rendering;
+  assert.ok(hidden.has('autostick-card'));
+  assert.equal(c.$('as-toggle').textContent, '');
+  const fresh = c.renderAutoStick();
+  await fresh;
+  assert.ok(!hidden.has('autostick-card'));
+  assert.equal(c.$('as-toggle').textContent, 'Turn off auto-stick');
+  assert.match(c.$('as-blurb').textContent, /Stick your CPN rewards into Sticky CPN as they unlock\./);
+});

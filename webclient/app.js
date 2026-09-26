@@ -464,17 +464,6 @@ async function resolveTokenLogoUrl(addr) {
   })());
 }
 
-async function hydrateProjectName(projectId, info) {
-  const current = currentView();
-  const override = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)];
-  if (override) {
-    $("h-name").textContent = override;
-    return;
-  }
-  const metadata = await resolveProjectMetadata(info.stakedToken);
-  if (current() && ctx.currentId === projectId && metadata?.name) $("h-name").textContent = metadata.name;
-}
-
 function parseStickyProjectUri(uri) {
   if (!uri?.startsWith("data:application/json")) return null;
   try {
@@ -673,8 +662,7 @@ async function hydrateLogos() {
       img.width = img.height = Number(size) || 15;
       img.style.cssText = "border-radius:6px;object-fit:cover;display:block";
       img.referrerPolicy = "no-referrer";
-      img.onerror = () => img.remove();
-      el.replaceChildren(img);
+      img.onload = () => el.replaceChildren(img);
     }
   }
 }
@@ -849,7 +837,8 @@ async function projectInfo(projectId) {
   return ctx.projects[key];
 }
 
-const stickyLabel = (info) => `Sticky ${info.symbol}`;
+// A Sticky token is named by its own onchain symbol, which a launch may customize.
+const stickyLabel = (info) => info.stSymbol || `Sticky ${info.symbol}`;
 
 async function projectIds() {
   const logs = await getLogs($("deployer").value, [TOPIC.DeploySticky]);
@@ -880,6 +869,18 @@ const cachedProjectLogs = (projectId) => ctx.projectLogs?.chainId === ctx.chainI
 // resulting balance, StreakStarted marks the streak's start and StreakEnded its length. No per-holder reads,
 // so the list costs one bounded log scan however many holders there are. The visible page is re-read from
 // the hook (verifyHolderPage) so a gap in the scan cannot misstate a balance shown.
+// A stick's age is block time minus the holder's streak start (StreakStarted, the hook's streakStartOf).
+// A project page reads every age against one pinned block, so the header and your position agree.
+async function pinnedBlock() {
+  const block = await rpc("eth_getBlockByNumber", ["latest", false]);
+  return { tag: /^0x[0-9a-fA-F]+$/.test(block?.number || "") ? block.number : "latest", timestamp: Number(BigInt(block.timestamp)) };
+}
+function renderHeaderAges(rows, now) {
+  const ages = rows.filter((row) => row.staked > 0n).map((row) => (row.start ? Math.max(0, now - row.start) : 0));
+  $("h-average").textContent = formatDuration(ages.length ? Math.floor(ages.reduce((total, age) => total + age, 0) / ages.length) : 0);
+  $("h-top").textContent = formatDuration(Math.max(0, ...ages));
+}
+
 function holderRows(projectId, logs, now = Math.floor(Date.now() / 1000)) {
   const rows = new Map();
   for (const log of logs) {
@@ -895,7 +896,7 @@ function holderRows(projectId, logs, now = Math.floor(Date.now() / 1000)) {
   }
   return [...rows.values()].map(({ holder, staked, start, longest }) => {
     const current = start ? Math.max(0, now - start) : 0;
-    return { holder, staked, current, longest: Math.max(longest, current) };
+    return { holder, staked, start, current, longest: Math.max(longest, current) };
   });
 }
 
@@ -1645,8 +1646,7 @@ async function renderProject(projectId) {
   syncTransferSticky(info);
   $("p-logo").innerHTML = tokenLogo(info.stakedToken, info.symbol, 104);
   $("h-symbol").textContent = stickyLabel(info);
-  $("h-name").textContent = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.name;
-  hydrateProjectName(projectId, info).catch(() => {});
+  $("h-name").textContent = window.STICKY_CONFIG?.projectNameOverrides?.[String(projectId)] || info.stName;
   $("tranches-amount-head").textContent = `AMOUNT (${info.stSymbol})`;
   $("stake-title").textContent = `Stick ${info.symbol}`;
   $("stake-symbol").textContent = info.symbol;
@@ -1659,7 +1659,10 @@ async function renderProject(projectId) {
   const scanned = await projectLogs(projectId);
   if (!current()) return;
   const logs = scanned.position;
-  const rows = holderRows(projectId, logs);
+  const pin = await pinnedBlock();
+  if (!current()) return;
+  const rows = holderRows(projectId, logs, pin.timestamp);
+  ctx.streakRows = { chainId: ctx.chainId, projectId, rows };
   const pool = await poolBacking(projectId, info);
   if (!current()) return;
   const totalStaked = pool.supply;
@@ -1682,11 +1685,7 @@ async function renderProject(projectId) {
   const active = rows.filter((row) => row.staked > 0n).sort((a, b) => (b.staked > a.staked ? 1 : -1));
   $("h-staked").textContent = `${formatUnits(totalStaked, 18)} ${info.stSymbol}`;
   $("h-streakers").textContent = active.length;
-  const averageActive = active.length
-    ? Math.floor(active.reduce((total, row) => total + row.current, 0) / active.length)
-    : 0;
-  $("h-average").textContent = formatDuration(averageActive);
-  $("h-top").textContent = formatDuration(active.reduce((m, row) => Math.max(m, row.current), 0));
+  renderHeaderAges(rows, pin.timestamp);
   const projectChains = await projectChainIds(projectId);
   if (!current()) return;
   renderProjectChains(projectChains);
@@ -1783,19 +1782,22 @@ async function refreshPosition() {
   const pageKey = `${chainId}:${projectId}:${holder.toLowerCase()}`;
   if (ctx.tranchePageKey !== pageKey) { ctx.tranchePageKey = pageKey; ctx.tranchePage = 0n; }
   const args = word(projectId) + encAddress(holder);
+  const pin = await pinnedBlock();
+  const at = (to, data) => rpc("eth_call", [{ to, data }, pin.tag]);
   const [staked, streakStart, longest, wallet, tranchePage] = await Promise.all([
-    view(info.stToken, SEL.balanceOf, encAddress(holder)).then(decUint),
-    view(ctx.hook, SEL.streakStartOf, args).then(decUint),
-    view(ctx.hook, SEL.longestStreakOf, args).then(decUint),
-    view(info.stakedToken, SEL.balanceOf, encAddress(holder)).then(decUint),
-    readTranchePage(projectId, holder, ctx.tranchePage),
+    at(info.stToken, SEL.balanceOf + encAddress(holder)).then(decUint),
+    at(ctx.hook, SEL.streakStartOf + args).then(decUint),
+    at(ctx.hook, SEL.longestStreakOf + args).then(decUint),
+    at(info.stakedToken, SEL.balanceOf + encAddress(holder)).then(decUint),
+    readTranchePage(projectId, holder, ctx.tranchePage, pin.tag),
   ]);
   if (request !== positionSequence || ctx.currentId !== projectId || ctx.chainId !== chainId || account() !== holder) return;
   const { tranches, total, page, start } = tranchePage;
   ctx.tranchePage = page;
-  // Compute the active streak against the wall clock so it ticks between blocks (the on-chain view
-  // only moves with block.timestamp).
-  const current = streakStart === 0n ? 0n : BigInt(Math.max(0, Math.floor(Date.now() / 1000) - Number(streakStart)));
+  const now = pin.timestamp;
+  const current = streakStart === 0n ? 0n : BigInt(Math.max(0, now - Number(streakStart)));
+  const header = ctx.streakRows;
+  if (header?.chainId === chainId && header.projectId === projectId) renderHeaderAges(header.rows, now);
   $("p-balance").textContent = `${formatUnits(staked, 18)} ${info.stSymbol}`;
   $("p-current").textContent = formatDuration(current);
   $("p-longest").textContent = formatDuration(longest > current ? longest : current);
@@ -1809,7 +1811,6 @@ async function refreshPosition() {
   renderTrustedSenders().catch(() => {});
   const tbody = $("tranches");
   tbody.innerHTML = "";
-  const now = Math.floor(Date.now() / 1000);
   tranches.forEach((tranche) => {
     const row = document.createElement("tr");
     const stuckSince = new Date(tranche.timestamp * 1000).toLocaleString(undefined, {
@@ -1828,10 +1829,10 @@ async function refreshPosition() {
 
 // Never fetch an unbounded holder array: incoming dust must not prevent the account page or exit controls loading.
 // Pin count and slice to one block so a concurrent burn cannot shift the range between these reads.
-async function readTranchePage(projectId, holder, requestedPage = 0n) {
+async function readTranchePage(projectId, holder, requestedPage = 0n, pinned = null) {
   const hook = ctx.hook;
-  const block = await rpc("eth_blockNumber", []);
-  if (!/^0x[0-9a-fA-F]+$/.test(block || "")) throw new Error("The RPC returned an invalid tranche block.");
+  const block = pinned || await rpc("eth_blockNumber", []);
+  if (!/^0x[0-9a-fA-F]+$/.test(block || "") && block !== "latest") throw new Error("The RPC returned an invalid tranche block.");
   const args = word(projectId) + encAddress(holder);
   const read = (selector, tail = "") => rpc("eth_call", [{ to: hook, data: selector + args + tail }, block]);
   const total = decUint(await read(SEL.trancheCountOf));
@@ -1874,6 +1875,8 @@ let confirmProgress = -1;
 let txRunCancelled = false;
 // Non-transaction steps shown before the transactions, like signing the launch listing.
 let confirmPreSteps = [];
+// A sponsored review: Juicebox Center sends the reviewed calls, the wallet only signs the listing.
+let confirmSponsored = false;
 
 const transactionsLeft = (count) => `${count} transaction${count === 1 ? "" : "s"} left`;
 // Review values wrap at spaces; only addresses and hex may break anywhere.
@@ -1889,12 +1892,13 @@ function renderConfirmSteps() {
   card.classList.remove("hide");
   const steps = confirmSession?.steps || confirmPlan.map((tx) => ({ tx, state: "ready" }));
   const labels = {
-    ready: "Ready for review", rejected: "Cancelled in wallet", submitting: "Waiting for wallet",
+    ready: confirmSponsored ? "Juicebox Center sends this" : "Ready for review", rejected: "Cancelled in wallet", submitting: "Waiting for wallet",
     pending: "Checking execution", unknown: "Execution hash needed", reverted: "Reverted and finalized", confirmed: "Confirmed",
   };
   const done = steps.filter((step) => step.state === "confirmed").length;
   const uncertain = steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state));
-  const intro = done === steps.length ? "All transactions confirmed."
+  const intro = confirmSponsored ? "Juicebox Center sends these after you sign the listing."
+    : done === steps.length ? "All transactions confirmed."
     : uncertain ? "The submitted step will be checked before any remaining transaction is sent."
       : `${transactionsLeft(steps.length - done)}. Confirmed steps will not be repeated.`;
   const offset = confirmPreSteps.length;
@@ -1954,6 +1958,7 @@ function renderConfirm() {
     .join("");
   $("cd-warn").textContent = confirmBlocked
     ? "Sending is blocked. The transaction data does not match this review."
+    : confirmSponsored ? "Every row is read back from the exact data Juicebox Center will send. You only sign the listing."
     : multiple
       ? "Every row is read back from the exact data your wallet will sign. Nothing is signed until you confirm each one."
       : "Every row is read back from the exact data your wallet will sign. Nothing is signed until you confirm.";
@@ -1963,15 +1968,17 @@ function renderConfirm() {
 
 // Show the consent dialog for a transaction plan. Resolves true only if the user confirms.
 // `summary` is optional plain-language rows shown above the sequence, e.g. [["Stick", "10 ART"]].
-function confirmTxs(title, txs, summary = []) {
+function confirmTxs(title, txs, summary = [], { sponsored = false } = {}) {
   if (confirmResolve) throw new Error("Finish the current transaction review first.");
+  confirmSponsored = sponsored;
   confirmPlan = txs;
   confirmSummary = summary;
   confirmProgress = -1;
   confirmCompleted = false;
   $("cd-title").textContent = title;
   $("cd-confirm").disabled = false;
-  $("cd-confirm").textContent = confirmSession?.steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state))
+  $("cd-confirm").textContent = sponsored ? "Sign listing"
+    : confirmSession?.steps.some((step) => ["submitting", "pending", "unknown"].includes(step.state))
     ? "Check transaction" : "Confirm & send";
   $("cd-cancel").classList.remove("hide");
   $("cd-cancel").textContent = "Cancel";
@@ -2027,8 +2034,8 @@ async function runSavedTransactions(session, originalTxs, hooks = {}) {
       review: async (saved) => {
         confirmSession = saved;
         const ok = await confirmTxs(saved.title, saved.steps.map((step) => step.tx), saved.summary);
-        // Runs after consent and before the first transaction is sent.
-        if (ok && hooks.afterReview) await hooks.afterReview();
+        // Runs after consent and before the first transaction is sent. False sends nothing.
+        if (ok && hooks.afterReview) return (await hooks.afterReview()) !== false;
         return ok;
       },
       shouldContinue: () => !txRunCancelled,
@@ -3379,11 +3386,18 @@ async function renderAutoStick() {
     if (state) status("auto-stick is misconfigured for this project", "err");
     return;
   }
-  const { info } = state;
-  card.classList.remove("hide");
-  $("as-heading").textContent = `Auto-stick ${info.symbol} rewards`;
+  // Every read finishes before the card changes, so a superseded render never leaves it half drawn.
   await unlockScheduleOf();
+  // Offer keeper-style vesting kickoff only when it would actually succeed.
+  let canBeginVesting = false;
+  if (state.enabled) {
+    try {
+      canBeginVesting = (await vestableRewardGroups(state.info, account())).length > 0;
+    } catch {}
+  }
   if (!current()) return;
+  const { info } = state;
+  $("as-heading").textContent = `Auto-stick ${info.symbol} rewards`;
   $("as-blurb").textContent = `Stick your ${info.symbol} rewards into ${stickyLabel(info)} as they unlock.`;
   $("as-toggle").textContent = state.enabled ? "Turn off auto-stick" : "Turn on auto-stick";
 
@@ -3412,16 +3426,8 @@ async function renderAutoStick() {
     !(state.enabled && (state.status === AS_STATUS.NOT_TRUSTED || state.status === AS_STATUS.INSUFFICIENT_ALLOWANCE)),
   );
   repair.textContent = state.status === AS_STATUS.NOT_TRUSTED ? "Repair permission" : "Renew allowance";
-
-  // Offer keeper-style vesting kickoff only when it would actually succeed.
-  let canBeginVesting = false;
-  if (state.enabled) {
-    try {
-      canBeginVesting = (await vestableRewardGroups(info, account())).length > 0;
-    } catch {}
-  }
-  if (!current()) return;
   $("as-begin-vesting").classList.toggle("hide", !canBeginVesting);
+  card.classList.remove("hide");
 }
 
 // The auto-stick transaction plan pieces, shared by enable, disable, settings, and repair flows.
@@ -4191,6 +4197,27 @@ function stickyLaunchListing() {
   };
 }
 
+// A sponsored launch is reviewed like any other: the decoded calls Center will send, then the listing signature.
+async function reviewSponsoredLaunch(session, sign) {
+  const launchDialog = $("sticky-launch-dialog");
+  const reopen = Boolean(launchDialog?.open);
+  if (reopen) launchDialog.close();
+  confirmSession = null;
+  confirmPreSteps = [{ label: "Sign the launch listing", note: "Lists it on Juicebox Center. Free, no transaction.", state: "pending" }];
+  const txs = session.txs.map((tx) => ({ ...tx, from: "Juicebox Center", valueNote: "creation fee, paid by Juicebox Center" }));
+  try {
+    if (!(await confirmTxs(`Create ${session.symbol}`, txs, [...session.summary, ["Fees", "Juicebox Center pays gas and the creation fee."]], { sponsored: true }))) return false;
+    await sign();
+    return true;
+  } finally {
+    confirmPreSteps = [];
+    confirmSponsored = false;
+    confirmCompleted = true;
+    try { $("confirm-dialog").close(); } catch {}
+    if (reopen) showStickyLaunchDialog();
+  }
+}
+
 // Launch state is independent of the editable create form and survives reloads.
 let stickyLaunchControllerInstance = null;
 let stickyLaunchStoreInstance = null;
@@ -4215,6 +4242,7 @@ function stickyLaunchController() {
     choosePayment: chooseStickyLaunchPayment,
     runPayment: runStickyLaunchPayment,
     runDirect: (session, options) => runStickyLaunchWallet(session, session.txs, options),
+    reviewSponsored: reviewSponsoredLaunch,
     acknowledge: async (session) => {
       const pending = getTxEngine().load();
       if (pending?.steps.every((step) => step.tx.sessionTag === session.id)) {
@@ -4257,7 +4285,7 @@ function ensureStickyLaunchUI() {
       <button type="button" class="ghost" id="sl-check-hash">Verify transaction</button>
     </details><details style="margin-top:16px"><summary>Review saved deployment transactions</summary><div id="sl-transactions"></div></details>
     <div class="dlg-actions"><button type="button" class="ghost" id="sl-clear">Discard draft</button>
-      <button type="button" class="ghost" id="sl-refresh">Check progress</button><button type="button" class="ghost hide" id="sl-list">List on Juicebox Center</button><button type="button" id="sl-resume">Continue launch</button></div>`;
+      <button type="button" class="ghost" id="sl-refresh">Check progress</button><button type="button" class="ghost hide" id="sl-list">List on Juicebox Center</button><button type="button" class="hide" id="sl-self">Launch it yourself</button><button type="button" id="sl-resume">Continue launch</button></div>`;
   document.body.appendChild(dialog);
   const banner = document.createElement("div");
   banner.id = "sticky-launch-banner";
@@ -4279,6 +4307,10 @@ function ensureStickyLaunchUI() {
   }));
   $("sl-refresh").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().refresh()));
   $("sl-list").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().list()));
+  $("sl-self").onclick = guard(() => withStickyLaunchLock(async () => {
+    $("sl-error").textContent = "";
+    await stickyLaunchController().selfPay();
+  }));
   $("sl-check-hash").onclick = guard(() => withStickyLaunchLock(() => stickyLaunchController().addHash(Number($("sl-chain").value), $("sl-hash").value.trim())));
   $("sl-clear").onclick = guard(() => withStickyLaunchLock(async () => {
     const saved = stickyLaunchStore().load();
@@ -4324,7 +4356,8 @@ function renderStickyLaunchRecovery() {
     : session.paymentConfirmed ? "Your payment is confirmed. Relayr is deploying on the selected chains. Keep this saved launch until every chain confirms."
     : session.paymentIntent ? "Your saved payment is being recovered. Check your wallet and use Continue launch to verify its result."
     : session.published && !session.quote ? (stickyLaunchBusy ? "Getting a launch quote from Relayr…" : "Relayr may have received this launch, but its quote ID was not returned. Submitting again could deploy duplicates. Keep this recovery record.")
-    : session.mode === "center" ? (session.center?.deployRequested ? "Juicebox Center is deploying on the selected chains. No transaction from you." : "Sign the launch listing. Juicebox Center then deploys it and pays the fees.")
+    : session.mode === "center" ? (!session.center?.deployRequested ? "Sign the launch listing. Juicebox Center then deploys it and pays the fees."
+      : session.center.sponsor?.note || "Juicebox Center is deploying on the selected chains. No transaction from you.")
     : session.mode === "relayr" ? (session.quote ? "Choose where to pay this launch quote. One payment covers the quoted destination gas and creation fees." : "Getting funding options for your saved launch…")
     : "Review the saved deployment, then confirm it in your wallet.";
   const listing = listingRow(session);
@@ -4341,6 +4374,9 @@ function renderStickyLaunchRecovery() {
     }).join("");
   $("sl-list").classList.toggle("hide", session.center?.state !== "unlisted");
   $("sl-list").disabled = stickyLaunchBusy;
+  const selfPay = session.mode === "center" && Boolean(session.center?.sponsor?.selfPay);
+  $("sl-self").classList.toggle("hide", !selfPay);
+  $("sl-self").disabled = stickyLaunchBusy;
   const currentChain = $("sl-chain").value;
   $("sl-chain").innerHTML = session.targets.map((target) => `<option value="${target.chainId}">${esc(target.name)}</option>`).join("");
   if (session.targets.some((target) => String(target.chainId) === currentChain)) $("sl-chain").value = currentChain;
@@ -4348,7 +4384,7 @@ function renderStickyLaunchRecovery() {
   $("sl-clear").textContent = done ? "Done" : "Discard draft";
   $("sl-clear").classList.toggle("hide", !StickyLaunch.canClear(session));
   $("sl-clear").disabled = stickyLaunchBusy;
-  $("sl-resume").classList.toggle("hide", done || Boolean(session.paymentConfirmed));
+  $("sl-resume").classList.toggle("hide", done || Boolean(session.paymentConfirmed) || selfPay);
   $("sl-resume").disabled = stickyLaunchBusy;
   $("sl-refresh").disabled = stickyLaunchBusy;
   $("sl-check-hash").disabled = stickyLaunchBusy || done;
@@ -4420,7 +4456,11 @@ async function runStickyLaunchWallet(session, txs, { recovering, beforeSend }) {
     }
     throw error;
   }
-  finally { if (reopen) showStickyLaunchDialog(); }
+  finally {
+    // A review left open on an error keeps its place; the launch comes back when it closes.
+    if (reopen && $("confirm-dialog").open) confirmReturnTo = [...new Set([...confirmReturnTo, launchDialog])];
+    else if (reopen) showStickyLaunchDialog();
+  }
   const latest = engine.load();
   const receipt = txs[0].receipt || latest?.steps[0]?.receipt;
   if (!completed && latest?.steps.every((step) => ["ready", "rejected"].includes(step.state))) return { status: "cancelled" };

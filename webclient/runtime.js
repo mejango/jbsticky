@@ -7,6 +7,8 @@
   "use strict";
   const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
   const ZERO = /^0x0{40}$/i;
+  // Juicebox Center's gateway, the one the other Juicebox sites use. ipfs.io and dweb.link are sunset.
+  const IPFS_GATEWAY = "https://juicebox.center/ipfs/";
   function address(value) {
     if (typeof value !== "string" || !ADDRESS.test(value) || ZERO.test(value)) throw new Error("A valid deployed contract address is required.");
     return value.toLowerCase();
@@ -14,7 +16,7 @@
   function assetUrl(value, allowLocal = false) {
     if (typeof value !== "string" || value.length > 8192) return null;
     if (allowLocal && /^(?:\.\/)?[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:png|jpe?g|webp|gif|avif)$/i.test(value)) return value;
-    const expanded = value.startsWith("ipfs://") ? "https://ipfs.io/ipfs/" + value.slice(7).replace(/^ipfs\//, "") : value;
+    const expanded = value.startsWith("ipfs://") ? IPFS_GATEWAY + value.slice(7).replace(/^ipfs\//, "") : value;
     try {
       const url = new URL(expanded);
       if (url.protocol !== "https:" || url.username || url.password) return null;
