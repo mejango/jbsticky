@@ -462,6 +462,133 @@ test('a sponsored listing Center refuses falls back to a self-paid, unlisted lau
   assert.equal(state.results[1].status, 'confirmed');
 });
 
+// Center accepted a sponsored launch but its sponsor cannot pay yet: the rows wait, with an error.
+const unfunded = (chainIds, extra = {}) => ({ deployments: [], deploys: chainIds.map((chainId) => ({ chainId, status: 'queued',
+  transactionHash: null, bundleUuid: null, error: 'SPONSOR_UNFUNDED', ...extra })) });
+const respecting = (calls, hashValue = hash('b')) => async (session, { beforeSend }) => {
+  calls.push('review');
+  if ((await beforeSend()) === false) return { status: 'cancelled' };
+  calls.push('send');
+  return { status: 'confirmed', hash: hashValue };
+};
+
+test('a queued sponsored row with an error is surfaced in plain words and offers a self-paid launch', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls, { status: async () => { calls.push('status'); return unfunded([1]); } }),
+    runDirect: async () => assert.fail('nothing is sent until the holder chooses') });
+  f.controller.prepare({ ...listed('direct'), mode: 'center' });
+  const state = await f.controller.run();
+  assert.equal(state.mode, 'center');
+  assert.equal(state.center.sponsor.note, "Juicebox Center can't cover this launch right now.");
+  assert.equal(state.center.sponsor.selfPay, true);
+  assert.equal(state.lastStatusError, null);
+  assert.equal(Launch.canClear(state), false, 'Center may still deploy it');
+  assert.equal(Launch.needsPolling(state), true);
+});
+
+test('launching it yourself sends the same listed call, checks Center first, and records it on the same listing', async () => {
+  const calls = [];
+  const sent = [];
+  const status = async () => { calls.push('status'); return unfunded([1]); };
+  const f = fixture({ listing: listingMock(calls, { status }),
+    runDirect: async (session, options) => { sent.push(session.txs.map((tx) => tx.data)); return respecting(calls)(session, options); } });
+  f.controller.prepare({ ...listed('direct'), mode: 'center' });
+  const before = await f.controller.run();
+  const state = await f.controller.selfPay();
+  assert.equal(state.mode, 'direct');
+  assert.equal(state.center.intentId, INTENT);
+  assert.equal(state.center.selfPaid, true);
+  assert.deepEqual(sent, [before.txs.map((tx) => tx.data)]);
+  assert.ok(calls.lastIndexOf('status') < calls.indexOf('send'), 'Center is checked right before sending');
+  assert.deepEqual(calls.filter((call) => call === 'deploy' || call === 'publish'), ['publish', 'deploy']);
+  assert.deepEqual(state.center.recorded, { 1: hash('b') });
+  assert.ok(calls.includes(`record:1:${hash('b')}`));
+  assert.equal(Launch.complete(state), true);
+});
+
+test('a multichain launch falls back to one Relayr bundle for the same calls', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls, { status: async () => unfunded([1, 10]) }),
+    runPayment: async (session, options) => { calls.push('pay-review'); if ((await options.beforeSend()) === false) return { status: 'cancelled' }; calls.push('pay'); return { status: 'confirmed', hash: hash('a') }; } });
+  f.controller.prepare(listed('center'));
+  await f.controller.run();
+  const state = await f.controller.selfPay();
+  assert.equal(state.mode, 'relayr');
+  assert.equal(f.calls.filter((call) => call === 'post').length, 1);
+  assert.deepEqual(calls.filter((call) => call === 'pay'), ['pay']);
+});
+
+test('the self-paid launch is refused once Center has started or paid for it', async () => {
+  for (const started of [{ bundleUuid: 'b0c1d2e3-0000-4000-8000-000000000000' }, { status: 'sent', transactionHash: hash('c') }]) {
+    const calls = [];
+    const f = fixture({ listing: listingMock(calls, { status: async () => unfunded([1], started) }),
+      runDirect: async () => assert.fail('never sent') });
+    f.controller.prepare({ ...listed('direct'), mode: 'center' });
+    const state = await f.controller.run();
+    assert.equal(state.center.sponsor.selfPay, false);
+    await assert.rejects(f.controller.selfPay(), /has started this launch/);
+    assert.equal(f.store.load().mode, 'center');
+  }
+});
+
+test('Center starting between the review and the send cancels the send and goes back to waiting', async () => {
+  const calls = [];
+  let rows = unfunded([1]);
+  const f = fixture({ listing: listingMock(calls, { status: async () => rows }),
+    runDirect: async (session, options) => { rows = unfunded([1], { status: 'sent', transactionHash: hash('c'), error: null }); return respecting(calls)(session, options); } });
+  f.controller.prepare({ ...listed('direct'), mode: 'center' });
+  await f.controller.run();
+  const state = await f.controller.selfPay();
+  assert.ok(!calls.includes('send'));
+  assert.equal(state.mode, 'center');
+  assert.equal(state.center.selfPaid, false);
+  assert.equal(state.directIntent, false);
+  assert.equal(Launch.needsPolling(state), true);
+});
+
+test('a self-paid choice survives a reload and sends exactly once', async () => {
+  const calls = [];
+  const listing = listingMock(calls, { status: async () => unfunded([1]) });
+  const first = fixture({ listing, runDirect: async () => { throw new Error('tab closed'); } });
+  first.controller.prepare({ ...listed('direct'), mode: 'center' });
+  await first.controller.run();
+  await assert.rejects(first.controller.selfPay(), /tab closed/);
+  assert.equal(first.store.load().mode, 'direct');
+  let sends = 0;
+  const reloaded = fixture({ listing, runDirect: async (session, options) => { sends++; return respecting(calls)(session, options); } }, first.disk);
+  const state = await reloaded.controller.run();
+  await reloaded.controller.run();
+  assert.equal(sends, 1);
+  assert.equal(Launch.complete(state), true);
+  assert.equal(calls.filter((call) => call === 'deploy').length, 1);
+});
+
+test('failed sponsored rows with nothing deployed can be launched yourself or discarded', async () => {
+  const calls = [];
+  const f = fixture({ listing: listingMock(calls, { status: async () => unfunded([1], { status: 'failed', error: 'retries exhausted' }) }) });
+  f.controller.prepare({ ...listed('direct'), mode: 'center' });
+  const state = await f.controller.run();
+  assert.equal(state.center.sponsor.note, 'Juicebox Center could not deploy on 1.');
+  assert.equal(state.center.sponsor.selfPay, true);
+  assert.equal(Launch.canClear(state), true);
+});
+
+test('a sponsored launch is reviewed before its listing is signed', async () => {
+  const calls = [];
+  const declined = fixture({ listing: listingMock(calls), reviewSponsored: async () => { calls.push('review'); return false; } });
+  declined.controller.prepare(listed('center'));
+  const state = await declined.controller.run();
+  assert.deepEqual(calls, ['review']);
+  assert.equal(state.center.state, 'pending');
+  assert.equal(Launch.canClear(state), true);
+  const confirmedCalls = [];
+  const confirmed = fixture({ listing: listingMock(confirmedCalls),
+    reviewSponsored: async (session, sign) => { confirmedCalls.push('review'); await sign(); confirmedCalls.push('signed'); return true; } });
+  confirmed.controller.prepare(listed('center'));
+  await confirmed.controller.run();
+  assert.deepEqual(confirmedCalls.slice(0, 4), ['review', 'publish', 'signed', 'deploy']);
+});
+
 test('stored listings are validated', () => {
   const disk = storage();
   const store = Launch.createStore(disk);

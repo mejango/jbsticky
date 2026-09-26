@@ -60,13 +60,35 @@
   const entriesOf = (session) => session.txs.map((tx) => ({ chain: tx.chainId, target: tx.to, data: tx.data, value: BigInt(tx.value).toString() }));
   const complete = (session) => session.targets.every((target) => session.results[target.chainId]?.status === "confirmed");
   const canClear = (session) => complete(session)
-    || (!session.published && !session.paymentIntent && !session.directIntent && !session.center?.deployRequested);
+    || (!session.published && !session.paymentIntent && !session.directIntent
+      && (!session.center?.deployRequested || Boolean(session.center.sponsor?.closed)));
+  // Center's waiting codes in plain words. A queued row keeps retrying for up to a day.
+  const WAITING = {
+    SPONSOR_UNFUNDED: "Juicebox Center can't cover this launch right now.",
+    SPONSORSHIP_RPC_UNAVAILABLE: "Juicebox Center can't reach a chain of this launch right now.",
+    RELAYR_TIMEOUT: "Juicebox Center is waiting on its relay service.",
+    RELAYR_INVALID_STATUS: "Juicebox Center is waiting on its relay service.",
+  };
+  // What Center's rows say about a sponsored launch. Self-paying the same listing is offered only while
+  // nothing is deployed, sent or paid for: Center then retires its unpaid rows once a wallet deployment is recorded.
+  function sponsorState(intent, targets) {
+    const rows = (intent?.deploys || []).filter((row) => targets.some((target) => target.chainId === Number(row.chainId)));
+    const deployed = (intent?.deployments || []).length > 0;
+    const failed = targets.filter((target) => rows.some((row) => Number(row.chainId) === target.chainId && row.status === "failed"));
+    const waiting = rows.find((row) => row.status === "queued" && row.error);
+    const note = failed.length ? `Juicebox Center could not deploy on ${failed.map((target) => target.name).join(", ")}.`
+      : waiting ? WAITING[waiting.error] || "Juicebox Center is still trying to deploy this launch." : null;
+    const untouched = !deployed && rows.length > 0 && rows.every((row) => !row.bundleUuid && !row.transactionHash && ["queued", "failed"].includes(row.status));
+    return { note, selfPay: untouched && Boolean(failed.length || waiting),
+      closed: !deployed && rows.length === targets.length && rows.every((row) => row.status === "failed") };
+  }
   const unrecorded = (session) => session.targets.some((target) => !session.center?.recorded?.[target.chainId]);
   // Background checks: an open Relayr or Center deployment, or a listing still waiting to record.
   const needsPolling = (session) => Boolean(session) && (complete(session)
     ? session.center?.state === "published" && unrecorded(session)
     : Boolean(session.quote || (session.mode === "center" && session.center?.deployRequested)));
-  function createController({ store, relayr, listing = null, choosePayment, runPayment, runDirect, acknowledge = async () => {}, onChange = () => {} }) {
+  function createController({ store, relayr, listing = null, choosePayment, runPayment, runDirect, reviewSponsored = null,
+    acknowledge = async () => {}, onChange = () => {} }) {
     let running = false;
     function update(session, patch) { const saved = store.save({ ...session, ...patch }); onChange(saved); return saved; }
     function prepare(input) {
@@ -110,7 +132,12 @@
     // is queued falls back to a self-paid launch; an unknown outcome keeps the request.
     async function runSponsored(session) {
       if (!session.center?.intentId) {
-        session = await publishListing(session);
+        // The listing is signed only after its review is confirmed.
+        let signed = session;
+        const sign = async () => { signed = await publishListing(session); };
+        if (reviewSponsored) { if (!(await reviewSponsored(session, sign))) return session; }
+        else await sign();
+        session = signed;
         if (!session.center.intentId) return update(session, { mode: fallbackMode(session) });
       }
       if (!session.center.deployRequested) {
@@ -175,9 +202,8 @@
           for (const [chainId, hash] of hashes) {
             if (candidates[chainId] && HASH.test(hash || "") && !candidates[chainId].includes(hash.toLowerCase())) candidates[chainId].push(hash.toLowerCase());
           }
-          const failed = (intent.deploys || []).filter((row) => row.status === "failed").map((row) => Number(row.chainId));
-          const names = latest.targets.filter((target) => failed.includes(target.chainId)).map((target) => target.name);
-          latest = update(latest, { candidates, lastStatusError: names.length ? `Juicebox Center could not deploy on ${names.join(", ")}.` : null });
+          latest = update(latest, { candidates, lastStatusError: null,
+            center: { ...latest.center, sponsor: sponsorState(intent, latest.targets) } });
         } catch (error) { statusError = error; latest = update(latest, { lastStatusError: error.message }); }
       }
       latest = await verifyCandidates(latest);
@@ -204,8 +230,20 @@
           session = await runSponsored(session);
           if (session.mode === "center") return session;
         }
-        // Signed after the wallet review is confirmed and before anything is sent.
-        const beforeSend = async () => { if (session.center?.state === "pending") session = await publishListing(session); };
+        // Runs after the wallet review is confirmed and before anything is sent. False sends nothing.
+        const beforeSend = async () => {
+          if (session.center?.state === "pending") session = await publishListing(session);
+          return session.center?.selfPaid ? stillSelfPayable() : true;
+        };
+        // A self-paid launch of a sponsored listing is sent only while Center has not started it.
+        const stillSelfPayable = async () => {
+          let state;
+          try { state = sponsorState(await listing.status(session), session.targets); }
+          catch { session = update(session, { lastStatusError: "Juicebox Center could not be checked. Nothing was sent." }); return false; }
+          if (state.selfPay) return true;
+          session = update(session, { mode: "center", lastStatusError: null, center: { ...session.center, selfPaid: false, sponsor: state } });
+          return false;
+        };
         if (session.mode === "direct") {
           const recovering = session.directIntent;
           session = update(session, { directIntent: true });
@@ -263,6 +301,22 @@
         return await refreshSession(session);
       } finally { running = false; }
     }
+    // Center accepted the launch but has not started it: the wallet sends the same listed calls instead.
+    async function selfPay() {
+      if (running) throw new Error("This launch is already being processed.");
+      running = true;
+      try {
+        const session = store.load();
+        if (session?.mode !== "center" || !session.center?.deployRequested) throw new Error("This launch is not waiting on Juicebox Center.");
+        const state = sponsorState(await listing.status(session), session.targets);
+        if (!state.selfPay) {
+          update(session, { center: { ...session.center, sponsor: state } });
+          throw new Error("Juicebox Center has started this launch. Keep waiting for it.");
+        }
+        update(session, { mode: fallbackMode(session), lastStatusError: null, center: { ...session.center, selfPaid: true, sponsor: null } });
+      } finally { running = false; }
+      return run();
+    }
     async function refresh() {
       if (running) throw new Error("This launch is already being processed.");
       running = true;
@@ -300,7 +354,7 @@
         store.remove(); onChange(null);
       } finally { running = false; }
     }
-    return { prepare, run, refresh, list, addHash, clear, load: store.load };
+    return { prepare, run, selfPay, refresh, list, addHash, clear, load: store.load };
   }
-  return { KEY, createStore, createController, entriesOf, complete, canClear, needsPolling, validate };
+  return { KEY, createStore, createController, entriesOf, complete, canClear, needsPolling, validate, sponsorState };
 });

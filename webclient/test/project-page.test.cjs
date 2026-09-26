@@ -63,6 +63,27 @@ test('holders come from the hook events: last balance, live streak, and record, 
   ]);
 });
 
+test('the header ages come from one pinned block and the streak start, the same definition as your position', async () => {
+  const fields = {};
+  const c = context({ $: (id) => (fields[id] ||= { textContent: '' }),
+    rpc: async (method, params) => { assert.equal(JSON.stringify([method, params]), '["eth_getBlockByNumber",["latest",false]]'); return { number: '0x99', timestamp: '0x' + (1074).toString(16) }; } },
+    ['holderRows', 'pinnedBlock', 'renderHeaderAges', 'formatDuration']);
+  const payer = word(BigInt(HOLDER_A));
+  const logs = [
+    hookLog(c, 'StreakStarted', 7, HOLDER_A, payer, 1000),
+    hookLog(c, 'Staked', 7, HOLDER_A, payer + word(5n) + word(5n) + payer, 1000),
+    // A second stick 44 seconds later does not move the streak start.
+    hookLog(c, 'Staked', 7, HOLDER_A, payer + word(2n) + word(7n) + payer, 1044),
+  ];
+  const pin = await c.pinnedBlock();
+  assert.deepEqual({ ...pin }, { tag: '0x99', timestamp: 1074 });
+  const rows = c.holderRows(7n, logs, pin.timestamp);
+  c.renderHeaderAges(rows, pin.timestamp);
+  assert.equal(fields['h-top'].textContent, c.formatDuration(74));
+  assert.equal(fields['h-average'].textContent, c.formatDuration(74));
+  assert.equal(rows[0].current, 74);
+});
+
 test('the shown holder page is re-read from the hook at one block and corrects a stale balance', async () => {
   const calls = [];
   const c = context({

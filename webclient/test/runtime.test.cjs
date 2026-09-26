@@ -11,7 +11,7 @@ test("metadata image URLs cannot inject markup or execute scripts", () => {
   assert.equal(assetUrl('javascript:alert(1)'), null);
   assert.equal(assetUrl('data:image/svg+xml,<svg onload="alert(1)">'), null);
   assert.equal(assetUrl('https://user:secret@example.com/logo'), null);
-  assert.equal(assetUrl('ipfs://ipfs/bafy/logo.png'), 'https://ipfs.io/ipfs/bafy/logo.png');
+  assert.equal(assetUrl('ipfs://ipfs/bafy/logo.png'), 'https://juicebox.center/ipfs/bafy/logo.png');
   assert.equal(assetUrl('artizen.jpg', true), 'artizen.jpg');
   assert.equal(assetUrl('artizen.jpg'), null);
   assert.equal(assetUrl('../private.png', true), null);
