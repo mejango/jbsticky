@@ -26,8 +26,10 @@ function fixture(names = []) {
     location: { hash: '#/' },
     confirmResolve: null,
     closeWalletMenu() {}, clearHomeSecuredChart() {}, setTab() {}, status() {},
+    homeFailed() {}, setHomeState() {}, configuredStickiestCards: () => [],
+    window: {}, homeChains: () => [1], homeEnvironment: () => 'production', configuredAirdropItems: async () => [],
     $: id => {
-      if (!fields.has(id)) fields.set(id, { textContent: '', close() {}, classList: { add() {}, remove() {} } });
+      if (!fields.has(id)) fields.set(id, { textContent: '', dataset: {}, close() {}, classList: { add() {}, remove() {} } });
       return fields.get(id);
     },
     renderHome: async () => {}, renderProject: async () => {}, renderAccount: async () => {},
@@ -68,13 +70,14 @@ test('a delayed project read cannot overwrite the view or quote after navigation
 
 test('an obsolete home read cannot mount its chart after project navigation', async () => {
   const c = fixture(['renderHome']);
-  const ids = deferred();
-  c.projectIds = () => ids.promise;
-  c.hookLogs = () => { throw new Error('obsolete home load continued'); };
+  const chain = deferred();
+  c.homeChainData = () => chain.promise;
+  c.mountHomeSecuredChart = () => { throw new Error('obsolete home load continued'); };
   const rendering = c.renderHome();
+  await new Promise(setImmediate);
   c.location.hash = '#/project/2';
   c.route();
-  ids.resolve([]);
+  chain.resolve({ chainId: 1, cards: [{ id: 1n, chainId: 1, info: {}, totalStaked: 1n }], logs: [], prices: new Map(), activity: [], airdrops: [] });
   await rendering;
 });
 
