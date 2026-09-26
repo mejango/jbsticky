@@ -70,7 +70,6 @@
   /* Phones: the chain picker and the connect button share the row right of the 54px drip logo. */
   @media (max-width: 520px) {
     header .right { gap: 8px; min-width: 0; max-width: calc(100vw - 96px); }
-    header .right #site-chain { flex: 0 1 auto; min-width: 0; max-width: 100% !important; text-overflow: ellipsis; }
     header .right .connect-btn { flex: none; white-space: nowrap; font-size: 13px; letter-spacing: .5px; padding: 5px 10px; }
   }
   .link { color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: var(--amber); }
@@ -309,6 +308,9 @@
   /* Home states: loading draws quiet placeholder lines; empty and error drop the dashboard for a centered hero. */
   .home-note { margin: -4px auto 16px; max-width: 34ch; color: var(--muted); font-size: 15px; }
   .home-note .text-button { font-weight: 600; }
+  .chain-icons { display: inline-flex; gap: 3px; vertical-align: -2px; margin-left: 4px; }
+  .chain-icons > span { display: inline-flex; line-height: 0; }
+  .chain-icons svg { width: 14px; height: 14px; }
   #view-home[data-state="error"] .home-note { color: var(--err); }
   #view-home[data-state="loading"] .home-secured-value { width: min(180px, 60%); border-radius: 4px; color: transparent; background: var(--line); }
   .home-secured-chart:empty { height: 240px; border-radius: 4px; background: linear-gradient(to top, color-mix(in srgb, var(--line) 45%, transparent), transparent 70%); }
@@ -588,8 +590,7 @@
       <img src="drip-corner.png" alt="">
     </a>
     <div class="right">
-      <select id="site-chain" aria-label="Browse chain" style="width:auto;max-width:160px;font-size:12px" class="hide"></select>
-      <button class="connect-btn" id="connect-btn">Connect wallet</button>
+      <button class="connect-btn" id="connect-btn">Sign in</button>
     </div>
   </header>
   <div id="status" class="hide" role="status" aria-live="polite">idle</div>

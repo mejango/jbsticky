@@ -314,20 +314,21 @@ const getLogs = (address, topics) => window.__DEMO_RPC
   : StickyRuntime.logs(rpc, { address, topics, fromBlock: fromBlock(), toBlock: "latest" });
 
 const blockTimestamps = {};
-async function blockTimestamp(blockNumber) {
-  if (!(blockNumber in blockTimestamps)) {
-    blockTimestamps[blockNumber] = rpc("eth_getBlockByNumber", [blockNumber, false]).then((block) => Number(BigInt(block.timestamp)));
-    blockTimestamps[blockNumber].catch(() => delete blockTimestamps[blockNumber]);
+async function blockTimestamp(blockNumber, reader = null) {
+  const cache = reader?.timestamps || blockTimestamps;
+  if (!(blockNumber in cache)) {
+    cache[blockNumber] = (reader?.rpc || rpc)("eth_getBlockByNumber", [blockNumber, false]).then((block) => Number(BigInt(block.timestamp)));
+    cache[blockNumber].catch(() => delete cache[blockNumber]);
   }
-  return blockTimestamps[blockNumber];
+  return cache[blockNumber];
 }
 // Timestamps for many logs, one read per distinct block, a few at a time.
-async function attachTimestamps(logs, concurrency = 6) {
+async function attachTimestamps(logs, concurrency = 6, reader = null) {
   const blocks = [...new Set(logs.map((log) => log.blockNumber))];
   let next = 0;
-  const worker = async () => { while (next < blocks.length) await blockTimestamp(blocks[next++]); };
+  const worker = async () => { while (next < blocks.length) await blockTimestamp(blocks[next++], reader); };
   await Promise.all(Array.from({ length: Math.min(concurrency, blocks.length) }, worker));
-  for (const log of logs) log.ts = await blockTimestamp(log.blockNumber);
+  for (const log of logs) log.ts = await blockTimestamp(log.blockNumber, reader);
   return logs;
 }
 
@@ -416,8 +417,9 @@ function formatDuration(seconds) {
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m ${s % 60}s`;
 }
-function tokenLogo(addr, symbol, size = 15) {
-  return `<span data-token-logo="${addr}" data-size="${size}" style="display:inline-flex;flex:none">${tokenBadge(addr, symbol, size)}</span>`;
+function tokenLogo(addr, symbol, size = 15, chainId = null) {
+  const chain = chainId ? ` data-chain="${Number(chainId)}"` : "";
+  return `<span data-token-logo="${addr}" data-size="${size}"${chain} style="display:inline-flex;flex:none">${tokenBadge(addr, symbol, size)}</span>`;
 }
 
 function tokenBadge(addr, symbol, size) {
@@ -430,14 +432,15 @@ const ipfsUrl = (uri) => StickyRuntime.assetUrl(uri);
 const logoCache = {}; // token addr -> url | null | pending promise
 const projectMetadataCache = {}; // project token addr -> metadata | null | pending promise
 
-async function resolveProjectMetadata(addr) {
-  const key = addr.toLowerCase();
+async function resolveProjectMetadata(addr, reader = pageReader()) {
+  const key = `${reader.chainId}:${addr.toLowerCase()}`;
   if (key in projectMetadataCache) return projectMetadataCache[key];
+  const view = (to, sel, args = "") => reader.rpc("eth_call", [{ to, data: sel + args }, "latest"]);
   return (projectMetadataCache[key] = (async () => {
     try {
-      const projectId = decUint(await view(ctx.tokens, SEL.projectIdOf, encAddress(addr)));
+      const projectId = decUint(await view(reader.tokens, SEL.projectIdOf, encAddress(addr)));
       if (projectId === 0n) return null;
-      const uri = decString(await view(ctx.controller, SEL.uriOf, word(projectId)));
+      const uri = decString(await view(reader.controller, SEL.uriOf, word(projectId)));
       if (!uri) return null;
       const inline = parseStickyProjectUri(uri);
       if (inline) return inline;
@@ -453,13 +456,13 @@ async function resolveProjectMetadata(addr) {
   })());
 }
 
-async function resolveTokenLogoUrl(addr) {
-  const key = addr.toLowerCase();
-  const override = window.STICKY_CONFIG?.logoOverrides?.[key];
-  if (override) return (logoCache[key] = StickyRuntime.assetUrl(override, true));
+async function resolveTokenLogoUrl(addr, reader = pageReader()) {
+  const override = window.STICKY_CONFIG?.logoOverrides?.[addr.toLowerCase()];
+  if (override) return StickyRuntime.assetUrl(override, true);
+  const key = `${reader.chainId}:${addr.toLowerCase()}`;
   if (key in logoCache) return logoCache[key];
   return (logoCache[key] = (async () => {
-    const metadata = await resolveProjectMetadata(addr);
+    const metadata = await resolveProjectMetadata(addr, reader);
     return metadata?.logoUri ? ipfsUrl(metadata.logoUri) : null;
   })());
 }
@@ -511,6 +514,31 @@ function chainRuntime(chainId) {
   }
   return chainRuntimeCache.get(key);
 }
+
+// Reads bound to one chain. The home page reads every chain of its environment through these. In demo
+// mode every read goes through the page's rpc(), which serves the one demo chain.
+function pageReader() {
+  return {
+    chainId: ctx.chainId, rpc, deployer: $("deployer").value, hook: ctx.hook, tokens: ctx.tokens, terminal: ctx.terminal,
+    store: ctx.store, controller: ctx.controller, fromBlock: fromBlock(), projects: ctx.projects, timestamps: blockTimestamps,
+  };
+}
+const chainReaderCache = new Map();
+function chainReader(chainId) {
+  if (window.__DEMO_RPC) return Promise.resolve(pageReader());
+  const key = Number(chainId);
+  if (!chainReaderCache.has(key)) {
+    const pending = chainRuntime(key).then((runtime) => ({
+      ...runtime, rpc: (method, params) => rpcAt(runtime.rpcUrl, method, params), projects: {}, timestamps: {},
+    }));
+    pending.catch(() => chainReaderCache.delete(key));
+    chainReaderCache.set(key, pending);
+  }
+  return chainReaderCache.get(key);
+}
+const getLogsOn = (reader, address, topics) => window.__DEMO_RPC
+  ? reader.rpc("eth_getLogs", [{ address, topics, fromBlock: reader.fromBlock, toBlock: "latest" }])
+  : StickyRuntime.logs(reader.rpc, { address, topics, fromBlock: reader.fromBlock, toBlock: "latest" });
 
 // Every Sticky launch on a chain: project ID, cash out tax and transfer mode from DeploySticky.
 const deployedCache = new Map();
@@ -654,7 +682,9 @@ async function hydrateLogos() {
   for (const el of document.querySelectorAll("[data-token-logo]")) {
     const addr = el.dataset.tokenLogo;
     const size = el.dataset.size;
-    const url = await resolveTokenLogoUrl(addr);
+    let reader;
+    try { reader = el.dataset.chain ? await chainReader(el.dataset.chain) : pageReader(); } catch { continue; }
+    const url = await resolveTokenLogoUrl(addr, reader);
     if (url) {
       const img = document.createElement("img");
       img.src = url;
@@ -812,29 +842,31 @@ async function loadDeployer() {
   originKey = null;
   renderOriginPills();
   status("onchain", "ok");
-  route();
+  // The home page reads every chain itself and does not wait for this one.
+  if (!isHomeRoute() || window.__DEMO_RPC) route();
 }
 
-async function projectInfo(projectId) {
+async function projectInfo(projectId, reader = pageReader()) {
   const key = projectId.toString();
-  if (ctx.projects[key]) return ctx.projects[key];
+  if (reader.projects[key]) return reader.projects[key];
   const idArg = word(projectId);
-  const stakedToken = decAddress(await view($("deployer").value, SEL.stakedTokenOf, idArg));
+  const view = (to, sel, args = "") => reader.rpc("eth_call", [{ to, data: sel + args }, "latest"]);
+  const stakedToken = decAddress(await view(reader.deployer, SEL.stakedTokenOf, idArg));
   if (stakedToken === "0x0000000000000000000000000000000000000000") {
     throw new Error(`project ${projectId} is not a sticky token of this deployer`);
   }
-  const stToken = decAddress(await view(ctx.tokens, SEL.tokenOf, idArg));
+  const stToken = decAddress(await view(reader.tokens, SEL.tokenOf, idArg));
   const [symbol, decimals, name, stSymbol, stName, reward, soulbound] = await Promise.all([
     view(stakedToken, SEL.symbol).then(decString),
     view(stakedToken, SEL.decimals).then((h) => Number(decUint(h))),
     view(stakedToken, SEL.name).then(decString),
     view(stToken, SEL.symbol).then(decString),
     view(stToken, SEL.name).then(decString),
-    view($("deployer").value, SEL.cashOutTaxRateOf, idArg).then(decUint),
+    view(reader.deployer, SEL.cashOutTaxRateOf, idArg).then(decUint),
     view(stToken, SEL.SOULBOUND).then((h) => decUint(h) === 1n).catch(() => true),
   ]);
-  ctx.projects[key] = { stakedToken, symbol, decimals, name, stToken, stSymbol, stName, reward, soulbound };
-  return ctx.projects[key];
+  reader.projects[key] = { stakedToken, symbol, decimals, name, stToken, stSymbol, stName, reward, soulbound };
+  return reader.projects[key];
 }
 
 // A Sticky token is named by its own onchain symbol, which a launch may customize.
@@ -910,20 +942,21 @@ async function verifyHolderPage(projectId, rows) {
 }
 
 // Decode hook logs into activity cards, newest first. Each card carries the stuck token's logo.
-async function activityItems(logs, includeProject) {
+async function activityItems(logs, includeProject, reader = pageReader()) {
   const items = [];
+  const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
   for (const log of logs.slice(-40)) {
     const id = decUint(log.topics[1]);
     let info;
     try {
-      info = await projectInfo(id);
+      info = await projectInfo(id, reader);
     } catch {
       continue; // a project from another deployer sharing the hook
     }
     const holder = shortAddr(decAddress(log.topics[2]));
     let html;
     if (log.topics[0] === TOPIC.Staked) {
-      const autoStuck = decAddress(log.data, 0).toLowerCase() === (autoStickAdapter() || "").toLowerCase();
+      const autoStuck = decAddress(log.data, 0).toLowerCase() === adapter;
       html = `<span class="addr">${holder}</span> <span class="verb">${autoStuck ? "auto-stuck" : "received"}</span> ${formatUnits(decUint(log.data, 1), 18)} ${esc(info.stSymbol)}`;
     } else if (log.topics[0] === TOPIC.Unstaked) {
       // Burns and outgoing transfers reduce the position too; this event does not prove an underlying payout.
@@ -934,43 +967,46 @@ async function activityItems(logs, includeProject) {
       html = `<span class="addr">${holder}</span> <span class="verb out">came unstuck after ${formatDuration(decUint(log.data, 0))}</span>`;
     }
     const nameLine = includeProject
-      ? `<div><a class="link" href="#/project/${id}">${esc(stickyLabel(info))}</a></div>`
+      ? `<div><a class="link" href="${projectHref(reader.chainId, id)}">${esc(stickyLabel(info))}</a> ${chainIcons([reader.chainId])}</div>`
       : "";
-    items.push(
-      `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}` +
-      `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>` +
-      `${nameLine}<div>${html}</div></div></div></div>`,
-    );
+    items.push({
+      ts: log.ts,
+      html: `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22, reader.chainId)}` +
+        `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>` +
+        `${nameLine}<div>${html}</div></div></div></div>`,
+    });
   }
   return items.reverse();
 }
 
 // A stake paid for someone else is an airdrop. Staked logs include both payer and holder, so this is exact.
-async function airdropItems(logs) {
+async function airdropItems(logs, reader = pageReader()) {
   const items = [];
+  const adapter = (autoStickAdapterOn(reader.chainId) || "").toLowerCase();
   const staked = logs.filter((log) => log.topics[0] === TOPIC.Staked).slice(-40);
   for (const log of staked) {
     const holder = decAddress(log.topics[2]);
     const payer = decAddress(log.data, 0);
     if (holder.toLowerCase() === payer.toLowerCase()) continue;
     // Auto-stick compounds are the holder's own rewards, not airdrops.
-    if (payer.toLowerCase() === (autoStickAdapter() || "").toLowerCase()) continue;
+    if (payer.toLowerCase() === adapter) continue;
     const id = decUint(log.topics[1]);
     let info;
     try {
-      info = await projectInfo(id);
+      info = await projectInfo(id, reader);
     } catch {
       continue;
     }
     const amount = formatUnits(decUint(log.data, 1), 18);
     const self = holder.toLowerCase() === account().toLowerCase() ? " (you)" : "";
-    items.push(
-      `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22)}`
-      + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>`
-      + `<div><a class="link" href="#/project/${id}">${esc(stickyLabel(info))}</a></div>`
-      + `<div><span class="addr">${addressLabel(holder)}${self}</span> received ${amount} ${esc(info.stSymbol)}`
-      + ` from <span class="addr">${addressLabel(payer)}</span></div></div></div></div>`,
-    );
+    items.push({
+      ts: log.ts,
+      html: `<div class="card-item"><div class="card-head">${tokenLogo(info.stakedToken, info.symbol, 22, reader.chainId)}`
+        + `<div style="flex:1;min-width:0"><div class="mut" style="font-size:11px">${ago(log.ts)}</div>`
+        + `<div><a class="link" href="${projectHref(reader.chainId, id)}">${esc(stickyLabel(info))}</a> ${chainIcons([reader.chainId])}</div>`
+        + `<div><span class="addr">${addressLabel(holder)}${self}</span> received ${amount} ${esc(info.stSymbol)}`
+        + ` from <span class="addr">${addressLabel(payer)}</span></div></div></div></div>`,
+    });
   }
   return items.reverse();
 }
@@ -1018,7 +1054,7 @@ async function configuredAirdropItems() {
 }
 
 const renderFeed = (el, items, empty = "no activity yet") => {
-  el.innerHTML = items.length ? items.join("") : `<div class="card-item mut">${esc(empty)}</div>`;
+  el.innerHTML = items.length ? items.map((item) => item.html ?? item).join("") : `<div class="card-item mut">${esc(empty)}</div>`;
   hydrateEns(el).catch(() => {});
 };
 
@@ -1104,11 +1140,12 @@ const formatUsd = (value) => {
 };
 
 
-function configuredUsdPrice(card) {
+const cardKey = (card) => card.key ?? card.id.toString();
+function configuredUsdPrice(card, chainId = ctx.chainId) {
   const entries = Object.entries(window.STICKY_CONFIG?.usdPriceOverrides || {});
   const overrides = new Map(entries.map(([key, price]) => [key.toLowerCase(), price]));
   const address = card.info.stakedToken.toLowerCase();
-  const keys = [`${ctx.chainId}:${address}`, address, card.info.symbol.toLowerCase()];
+  const keys = [`${chainId}:${address}`, address, card.info.symbol.toLowerCase()];
   for (const key of keys) {
     const price = usdMicros(overrides.get(key));
     if (price !== null) return price;
@@ -1118,13 +1155,13 @@ function configuredUsdPrice(card) {
 
 // Prices are keyed by chain and contract address. Symbols are only accepted as explicit config overrides,
 // which keeps two unrelated tokens with the same ticker from being accidentally valued as one asset.
-async function backingUsdPrices(cards) {
+async function backingUsdPrices(cards, chainId = ctx.chainId) {
   const prices = new Map();
   const missingByAddress = new Map();
   for (const card of cards) {
-    const override = configuredUsdPrice(card);
+    const override = configuredUsdPrice(card, chainId);
     if (override !== null) {
-      prices.set(card.id.toString(), override);
+      prices.set(cardKey(card), override);
       continue;
     }
     const address = card.info.stakedToken.toLowerCase();
@@ -1132,7 +1169,7 @@ async function backingUsdPrices(cards) {
     missingByAddress.get(address).push(card);
   }
 
-  const chain = DEXSCREENER_CHAIN[ctx.chainId];
+  const chain = DEXSCREENER_CHAIN[chainId];
   const addresses = [...missingByAddress.keys()];
   if (!chain || !addresses.length) return prices;
 
@@ -1162,7 +1199,7 @@ async function backingUsdPrices(cards) {
         if (price > 0 && (!best || liquidity > best.liquidity)) best = { price, liquidity };
       }
       const price = best ? usdMicros(best.price) : null;
-      if (price !== null) for (const card of addressCards) prices.set(card.id.toString(), price);
+      if (price !== null) for (const card of addressCards) prices.set(cardKey(card), price);
     }
   } catch (error) {
     console.warn("Unable to price Sticky backing tokens", error);
@@ -1181,7 +1218,7 @@ function projectStakedHistory(logs, card, now) {
   }
 
   const events = logs.flatMap((log) => {
-    if (decUint(log.topics[1]) !== card.id) return [];
+    if (decUint(log.topics[1]) !== card.id || (card.chainId !== undefined && log.chainId !== card.chainId)) return [];
     if (log.topics[0] === TOPIC.Staked) return [{ ts: log.ts, delta: decUint(log.data, 1) }];
     if (log.topics[0] === TOPIC.Unstaked) return [{ ts: log.ts, delta: -decUint(log.data, 0) }];
     return [];
@@ -1205,10 +1242,10 @@ function projectStakedHistory(logs, card, now) {
 
 function homeSecuredSeries(logs, cards, prices) {
   const now = Math.floor(Date.now() / 1000);
-  const valuedCards = cards.filter((card) => prices.has(card.id.toString()));
+  const valuedCards = cards.filter((card) => prices.has(cardKey(card)));
   const histories = valuedCards.map((card) => ({
     card,
-    price: prices.get(card.id.toString()),
+    price: prices.get(cardKey(card)),
     points: projectStakedHistory(logs, card, now),
   }));
   const timestamps = [...new Set(histories.flatMap((history) => history.points.map((point) => point.ts)))]
@@ -1231,11 +1268,11 @@ function homeSecuredSeries(logs, cards, prices) {
     return { ts, value };
   });
   const total = valuedCards.reduce(
-    (sum, card) => sum + card.pool.sigma * prices.get(card.id.toString()) / 10n ** BigInt(card.info.decimals),
+    (sum, card) => sum + card.pool.sigma * prices.get(cardKey(card)) / 10n ** BigInt(card.info.decimals),
     0n,
   );
   points[points.length - 1] = { ts: now, value: total };
-  const missing = cards.filter((card) => card.totalStaked > 0n && !prices.has(card.id.toString()));
+  const missing = cards.filter((card) => card.totalStaked > 0n && !prices.has(cardKey(card)));
   return { points, total, missing, hasValue: valuedCards.length > 0 };
 }
 
@@ -1564,12 +1601,29 @@ function pieSvg(active, symbol, tokenSupply) {
 }
 
 // ---------------------------------------------------------------------- home
+// The home page lists every configured chain of one environment. A ?chain deep link picks the environment;
+// without one it is the default chain's, which is production.
 const isHomeRoute = () => !/^#\/(project\/|@|account\/)/.test(location.hash);
-function siteChainName() {
-  const chainId = ctx.chainId || new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || 1;
-  return chainById(chainId)?.name || "this chain";
+function homeEnvironment() {
+  const chainId = window.__DEMO_RPC ? ctx.chainId
+    : new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || 1;
+  return chainById(chainId)?.environment || "production";
 }
-// loading: placeholder lines. empty: no Sticky tokens on this chain, hero only. error: reads failed, hero and one line.
+function homeChains() {
+  if (window.__DEMO_RPC) return ctx.chainId ? [ctx.chainId] : [];
+  return chainsForEnvironment(homeEnvironment())
+    .filter((chain) => StickyRuntime.deployment(window.STICKY_CONFIG || {}, chain.chainId).deployer)
+    .map((chain) => chain.chainId);
+}
+const projectHref = (chainId, projectId) => Number(chainId) === ctx.chainId
+  ? `#/project/${projectId}` : `?chain=${Number(chainId)}#/project/${projectId}`;
+function chainIcons(chainIds) {
+  const chains = chainIds.map(chainById).filter(Boolean);
+  return `<span class="chain-icons" role="img" aria-label="${esc(chains.map((chain) => chain.name).join(", "))}">`
+    + chains.map((chain) => `<span title="${esc(chain.name)}">${CHAIN_ICON_SVG[chain.icon]}</span>`).join("") + `</span>`;
+}
+// loading: placeholder lines. empty: no Sticky tokens in this environment, hero only. error: reads failed,
+// hero and one line. ready: the dashboard, with a note naming any chain that could not be read.
 function setHomeState(state, note = "", retry = false) {
   const home = $("view-home");
   home.dataset.state = state;
@@ -1580,7 +1634,7 @@ function setHomeState(state, note = "", retry = false) {
 }
 function homeFailed(error) {
   console.error(error);
-  setHomeState("error", `Could not read Sticky tokens on ${siteChainName()}.`, true);
+  setHomeState("error", "Could not read Sticky tokens.", true);
   if (!isHomeRoute()) status(error?.message || String(error), "err");
 }
 async function retryHome() {
@@ -1588,73 +1642,137 @@ async function retryHome() {
   $("home-secured-value").textContent = "–";
   setHomeState("loading");
   try {
-    if (ctx.loaded) await renderHome();
-    else await loadDeployer();
+    await renderHome();
   } catch (error) {
     homeFailed(error);
   }
 }
 
+// One chain's home data: its Sticky projects as cards, its hook logs, prices, and feed items.
+async function homeChainData(chainId) {
+  const reader = await chainReader(chainId);
+  const ids = (await getLogsOn(reader, reader.deployer, [TOPIC.DeploySticky])).map((log) => decUint(log.topics[1]));
+  if (!ids.length) return { chainId, cards: [], logs: [], prices: new Map(), activity: [], airdrops: [] };
+  const logs = await attachTimestamps(await getLogsOn(reader, reader.hook, [POSITION_TOPICS, null]), 6, reader);
+  for (const log of logs) log.chainId = reader.chainId;
+  const cards = (await Promise.all(ids.map(async (id) => {
+    try {
+      const info = await projectInfo(id, reader);
+      const [pool, launchId] = await Promise.all([
+        poolBacking(id, info, reader),
+        window.__DEMO_RPC ? null : launchIdOf(reader, id).catch(() => null),
+      ]);
+      const sticks = holderRows(id, logs).filter((row) => row.staked > 0n).length;
+      return { id, chainId: reader.chainId, key: `${reader.chainId}:${id}`, info, pool, launchId, totalStaked: pool.supply, sticks };
+    } catch {
+      return null;
+    }
+  }))).filter(Boolean);
+  if (!cards.length) throw new Error(`Could not read any Sticky token on ${chainById(chainId)?.name || chainId}.`);
+  const [prices, activity, airdrops] = await Promise.all([
+    backingUsdPrices(cards, reader.chainId), activityItems(logs, true, reader), airdropItems(logs, reader),
+  ]);
+  return { chainId, cards, logs, prices, activity, airdrops };
+}
+
+// Sibling projects of one multichain launch share a launchId, cash out tax and transfer mode. Each chain
+// contributes its first matching project, as on the project page, so a copied uri cannot join a launch.
+function groupHomeCards(cards) {
+  const groups = [];
+  const byLaunch = new Map();
+  for (const card of cards) {
+    const key = card.launchId ? `${card.launchId}:${card.info.reward}:${Boolean(card.info.soulbound)}` : null;
+    const group = key ? byLaunch.get(key) : null;
+    if (group && !group.cards.some((other) => other.chainId === card.chainId)) {
+      group.cards.push(card);
+      group.totalStaked += card.totalStaked;
+      continue;
+    }
+    const fresh = { cards: [card], totalStaked: card.totalStaked };
+    if (key && !group) byLaunch.set(key, fresh);
+    groups.push(fresh);
+  }
+  return groups.sort((a, b) => (b.totalStaked > a.totalStaked ? 1 : b.totalStaked < a.totalStaked ? -1 : 0));
+}
+
+function stickiestCardHtml(group, rank) {
+  const [first] = group.cards;
+  const decimals = (card) => card.info.decimals ?? 18;
+  const amount = (card) => card.pool?.sigma ?? card.totalStaked;
+  const same = group.cards.every((card) => card.info.symbol === first.info.symbol && decimals(card) === decimals(first));
+  const backing = same
+    ? `${formatUnits(group.cards.reduce((sum, card) => sum + amount(card), 0n), decimals(first))} ${esc(first.info.symbol)}`
+    : group.cards.map((card) => `${formatUnits(amount(card), decimals(card))} ${esc(card.info.symbol)}`).join(", ");
+  const sticks = group.cards.reduce((sum, card) => sum + card.sticks, 0);
+  const tag = first.demo ? "div" : "a";
+  const chains = first.demo ? "" : ` ${chainIcons(group.cards.map((card) => card.chainId))}`;
+  const id = group.cards.length === 1 ? ` <span class="mut">#${first.id}</span>` : "";
+  return `<${tag} class="card-item${first.demo ? "" : " pickc"}"${first.demo ? "" : ` href="${projectHref(first.chainId, first.id)}"`}><div class="card-head">`
+    + `<span class="rank">${rank}</span>${tokenLogo(first.info.stakedToken, first.info.symbol, 26, first.chainId)}`
+    + `<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(stickyLabel(first.info))}${id}${chains}</div>`
+    + `<div class="kv"><span class="mut">Backing:</span> ${backing}</div>`
+    + `<div class="kv"><span class="mut">Sticks:</span> ${sticks}</div>`
+    + `<div class="kv"><span class="mut">Bonus:</span> ${pct(first.info.reward)}</div>`
+    + `</div></div></${tag}>`;
+}
+
+// Chains load in parallel and the dashboard redraws as each arrives. A chain that fails is named in the
+// note; it never blanks the chains that loaded.
 async function renderHome() {
-  ++viewSequence;
-  const current = currentView();
+  const sequence = ++viewSequence;
+  const current = () => sequence === viewSequence;
   clearHomeSecuredChart();
   $("view-home").classList.remove("hide");
   $("view-project").classList.add("hide");
-  if (!ctx.loaded) return;
+  if (window.__DEMO_RPC && !ctx.loaded) return;
   if ($("view-home").dataset.state !== "ready") setHomeState("loading");
 
-  const ids = await projectIds();
-  if (!current()) return;
-  if (!ids.length && !configuredStickiestCards().length) {
-    setHomeState("empty", `No sticky tokens on ${siteChainName()} yet.`);
+  const chains = homeChains();
+  const testnet = homeEnvironment() === "testnet";
+  if (!chains.length) {
+    setHomeState("error", testnet ? "Sticky is not on testnets yet." : "Sticky is not deployed yet.");
     return;
   }
-  const logs = await hookLogs(undefined);
+  const results = new Map();
+  const demoCards = configuredStickiestCards();
+  const demoAirdrops = await configuredAirdropItems();
   if (!current()) return;
-
-  // Stickiest: project cards sorted by amount stuck, jbm-style key:value pairs, one logo — the stuck token's.
-  const cards = (
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          const info = await projectInfo(id);
-          const projectLogs = logs.filter((log) => decUint(log.topics[1]) === id);
-          const [rows, pool] = [holderRows(id, projectLogs), await poolBacking(id, info)];
-          return { id, info, pool, totalStaked: pool.supply, sticks: rows.filter((r) => r.staked > 0n).length };
-        } catch {
-          return null;
-        }
-      }),
-    )
-  ).filter(Boolean);
-  if (!current()) return;
-  if (ids.length && !cards.length) throw new Error("Could not read any Sticky token on this chain.");
-  cards.sort((a, b) => (b.totalStaked > a.totalStaked ? 1 : b.totalStaked < a.totalStaked ? -1 : 0));
-  const prices = await backingUsdPrices(cards);
-  if (!current()) return;
-  mountHomeSecuredChart(homeSecuredSeries(logs, cards, prices));
-  const homeCards = [...cards, ...configuredStickiestCards()];
-  $("projects").innerHTML = homeCards.length
-    ? homeCards.map((card, i) =>
-        `<${card.demo ? "div" : "a"} class="card-item${card.demo ? "" : " pickc"}"${card.demo ? "" : ` href="#/project/${card.id}"`}><div class="card-head">` +
-        `<span class="rank">${i + 1}</span>${tokenLogo(card.info.stakedToken, card.info.symbol, 26)}` +
-        `<div style="flex:1;min-width:0"><div style="font-weight:700">${esc(stickyLabel(card.info))} <span class="mut">#${card.id}</span></div>` +
-        `<div class="kv"><span class="mut">Backing:</span> ${formatUnits(card.pool?.sigma ?? card.totalStaked, card.info.decimals ?? 18)} ${esc(card.info.symbol)}</div>` +
-        `<div class="kv"><span class="mut">Sticks:</span> ${card.sticks}</div>` +
-        `<div class="kv"><span class="mut">Bonus:</span> ${pct(card.info.reward)}</div>` +
-        `</div></div></${card.demo ? "div" : "a"}>`,
-      ).join("")
-    : `<div class="card-item mut">No Sticky tokens yet. Create one.</div>`;
-  setHomeState("ready");
-
-  const activity = await activityItems(logs, true);
-  if (!current()) return;
-  renderFeed($("activity"), activity);
-  const [liveAirdrops, demoAirdrops] = await Promise.all([airdropItems(logs), configuredAirdropItems()]);
-  if (!current()) return;
-  renderFeed($("airdrops"), [...liveAirdrops, ...demoAirdrops], "no airdrops yet");
-  hydrateLogos().catch(() => {});
+  const paint = () => {
+    const loaded = chains.map((chainId) => results.get(chainId)).filter((result) => result && !result.error);
+    const failed = chains.filter((chainId) => results.get(chainId)?.error);
+    const pending = chains.length - results.size;
+    const failedNote = failed.length
+      ? `Could not read Sticky tokens on ${failed.map((chainId) => chainById(chainId)?.name || chainId).join(", ")}.` : "";
+    const cards = loaded.flatMap((result) => result.cards);
+    if (!cards.length && !demoCards.length) {
+      if (pending) return;
+      if (failed.length) setHomeState("error", failed.length === chains.length ? "Could not read Sticky tokens." : failedNote, true);
+      else setHomeState("empty", testnet ? "No sticky tokens on testnets yet." : "No sticky tokens yet.");
+      return;
+    }
+    const logs = loaded.flatMap((result) => result.logs);
+    const prices = new Map(loaded.flatMap((result) => [...result.prices]));
+    mountHomeSecuredChart(homeSecuredSeries(logs, cards, prices));
+    const groups = [...groupHomeCards(cards), ...demoCards.map((card) => ({ cards: [card], totalStaked: card.totalStaked }))];
+    $("projects").innerHTML = groups.map((group, i) => stickiestCardHtml(group, i + 1)).join("");
+    const newest = (items) => items.sort((a, b) => b.ts - a.ts).slice(0, 40);
+    renderFeed($("activity"), newest(loaded.flatMap((result) => result.activity)));
+    renderFeed($("airdrops"), [...newest(loaded.flatMap((result) => result.airdrops)), ...demoAirdrops], "no airdrops yet");
+    setHomeState("ready", failedNote, failed.length > 0);
+    hydrateLogos().catch(() => {});
+  };
+  await Promise.all(chains.map(async (chainId) => {
+    let result;
+    try {
+      result = await homeChainData(chainId);
+    } catch (error) {
+      console.error(error);
+      result = { chainId, error };
+    }
+    if (!current()) return;
+    results.set(chainId, result);
+    paint();
+  }));
 }
 
 // ------------------------------------------------------------------- project
@@ -2795,7 +2913,8 @@ function initBridgeFunding() {
 queueMicrotask(initBridgeFunding);
 
 const distributor = () => StickyRuntime.deployment(window.STICKY_CONFIG || {}, ctx.chainId).distributor;
-const autoStickAdapter = () => StickyRuntime.deployment(window.STICKY_CONFIG || {}, ctx.chainId).autoStickAdapter;
+const autoStickAdapterOn = (chainId) => StickyRuntime.deployment(window.STICKY_CONFIG || {}, chainId).autoStickAdapter;
+const autoStickAdapter = () => autoStickAdapterOn(ctx.chainId);
 const rewardTokens = {}; // projectId -> Set of reward token addresses
 
 const NATIVE_REWARD_TOKEN = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -3881,15 +4000,15 @@ async function unstickQuote(projectId, info, holder, count) {
   const fee = feeable / 40n;
   return { gross, tax, fee, net: gross - fee, feeless, block };
 }
-async function poolBacking(projectId, info) {
-  const block = await rpc("eth_blockNumber", []);
+async function poolBacking(projectId, info, reader = pageReader()) {
+  const block = await reader.rpc("eth_blockNumber", []);
   if (!/^0x[0-9a-fA-F]+$/.test(block || "")) throw new Error("The RPC returned an invalid backing block.");
-  const read = (to, selector, args = "") => rpc("eth_call", [{ to, data: selector + args }, block]).then(decUint);
-  const args = encAddress(ctx.terminal) + word(projectId) + encAddress(info.stakedToken);
+  const read = (to, selector, args = "") => reader.rpc("eth_call", [{ to, data: selector + args }, block]).then(decUint);
+  const args = encAddress(reader.terminal) + word(projectId) + encAddress(info.stakedToken);
   const [rawBacking, supply, savedOrphaned] = await Promise.all([
-    read(ctx.store, SEL.storeBalanceOf, args),
+    read(reader.store, SEL.storeBalanceOf, args),
     read(info.stToken, SEL.totalSupply),
-    read(ctx.hook, SEL.orphanedBalanceOf, word(projectId)),
+    read(reader.hook, SEL.orphanedBalanceOf, word(projectId)),
   ]);
   if (savedOrphaned > rawBacking) throw new Error("The Sticky pool returned inconsistent backing accounting.");
   const orphaned = supply === 0n ? rawBacking : savedOrphaned;
@@ -4926,7 +5045,7 @@ function updateConnectButton() {
   const btn = $("connect-btn");
   btn.textContent = viewAs
     ? `Viewing as ${shortAddr(viewAs)}`
-    : walletAccount ? shortAddr(walletAccount) : "Connect wallet";
+    : walletAccount ? shortAddr(walletAccount) : "Sign in";
   btn.classList.toggle("connected", !!walletAccount && !viewAs);
   btn.classList.toggle("viewing-as", !!viewAs);
   btn.title = viewAs || (walletKind === "signa" ? `Signa account ${walletAccount}` : walletAccount) || "Sign in, connect a wallet or view as another account";
@@ -4993,7 +5112,8 @@ function route() {
   try { $("autostick-dialog").close(); } catch {}
   confirmReturnTo = [];
   if (confirmResolve) settleConfirm(false);
-  if (!ctx.loaded) return;
+  // The home page reads its chains itself; every other route needs the page's chain loaded first.
+  if (!ctx.loaded && !isHomeRoute()) return;
   const accountMatch = location.hash.match(/^#\/account\/(0x[0-9a-fA-F]{40})$/);
   if (accountMatch) {
     ctx.currentId = null;
@@ -5277,7 +5397,7 @@ $("create-toggle").onclick = () => {
   soulboundHint();
   launchRuntimes = new Map();
   setTokenMeta("");
-  selectCreateEnvironment(chainById(ctx.chainId)?.environment || "production");
+  selectCreateEnvironment(homeEnvironment());
   $("create-dialog").showModal();
 };
 $("create-close").onclick = () => $("create-dialog").close();
@@ -5662,31 +5782,10 @@ if (config.demoMode) {
   $("rpc").value = chainConfig.rpcUrl || (isDefault && config.rpcUrl) || selected?.rpcUrl || "";
   $("deployer").value = chainConfig.deployer || "";
   if (config.account && config.localMode === true && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("account").value = config.account;
-  const picker = $("site-chain");
-  picker.replaceChildren(...[["production", "Production"], ["testnet", "Testnets"]].map(([environment, label]) => {
-    const group = document.createElement("optgroup");
-    group.label = label;
-    group.append(...chainsForEnvironment(environment).filter(chain => StickyRuntime.deployment(config, chain.chainId).deployer).map(chain => {
-      const option = document.createElement("option");
-      option.value = String(chain.chainId);
-      option.textContent = chain.name;
-      return option;
-    }));
-    return group;
-  }).filter(group => group.children.length));
-  if (picker.options.length) {
-    picker.value = String(selectedId);
-    picker.classList.remove("hide");
-  }
-  picker.onchange = () => {
-    const url = new URL(location.href);
-    url.searchParams.set("chain", picker.value);
-    url.hash = "#/";
-    location.assign(url.href);
-  };
-  if (!selected) setHomeState("error", "This chain is not supported. Select a configured chain to continue.");
-  else if ($("deployer").value) loadDeployer().catch(homeFailed);
-  else setHomeState("error", `Sticky is not on ${selected.name} yet.`);
+  // The home page lists the whole environment; the page's own chain serves project, account and handle routes.
+  if (isHomeRoute()) route();
+  if (selected && $("deployer").value) loadDeployer().catch((error) => isHomeRoute() ? console.error(error) : homeFailed(error));
+  else if (!isHomeRoute()) status(selected ? "Sticky is not configured on this chain yet." : "This chain is not supported.", "err");
 }
 setInterval(() => refreshPosition().catch(() => {}), 15_000);
 

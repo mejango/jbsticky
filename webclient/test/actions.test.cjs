@@ -89,7 +89,10 @@ function fixture(overrides = {}) {
     // Every plan must decode and match its review, as the confirm dialog requires before sending.
     confirmAndRun: async (title, txs, summary) => { for (const tx of txs) Calldata.review(tx); plans.push({ title, txs, summary }); return true; },
     txStatus() {}, renderRewards: async () => {}, renderProject: async () => {}, renderTrustedSenders: async () => {},
+    cardKey: (card) => card.key ?? card.id.toString(),
   });
+  // The page's own chain, read through the page rpc the way app.js pageReader() does.
+  context.pageReader = () => ({ ...context.ctx, rpc: (...args) => context.rpc(...args), projects: {}, timestamps: {} });
   const selectorsStart = source.indexOf('const SEL =');
   const selectors = source.slice(selectorsStart, source.indexOf('\n};', selectorsStart) + 3);
   const codec = source.slice(source.indexOf('const strip ='), source.indexOf('// ------------------------------------------------------------- rpc plumbing'));
