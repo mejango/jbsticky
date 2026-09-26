@@ -646,9 +646,7 @@ async function renderSiblings(projectId, info, current) {
     + missing.map((chainId) => `<tr><td>${esc(chainById(chainId)?.name || chainId)}</td><td colspan="2" class="mut">Planned at launch. Not deployed yet.</td></tr>`).join("")
     + `<tr class="total"><td>Total</td><td>${totals.backing === null ? "Backed by different tokens" : `${formatUnits(totals.backing, totals.decimals)} ${esc(totals.symbol)}`}</td>`
     + `<td>${formatUnits(totals.supply, 18)} ${esc(info.stSymbol)}</td></tr>`;
-  $("p-chains-note").textContent = totals.complete
-    ? "Each chain has its own project ID. Found by the launch ID every chain's project records."
-    : "Some chains could not be read. Totals cover the chains shown.";
+  $("p-chains-note").textContent = totals.complete ? "" : "Some chains could not be read. Totals cover the chains shown.";
   section.classList.remove("hide");
 }
 
@@ -1654,8 +1652,8 @@ async function renderProject(projectId) {
   $("stake-symbol").textContent = info.symbol;
   $("unstake-symbol").textContent = info.stSymbol;
   $("unstake-hint").textContent = info.reward > 0n
-    ? `cash out tax: ${pct(info.reward)} | reclaim depends on your share of the pool | newest tranche first | streak resets only at zero`
-    : `no cash out tax | review the exact reclaim and any fees | newest tranche first | streak resets only at zero`;
+    ? `Newest tokens unstick first, and up to ${pct(info.reward)} stays behind for remaining holders.`
+    : "Newest tokens unstick first.";
 
   ctx.projectLogs = null;
   const scanned = await projectLogs(projectId);
@@ -1672,7 +1670,7 @@ async function renderProject(projectId) {
   if (info.reward > 0n) {
     const rho0 = pool.supply > 0n ? Number((pool.sigma * 10n ** 18n) / pool.supply) / 10 ** info.decimals : 1;
     $("p-bonus-blurb").textContent =
-      `A ${pct(info.reward)} cash out tax rewards remaining holders. The amount left behind depends on how much of the supply is unstuck.`
+      `Unsticks leave up to ${pct(info.reward)} behind for holders who stay.`
       + (rho0 > 1.0005 ? ` 1 ${info.stSymbol} is currently backed by ${parseFloat(rho0.toFixed(4))} ${info.symbol}.` : "");
     renderBonusSplit(Number(info.reward) / 10000, {
       el: $("p-ratchet"),
@@ -2199,7 +2197,7 @@ async function renderTrustedSenders() {
         `<tr><td style="word-break:break-all">${sender}</td>` +
         `<td style="width:90px"><button type="button" class="danger" style="margin:0;padding:4px 10px" data-untrust="${sender}">Untrust</button></td></tr>`,
       ).join("")
-    : `<tr><td class="trusted-empty"><strong>None yet</strong><span>Only you and the project's airdrop senders can add to your streak.</span></td></tr>`;
+    : `<tr><td class="trusted-empty"><strong>None yet</strong><span>Only you and the project's trusted senders can stick for you.</span></td></tr>`;
   for (const button of $("trusted-list").querySelectorAll("[data-untrust]")) {
     button.onclick = guard(() => setTrust(button.dataset.untrust, false));
   }
@@ -2841,10 +2839,10 @@ function groupLabel(groupId) {
 // One line on who the funder chose, shared by the funding form, the split recipe, and the confirm dialog.
 function groupSentence(groupId) {
   const { minWeeks, maxWeeks } = decodeGroupId(groupId);
-  if (BigInt(groupId) === 0n) return "Everyone holding at the round's snapshot shares it pro-rata. Stake age does not matter.";
+  if (BigInt(groupId) === 0n) return "Everyone holding at the round's snapshot shares it.";
   const weeks = (n) => `${n} week${n === 1n ? "" : "s"}`;
   const window = maxWeeks === 0n ? `at least ${weeks(minWeeks)} old` : `between ${weeks(minWeeks)} and ${weeks(maxWeeks)} old`;
-  return `Only stake ${window} when the round starts shares it, pro-rata. Holders must still hold that stake when they claim; exiting first forfeits it to the pot.`;
+  return `Only stake ${window} when the round starts shares it, and holders who unstick before claiming forfeit their share.`;
 }
 
 function fundGroupId() {
@@ -2854,7 +2852,7 @@ function fundGroupId() {
 function groupNote(minValue, maxValue) {
   try {
     const groupId = groupIdFromWeeks(minValue, maxValue);
-    return { groupId, text: `${groupLabel(groupId)} (group ${groupId}). ${groupSentence(groupId)}` };
+    return { groupId, text: groupSentence(groupId) };
   } catch (error) {
     return { groupId: null, text: error.message };
   }
@@ -2976,7 +2974,7 @@ function dateTimeLabel(seconds) {
 // The round line above the reward pots.
 function roundSentence(schedule) {
   const weeks = schedule.roundDuration === 604_800n ? "week" : formatDuration(schedule.roundDuration);
-  return `Round ${schedule.round} ends ${dateTimeLabel(schedule.endsAt)}. Rewards funded this round are split when it ends. `
+  return `Round ${schedule.round} ends ${dateTimeLabel(schedule.endsAt)}. `
     + `Your share then vests over ${schedule.vestingRounds} rounds, a ${schedule.vestingRounds === 4n ? "quarter" : `1/${schedule.vestingRounds}`} each ${weeks}, starting when you collect.`;
 }
 
@@ -3384,14 +3382,9 @@ async function renderAutoStick() {
   const { info } = state;
   card.classList.remove("hide");
   $("as-heading").textContent = `Auto-stick ${info.symbol} rewards`;
-  const schedule = unlockScheduleSentence(await unlockScheduleOf());
+  await unlockScheduleOf();
   if (!current()) return;
-  $("as-blurb").textContent =
-    `Allow anyone to collect your unlocked ${info.symbol} rewards into your ${stickyLabel(info)} position under your settings. `
-    + `Each auto-stick creates a new stick starting at that time.`
-    + " Execution needs a keeper transaction; you can also use Stick now when rewards are ready."
-    + " Someone can collect to your wallet first; those rewards remain yours and can be stuck manually."
-    + (schedule ? ` ${schedule}` : "");
+  $("as-blurb").textContent = `Stick your ${info.symbol} rewards into ${stickyLabel(info)} as they unlock.`;
   $("as-toggle").textContent = state.enabled ? "Turn off auto-stick" : "Turn on auto-stick";
 
   // Same value-over-explanation formatting as the trusted-senders "None yet" block.
@@ -3507,10 +3500,7 @@ function openAutoStickDialog(mode) {
   asDialogMode = mode;
   $("as-dialog-title").textContent = mode === "settings" ? "Auto-stick settings" : "Turn on auto-stick";
   const dialogSchedule = unlockScheduleSentence(asUnlockSchedule || null);
-  $("as-dialog-blurb").textContent =
-    `Anyone can trigger collection of unlocked ${info.symbol} rewards into your position once they clear your minimum and cooldown. `
-    + `Each auto-stick creates a new stick starting at that time.`
-    + (dialogSchedule ? ` ${dialogSchedule}` : "");
+  $("as-dialog-blurb").textContent = dialogSchedule;
   $("as-min-label").textContent = `MINIMUM ${info.symbol.toUpperCase()} PER AUTO-STICK`;
   $("as-min").value = state.minimum > 0n ? formatUnits(state.minimum, info.decimals, info.decimals) : "1";
   asCooldownChoice = state.cooldown || 604_800;
@@ -5122,14 +5112,6 @@ function renderCurve() {
   const basisPoints = rewardBasisPoints();
   $("d-reward-error")?.classList.toggle("hide", basisPoints !== null);
   const r = Number(basisPoints ?? 0n) / 10000;
-  const note = $("d-curve-note");
-  if (note) {
-    const sym = lockedSymbol ? ` ${lockedSymbol}` : "";
-    note.textContent = r > 0
-        ? `Example: if each sticky token is backed by 1${sym}, unsticking 100 returns about ${parseFloat((100 * (1 - r) * 0.975).toFixed(1))}${sym}. Unsticking a large share of the supply returns a different amount, so the unstick screen always shows the exact amount before you confirm.`
-        : "No cash out tax: unsticks return a proportional share of the pool. Donations can increase backing.";
-  }
-  $("d-fee-details")?.classList.toggle("hide", r === 0);
   renderBonusSplit(r);
 }
 
@@ -5156,7 +5138,7 @@ function renderBonusSplit(r, o = {}) {
   const wLeaver = (toLeaver / value) * W;
   const wStays = (stays / value) * W;
   el.innerHTML = `
-    <div class="mut" style="font-size:13px;margin:10px 0 6px">Illustration for 100 ${esc(stSym) || "sticky tokens"} forming a small share of the supply</div>
+    <div class="mut" style="font-size:13px;margin:10px 0 6px">Unsticking 100 ${esc(stSym) || "sticky tokens"}, a small share of supply</div>
     <svg viewBox="0 0 ${W} ${BH}" style="width:100%;max-width:${W}px;border-radius:4px" preserveAspectRatio="none">
       <rect x="0" y="0" width="${wLeaver.toFixed(1)}" height="${BH}" fill="#2fb3c7"/>
       <rect x="${wLeaver.toFixed(1)}" y="0" width="${wStays.toFixed(1)}" height="${BH}" fill="#0e7c91"/>
@@ -5171,13 +5153,12 @@ function renderBonusSplit(r, o = {}) {
 
 const soulboundHint = () => {
   $("d-soulbound-hint").textContent = $("d-soulbound").value === "1"
-    ? "The sticky token can never change hands."
-    : "The sticky token can move between wallets. Transferring resets the stickiness clock on the moved tokens.";
+    ? "Sticky tokens can't be transferred."
+    : "Holders can transfer sticky tokens, which restarts the moved tokens' stickiness clock.";
 };
 $("d-soulbound").onchange = soulboundHint;
 $("d-custom-name").onchange = () => {
   $("d-name-row").classList.toggle("hide", !$("d-custom-name").checked);
-  $("d-name-hint").classList.toggle("hide", !$("d-custom-name").checked);
   renderCurve();
 };
 $("d-symbol").oninput = renderCurve;
@@ -5205,7 +5186,7 @@ $("d-add-granters").onchange = () => {
 };
 $("create-toggle").onclick = () => {
   for (const id of ["d-custom-name", "d-add-reward", "d-add-granters"]) $(id).checked = false;
-  for (const id of ["d-name-row", "d-name-hint", "d-reward-wrap", "d-reward-hint", "d-granters-row", "d-granters-hint"]) {
+  for (const id of ["d-name-row", "d-reward-wrap", "d-reward-hint", "d-granters-row", "d-granters-hint"]) {
     $(id).classList.add("hide");
   }
   $("d-extras").open = false;

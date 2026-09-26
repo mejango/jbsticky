@@ -701,7 +701,7 @@
             <summary class="mut">Stick for someone else</summary>
             <label for="stake-beneficiary">Recipient</label>
             <input id="stake-beneficiary" placeholder="0x… (blank uses your wallet)" autocomplete="off">
-            <p class="mut hint">The recipient must trust your wallet, or you must be a permanent trusted sender for this project.</p>
+            <p class="mut hint">Works only if the recipient trusts your wallet or you are a trusted sender for this project.</p>
           </details>
           <details id="transfer-sticky" class="hide" style="margin-top:12px">
             <summary class="mut">Transfer sticky tokens</summary>
@@ -709,7 +709,7 @@
             <input id="transfer-recipient" placeholder="0x…" autocomplete="off">
             <label for="transfer-amount">Sticky token amount</label>
             <input id="transfer-amount" placeholder="0" inputmode="decimal">
-            <p class="mut hint">Moved tokens form a fresh tranche for the recipient. An existing recipient streak keeps running; otherwise, a new streak starts. Your remaining tokens keep their existing streak.</p>
+            <p class="mut hint">Moved tokens start fresh for the recipient, and your remaining tokens keep their age.</p>
             <button id="transfer-send" type="button">Review transfer</button>
           </details>
         </section>
@@ -751,17 +751,11 @@
         <div id="tab-rewards" class="hide">
           <section>
             <h2>Send airdrop rewards</h2>
-            <p class="mut">Each reward names who it goes to: everyone holding at the round's snapshot, or only stake
-              that had been held for a minimum number of weeks when the round started. Shares are pro-rata within
-              that group.</p>
+            <p class="mut">Reward everyone stuck, or only stakes held for a minimum number of weeks.</p>
             <button id="open-fund">Send</button>
             <details class="token-contracts" style="margin-top:14px">
               <summary>Recurring rewards from a Juicebox project's splits</summary>
-              <p class="mut" style="margin:10px 0 6px">In any Juicebox project's reserved token splits (or payout
-                splits), add a split with the reward distributor as its hook, this sticky token as its
-                beneficiary, and the reward group as its project ID. Every distribution then funds that round's
-                rewards for stickers directly — no manual sends, nothing to settle. The routed project's token must
-                be deployed as an ERC-20. A project ID that is not a valid group funds everyone.</p>
+              <p class="mut" style="margin:10px 0 6px">Add a split with these values to any Juicebox project with an ERC-20 token, and each distribution funds rewards here.</p>
               <div class="row">
                 <div><label for="rr-min-weeks">MINIMUM STAKE AGE (WEEKS)</label><input id="rr-min-weeks" placeholder="0" inputmode="numeric"></div>
                 <div><label for="rr-max-weeks">MAXIMUM STAKE AGE (WEEKS)</label><input id="rr-max-weeks" placeholder="no limit" inputmode="numeric"></div>
@@ -782,8 +776,7 @@
             <h2>Your rewards</h2>
             <p class="mut" id="rewards-round"></p>
             <div id="rewards-list" class="reward-list"></div>
-            <p class="mut hide" id="rewards-tenure-note">Stake-age rewards pay only stake you still hold. Claim them
-              before unsticking; an allocation you exit before claiming stays in the pot.</p>
+            <p class="mut hide" id="rewards-tenure-note">Claim stake-age rewards before unsticking, or you forfeit them.</p>
             <div class="row">
               <div><label for="r-check">CHECK ANOTHER REWARD TOKEN</label><input id="r-check" placeholder="0x…"></div>
             </div>
@@ -803,7 +796,7 @@
           </section>
           <section>
             <h2>Who can stick for you</h2>
-            <p class="mut">Addresses you trust can send you airdrops that stick automatically.</p>
+            <p class="mut">Addresses you trust can stick tokens for you.</p>
             <table><tbody id="trusted-list"></tbody></table>
             <button id="open-trust" class="ghost">Trust</button>
           </section>
@@ -893,13 +886,12 @@
   <div class="create-section">
     <div class="create-section-title">OPTIONS</div>
     <label class="check"><input type="checkbox" id="d-custom-name"> Set custom token name and symbol</label>
-    <p class="mut hint hide option-detail" id="d-name-hint">Replaces the defaults: "Sticky &lt;token name&gt;" and STICKY&lt;SYMBOL&gt;.</p>
     <div class="row hide option-detail" id="d-name-row">
       <div><label for="d-name">NAME</label><input id="d-name" placeholder="Sticky ART"></div>
       <div><label for="d-symbol">SYMBOL</label><input id="d-symbol" placeholder="STICKYART"></div>
     </div>
     <label class="check"><input type="checkbox" id="d-add-reward"> Add stickiness bonus</label>
-    <p class="mut hint hide option-detail" id="d-reward-hint">When someone unsticks, part of what they would get back stays behind for everyone still stuck. The percentage sets that part.</p>
+    <p class="mut hint hide option-detail" id="d-reward-hint">The share of each unstick left behind for holders who stay.</p>
     <div class="hide option-detail" id="d-reward-wrap">
       <div class="preset-row">
         <button type="button" class="preset" data-v="0" aria-pressed="false">0%</button>
@@ -913,20 +905,11 @@
       </div>
       <p class="err hint hide" id="d-reward-error">Enter a bonus from 0 to 99.99%.</p>
       <div id="d-ratchet"></div>
-      <p class="mut hint" id="d-curve-note" style="margin-top:14px"></p>
-      <details class="hint" id="d-fee-details" style="margin-top:14px">
-        <summary style="cursor:pointer;color:var(--accent)">Read about fees</summary>
-        <p class="mut" style="margin:6px 0 0">
-          Sticking has no protocol fee. Taxed unsticks can incur the Juicebox protocol's cash out fee;
-          eligibility and the amount depend on the project and transaction. The live unstick quote
-          includes applicable fees. A zero cash out tax does not waive other applicable terminal fees.
-        </p>
-      </details>
     </div>
     <details id="d-extras" style="margin-top:14px">
       <summary style="cursor:pointer;color:var(--muted);font-size:12px;letter-spacing:.5px">Extras</summary>
       <label class="check" style="margin-top:10px"><input type="checkbox" id="d-add-granters"> Add trusted senders</label>
-      <p class="mut hint hide option-detail" id="d-granters-hint">By default, only each holder can add to their own stick. Trusted senders can stick tokens for any holder without asking, which suits grant programs, admin rewards and prize bots. Leave this off if you have none. The auto-stick helper is always trusted, and it only acts for holders who turn it on. Holders can also trust senders of their own later.</p>
+      <p class="mut hint hide option-detail" id="d-granters-hint">Addresses that can stick tokens for any holder, like a grant program or prize bot.</p>
       <div class="row hide option-detail" id="d-granters-row">
         <div><label for="d-granters">TRUSTED SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
       </div>
@@ -949,7 +932,7 @@
         <option value="testnet">Testnets</option>
       </select>
       <div class="chain-options" id="d-chains"></div>
-      <p class="mut hint">The same permanent rules are deployed on every selected chain. The token to lock must exist at the same address on each one.</p>
+      <p class="mut hint">The token must exist at the same address on every selected chain.</p>
       <p class="err hint hide" id="d-chains-error">Choose at least one chain.</p>
     </div>
     <p class="mut">Once deployed, settings are permanent.</p>
@@ -978,7 +961,7 @@
     <button id="fund">Send</button>
   </div>
   <div id="fund-bridge" class="hide">
-    <p class="mut" id="bridge-recipe">Bridge a supported Juicebox project token to this project's reward receiver for the chosen group. Once it arrives, claim and settle it into rewards here.</p>
+    <p class="mut" id="bridge-recipe">Bridge a Juicebox project token here, then settle it into rewards once it arrives.</p>
     <label for="bridge-source-token">Token address on origin chain</label>
     <input id="bridge-source-token" placeholder="0x…" autocomplete="off">
     <label for="bridge-amount">Amount to bridge</label>
@@ -1010,7 +993,7 @@
   <div style="text-align:right;margin-top:3px">
     <button type="button" class="text-button" id="unstake-max" style="font-size:12px">max</button>
   </div>
-  <div class="mut" style="margin-top:8px" id="unstake-hint">newest tranche first | stickiness clock resets only at zero</div>
+  <div class="mut" style="margin-top:8px" id="unstake-hint">Newest tokens unstick first.</div>
   <div class="mut" style="margin-top:6px" id="unstake-quote"></div>
   <div class="dlg-actions">
     <button id="unstake" class="danger">Unstick</button>
@@ -1020,7 +1003,7 @@
 <dialog id="trust-dialog" aria-labelledby="trust-title">
   <button id="trust-close" class="dlg-x" aria-label="Close">✕</button>
   <h2 id="trust-title">Trust a sender</h2>
-  <p class="mut">A sender you trust can lock tokens into your streak for you — grants, airdrops, a friend. Everyone else stays blocked.</p>
+  <p class="mut">This address will be able to stick tokens for you.</p>
   <label for="trust-addr">SENDER ADDRESS</label><input id="trust-addr" placeholder="0x…">
   <div class="dlg-actions">
     <button id="trust">Trust sender</button>
@@ -1046,7 +1029,7 @@
       <button type="button" class="preset on" data-as-allowance="unlimited" aria-pressed="true">UNLIMITED</button>
       <button type="button" class="preset" data-as-allowance="custom" aria-pressed="false">CUSTOM CAP</button>
     </div>
-    <p class="mut hint" id="as-allowance-hint">An unlimited allowance lets auto-stick run hands-off forever. The contract can only ever pull rewards it just delivered to you, and only to stick them for you.</p>
+    <p class="mut hint" id="as-allowance-hint">Auto-stick can only pull rewards it just delivered to you, and only to stick them.</p>
     <div class="row hide" id="as-allowance-custom-row">
       <div><label for="as-allowance" id="as-allowance-label">ALLOWANCE CAP</label><input id="as-allowance" placeholder="100"></div>
     </div>
