@@ -26,8 +26,9 @@ function fixture(names = []) {
     location: { hash: '#/' },
     confirmResolve: null,
     closeWalletMenu() {}, clearHomeSecuredChart() {}, setTab() {}, status() {},
+    homeFailed() {}, setHomeState() {}, configuredStickiestCards: () => [],
     $: id => {
-      if (!fields.has(id)) fields.set(id, { textContent: '', close() {}, classList: { add() {}, remove() {} } });
+      if (!fields.has(id)) fields.set(id, { textContent: '', dataset: {}, close() {}, classList: { add() {}, remove() {} } });
       return fields.get(id);
     },
     renderHome: async () => {}, renderProject: async () => {}, renderAccount: async () => {},

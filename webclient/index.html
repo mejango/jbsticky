@@ -306,6 +306,38 @@
   .hero p.tag { font-size: 14px; color: var(--text); margin: 0 0 16px; }
   .hero .foot { margin-top: 14px; font-size: 15px; }
 
+  /* Home states: loading draws quiet placeholder lines; empty and error drop the dashboard for a centered hero. */
+  .home-note { margin: -4px auto 16px; max-width: 34ch; color: var(--muted); font-size: 15px; }
+  .home-note .text-button { font-weight: 600; }
+  #view-home[data-state="error"] .home-note { color: var(--err); }
+  #view-home[data-state="loading"] .home-secured-value { width: min(180px, 60%); border-radius: 4px; color: transparent; background: var(--line); }
+  .home-secured-chart:empty { height: 240px; border-radius: 4px; background: linear-gradient(to top, color-mix(in srgb, var(--line) 45%, transparent), transparent 70%); }
+  #home-panel-latest .list-card:empty, #home-panel-stickiest .list-card:empty, #home-panel-airdrops .list-card:empty {
+    height: 204px;
+    background:
+      linear-gradient(var(--line) 0 0) 14px 16px / 62% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 36px / 38% 8px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 84px / 70% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 104px / 30% 8px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 152px / 54% 10px no-repeat,
+      linear-gradient(var(--line) 0 0) 14px 172px / 42% 8px no-repeat;
+    opacity: .75;
+  }
+  #view-home:is([data-state="empty"], [data-state="error"]) :is(.home-secured, .home-list-panel, .home-mobile-tabs, .home-ranking-tabs) { display: none !important; }
+  #view-home:is([data-state="empty"], [data-state="error"]) .cols3 { display: block; }
+  #view-home:is([data-state="empty"], [data-state="error"]) .hero-col { max-width: 560px; margin: 0 auto; border-left: none; padding-left: 0; }
+  .home-steps { display: none; }
+  #view-home[data-state="empty"] .home-steps {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px;
+    max-width: 900px; margin: 12px auto 0; padding: 0; list-style: none;
+  }
+  .home-steps li { display: flex; flex-direction: column; gap: 4px; text-align: center; font-size: 15px; line-height: 1.45; }
+  .home-steps b { font: 700 17px/1.2 "Agrandir", "Beatrice", sans-serif; color: var(--accent); }
+  .home-steps span { color: var(--text); }
+  @media (max-width: 639px) {
+    #view-home[data-state="empty"] .home-steps { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  }
+
   /* project page */
   .proj-head { display: flex; gap: 16px; align-items: center; }
   .logo {
@@ -565,7 +597,7 @@
 
 
   <!-- ============================================================ HOME -->
-  <div id="view-home">
+  <div id="view-home" data-state="loading" aria-busy="true">
     <div class="cols3">
       <div class="home-mobile-tabs" role="tablist" aria-label="Homepage lists">
         <button class="home-mobile-tab on" id="home-tab-latest" type="button" role="tab" aria-selected="true" aria-controls="home-panel-latest">LATEST</button>
@@ -588,7 +620,7 @@
           </div>
         </div>
         <div class="home-secured-chart" id="home-secured-chart"></div>
-        <p class="mut hint">History estimates past shares at today's backing per share and token price.</p>
+        <p class="mut hint hide" id="home-secured-note">History estimates past shares at today's backing per share and token price.</p>
       </div>
       <div class="home-list-panel on" id="home-panel-latest" role="tabpanel" aria-labelledby="home-tab-latest">
         <h2 class="colhead">Latest</h2>
@@ -607,11 +639,18 @@
           <img src="hero-donut.png" alt="" style="width:230px;max-width:70%;display:block;margin:0 auto 8px">
           <h1>Sticky</h1>
           <p class="tag" style="font-size:17px">Mark your presence,<br>earn by sticking around.</p>
+          <p class="home-note hide" id="home-note" role="status" aria-live="polite"><span id="home-note-text"></span> <button type="button" class="text-button hide" id="home-retry">Try again</button></p>
           <button id="create-toggle">Make your token sticky</button>
           <p class="foot mut">100% open source, <a class="link" href="https://github.com/mejango/sticky" target="_blank" rel="noopener">audit or create with your AI</a>.</p>
         </section>
       </div>
     </div>
+
+    <ol class="home-steps" aria-label="How Sticky works">
+      <li><b>Stick</b><span>Lock a token and get Sticky shares of its backing.</span></li>
+      <li><b>Earn</b><span>Share the rewards funders send, by balance or weeks stuck.</span></li>
+      <li><b>Unstick</b><span>Take your share of the backing and leave the bonus to those who stay.</span></li>
+    </ol>
 
     <div class="explain-rule"></div>
 
@@ -909,7 +948,7 @@
     <details id="d-extras" style="margin-top:14px">
       <summary style="cursor:pointer;color:var(--muted);font-size:12px;letter-spacing:.5px">Extras</summary>
       <label class="check" style="margin-top:10px"><input type="checkbox" id="d-add-granters"> Add trusted senders</label>
-      <p class="mut hint hide option-detail" id="d-granters-hint">Addresses that can stick tokens for any holder, like a grant program or prize bot.</p>
+      <p class="mut hint hide option-detail" id="d-granters-hint">Addresses that can stick tokens for any holder, like a grant or prize bot. Set once at launch, and no one can change them later.</p>
       <div class="row hide option-detail" id="d-granters-row">
         <div><label for="d-granters">TRUSTED SENDERS (COMMA-SEPARATED)</label><input id="d-granters" placeholder="0x…, 0x…"></div>
       </div>

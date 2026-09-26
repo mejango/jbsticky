@@ -781,7 +781,7 @@ function currentView() {
 async function loadDeployer() {
   ctx.loaded = false;
   const deployer = $("deployer").value;
-  status("loading…");
+  if (!isHomeRoute()) status("loading…");
   StickyRuntime.address(deployer);
   const chainId = Number(BigInt(await rpc("eth_chainId", [])));
   if (!window.__DEMO_RPC) {
@@ -1252,6 +1252,7 @@ function mountHomeSecuredChart(series) {
   const dateValue = $("home-secured-date");
   const hoverValue = $("home-secured-hover-value");
   value.textContent = series.hasValue ? formatUsd(series.total) : "$—";
+  $("home-secured-note").classList.toggle("hide", !series.hasValue);
   value.title = series.missing.length
     ? `Could not price ${series.missing.map((card) => card.info.symbol).join(", ")}`
     : "Current claimable backing at today's token price. History estimates past shares at today's backing per share and price.";
@@ -1563,6 +1564,37 @@ function pieSvg(active, symbol, tokenSupply) {
 }
 
 // ---------------------------------------------------------------------- home
+const isHomeRoute = () => !/^#\/(project\/|@|account\/)/.test(location.hash);
+function siteChainName() {
+  const chainId = ctx.chainId || new URL(location.href).searchParams.get("chain") || window.STICKY_CONFIG?.defaultChainId || 1;
+  return chainById(chainId)?.name || "this chain";
+}
+// loading: placeholder lines. empty: no Sticky tokens on this chain, hero only. error: reads failed, hero and one line.
+function setHomeState(state, note = "", retry = false) {
+  const home = $("view-home");
+  home.dataset.state = state;
+  home.setAttribute("aria-busy", String(state === "loading"));
+  $("home-note-text").textContent = note;
+  $("home-note").classList.toggle("hide", !note);
+  $("home-retry").classList.toggle("hide", !retry);
+}
+function homeFailed(error) {
+  console.error(error);
+  setHomeState("error", `Could not read Sticky tokens on ${siteChainName()}.`, true);
+  if (!isHomeRoute()) status(error?.message || String(error), "err");
+}
+async function retryHome() {
+  for (const id of ["home-secured-chart", "activity", "projects", "airdrops"]) $(id).innerHTML = "";
+  $("home-secured-value").textContent = "–";
+  setHomeState("loading");
+  try {
+    if (ctx.loaded) await renderHome();
+    else await loadDeployer();
+  } catch (error) {
+    homeFailed(error);
+  }
+}
+
 async function renderHome() {
   ++viewSequence;
   const current = currentView();
@@ -1570,9 +1602,14 @@ async function renderHome() {
   $("view-home").classList.remove("hide");
   $("view-project").classList.add("hide");
   if (!ctx.loaded) return;
+  if ($("view-home").dataset.state !== "ready") setHomeState("loading");
 
   const ids = await projectIds();
   if (!current()) return;
+  if (!ids.length && !configuredStickiestCards().length) {
+    setHomeState("empty", `No sticky tokens on ${siteChainName()} yet.`);
+    return;
+  }
   const logs = await hookLogs(undefined);
   if (!current()) return;
 
@@ -1592,6 +1629,7 @@ async function renderHome() {
     )
   ).filter(Boolean);
   if (!current()) return;
+  if (ids.length && !cards.length) throw new Error("Could not read any Sticky token on this chain.");
   cards.sort((a, b) => (b.totalStaked > a.totalStaked ? 1 : b.totalStaked < a.totalStaked ? -1 : 0));
   const prices = await backingUsdPrices(cards);
   if (!current()) return;
@@ -1608,6 +1646,7 @@ async function renderHome() {
         `</div></div></${card.demo ? "div" : "a"}>`,
       ).join("")
     : `<div class="card-item mut">No Sticky tokens yet. Create one.</div>`;
+  setHomeState("ready");
 
   const activity = await activityItems(logs, true);
   if (!current()) return;
@@ -4985,10 +5024,11 @@ function route() {
   }
   else {
     ctx.currentId = null;
-    renderHome().catch((e) => status(e.message, "err"));
+    renderHome().catch(homeFailed);
   }
 }
 window.onhashchange = route;
+$("home-retry").onclick = retryHome;
 
 // ---------------------------------------------------------------------- wire
 function guard(fn) {
@@ -5644,9 +5684,9 @@ if (config.demoMode) {
     url.hash = "#/";
     location.assign(url.href);
   };
-  if (!selected) status("This chain is not supported. Select a configured chain to continue.", "err");
-  else if ($("deployer").value) guard(loadDeployer)();
-  else status("Sticky is not configured on this chain yet. Transactions will be available after its contracts are deployed and verified.", "err");
+  if (!selected) setHomeState("error", "This chain is not supported. Select a configured chain to continue.");
+  else if ($("deployer").value) loadDeployer().catch(homeFailed);
+  else setHomeState("error", `Sticky is not on ${selected.name} yet.`);
 }
 setInterval(() => refreshPosition().catch(() => {}), 15_000);
 
