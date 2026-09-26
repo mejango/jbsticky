@@ -24,6 +24,9 @@ def module(name, path):
 
 build = module("sticky_build", ROOT / "build-config.py")
 server = module("sticky_server", ROOT / "serve.py")
+registry = module("sticky_bendystraw_registry", ROOT / "bendystraw-registry.py")
+OPERATIONS = json.loads((ROOT / "bendystraw-operations.json").read_text(encoding="utf-8"))
+OPERATION = {document.split("(")[0].split()[1]: operation for operation, document in OPERATIONS.items()}
 DEPLOYER = "0x" + "12" * 20
 OTHER = "0x" + "34" * 20
 # The 8-chain deployment shape. Addresses change on redeploy; these tests check shape only.
@@ -217,6 +220,7 @@ class ServerTests(unittest.TestCase):
         (self.root / "index.html").write_text(self.document)
         (self.root / "app.js").write_text("window.app = true;")
         (self.root / "hero.png").write_bytes(b"PNG-asset")
+        (self.root / "bendystraw-operations.json").write_bytes((ROOT / "bendystraw-operations.json").read_bytes())
         build.write_config(build.build_config({"STICKY_DEPLOYER": DEPLOYER}), self.root / "config.js")
         self.app = server.create_app(self.root, revision="abcdef1")
 
@@ -332,16 +336,17 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(result["status"], 405)
             self.assertEqual(result["headers"]["Allow"], "GET, HEAD")
 
-    def relay(self, path="/bendystraw/testnet/graphql", body=b'{"query":"query StickyIndex { _meta { status } }","variables":{}}',
-              method="POST", app=None):
+    def relay(self, path="/api/bendystraw/testnet/query", body=None, method="POST", app=None, content_type="application/json"):
         import io
+        if body is None:
+            body = json.dumps({"operation": OPERATION["StickyIndex"], "variables": {"owners": [DEPLOYER], "after": None}}).encode()
         return self.request(path, method=method, app=app, headers={
-            "CONTENT_LENGTH": str(len(body)), "CONTENT_TYPE": "application/json", "wsgi.input": io.BytesIO(body)})
+            "CONTENT_LENGTH": str(len(body)), "CONTENT_TYPE": content_type, "wsgi.input": io.BytesIO(body)})
 
-    def test_bendystraw_relay_forwards_queries_to_the_configured_endpoint_and_shares_answers(self):
+    def test_bendystraw_relay_forwards_persisted_operations_to_the_configured_endpoint_and_shares_answers(self):
         calls = []
         def fetch(url, body):
-            calls.append((url, body))
+            calls.append((url, json.loads(body)))
             return 200, b'{"data":{"_meta":{"status":{}}}}'
         app = server.create_app(self.root, bendystraw_fetch=fetch)
         for _ in range(2):
@@ -351,25 +356,86 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(result["headers"]["Content-Type"], "application/json")
             self.assertIn("frame-ancestors 'none'", result["headers"]["Content-Security-Policy"])
         self.assertEqual([url for url, _ in calls], ["https://testnet.bendystraw.xyz/graphql"], "one upstream query for both")
-        self.relay("/bendystraw/production/graphql", app=app)
+        self.assertEqual(calls[0][1], {"query": OPERATIONS[OPERATION["StickyIndex"]], "variables": {"owners": [DEPLOYER], "after": None}},
+                         "the registered document, not anything the page sent")
+        self.relay("/api/bendystraw/mainnet/query", app=app)
         self.assertEqual(calls[-1][0], "https://bendystraw.up.railway.app/graphql")
 
-    def test_bendystraw_relay_rejects_anything_but_a_small_graphql_post(self):
+    def test_bendystraw_relay_rejects_anything_but_a_registered_operation_with_fitting_variables(self):
         app = server.create_app(self.root, bendystraw_fetch=lambda url, body: self.fail("must not reach Bendystraw"))
         self.assertEqual(self.relay(method="GET", app=app)["status"], 405)
+        self.assertEqual(self.relay(app=app, content_type="text/plain")["status"], 415)
         self.assertEqual(self.relay(body=b"x" * (server.BENDYSTRAW_MAX_BODY + 1), app=app)["status"], 413)
-        self.assertEqual(self.relay(body=b"not json", app=app)["status"], 400)
-        self.assertEqual(self.relay(body=b'{"variables":{}}', app=app)["status"], 400)
-        self.assertEqual(self.relay("/bendystraw/other/graphql", app=app)["status"], 405)
+        self.assertEqual(self.relay("/api/bendystraw/other/query", app=app)["status"], 405)
+        self.assertEqual(self.relay("/bendystraw/testnet/graphql", app=app)["status"], 405, "the open GraphQL path is gone")
+        index, create = OPERATION["StickyIndex"], OPERATION["StickyCreate"]
+        where = {"chainId": 84532, "projectId": 37, "version": 6}
+        rejected = [
+            b"not json",
+            b'{"operation":"' + index.encode() + b'","variables":{"after":NaN}}',
+            {"query": "query Anything { projects { items { owner } } }", "variables": {}},
+            {"operation": index, "query": "query Anything { _meta { status } }", "variables": {}},
+            {"operation": "0" * 64, "variables": {}},
+            {"operation": "StickyIndex", "variables": {}},
+            {"operation": index},
+            {"operation": index, "variables": []},
+            {"operation": index, "variables": {"owners": [DEPLOYER], "limit": 5}},
+            {"operation": index, "variables": {"owners": DEPLOYER}},
+            {"operation": index, "variables": {"owners": [1]}},
+            {"operation": index, "variables": {"owners": [None]}},
+            {"operation": index, "variables": {"owners": [DEPLOYER] * (server.MAX_LIST + 1)}},
+            {"operation": index, "variables": {"after": "x" * (server.MAX_STRING + 1)}},
+            {"operation": create, "variables": {"where": "chainId: 1"}},
+            {"operation": create, "variables": {"where": {**where, "bad-field": 1}}},
+            {"operation": create, "variables": {"where": {"AND": [where]}}},
+            {"operation": create, "variables": {"where": {"a": {"b": {"c": {"d": {"e": 1}}}}}}},
+        ]
+        for body in rejected:
+            with self.subTest(body=body):
+                result = self.relay(body=body if isinstance(body, bytes) else json.dumps(body).encode(), app=app)
+                self.assertEqual(result["status"], 400)
+                self.assertEqual(json.loads(result["body"]), {"error": "unknown or invalid operation"})
+
+    def test_bendystraw_relay_accepts_every_registered_operation_the_page_sends(self):
+        calls = []
+        app = server.create_app(self.root, bendystraw_fetch=lambda url, body: (calls.append(body), (200, b'{"data":{}}'))[1])
+        where = {"chainId": 84532, "projectId_in": [37, 38], "version": 6}
+        for name, variables in (("StickyIndex", {"owners": [DEPLOYER, OTHER], "after": "cursor"}),
+                                ("StickyPays", {"where": where, "after": None}),
+                                ("StickyCashOuts", {"where": where}),
+                                ("StickyCreate", {"where": {"chainId": 84532, "projectId": 37, "version": 6}})):
+            with self.subTest(name=name):
+                result = self.relay(body=json.dumps({"operation": OPERATION[name], "variables": variables}).encode(), app=app)
+                self.assertEqual(result["status"], 200)
+        self.assertEqual(len(calls), 4)
 
     def test_bendystraw_failure_is_a_502_the_page_falls_back_from(self):
         def down(url, body):
             raise OSError("connection refused")
         result = self.relay(app=server.create_app(self.root, bendystraw_fetch=down))
         self.assertEqual(result["status"], 502)
-        self.assertEqual(json.loads(result["body"]), {"errors": [{"message": "Bendystraw is unavailable."}]})
-        result = self.relay(app=server.create_app(self.root, bendystraw_fetch=lambda url, body: (200, b"<html>")))
-        self.assertEqual(result["status"], 502)
+        self.assertEqual(json.loads(result["body"]), {"error": "Bendystraw is unavailable."})
+        for answer, error in ((b"<html>", "Bendystraw is unavailable."),
+                              (b'{"errors":[{"message":"Unknown field"}]}', "Bendystraw: Unknown field"),
+                              (b'{"data":null}', "Bendystraw returned no data.")):
+            with self.subTest(answer=answer):
+                result = self.relay(app=server.create_app(self.root, bendystraw_fetch=lambda url, body: (200, answer)))
+                self.assertEqual(result["status"], 502)
+                self.assertEqual(json.loads(result["body"]), {"error": error})
+
+    def test_a_missing_or_tampered_operation_registry_is_not_ready(self):
+        path = self.root / "bendystraw-operations.json"
+        tampered = dict(OPERATIONS)
+        tampered[OPERATION["StickyIndex"]] = "query StickyIndex { projects { items { owner } } }"
+        for contents in (None, "{}", json.dumps(tampered)):
+            with self.subTest(contents=contents):
+                if contents is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(contents)
+                app = server.create_app(self.root)
+                self.assertFalse(app.ready)
+                self.assertEqual(self.relay(app=app)["status"], 404)
 
     def test_root_does_not_follow_working_directory(self):
         previous = Path.cwd()
@@ -461,6 +527,25 @@ class ServerTests(unittest.TestCase):
         with patch.dict(os.environ, {"PORT": "8080"}), patch.object(server, "create_app", return_value=app):
             with self.assertRaisesRegex(SystemExit, "Refusing to start"):
                 server.main()
+
+
+
+class BendystrawRegistryTests(unittest.TestCase):
+    def test_checked_in_registry_matches_the_documents_the_page_sends(self):
+        self.assertEqual((ROOT / "bendystraw-operations.json").read_text(encoding="utf-8"), registry.registry_json(),
+                         "bendystraw-operations.json is stale; run python3 webclient/bendystraw-registry.py")
+        self.assertEqual(set(OPERATION), {"StickyIndex", "StickyPays", "StickyCashOuts", "StickyCreate"})
+        self.assertEqual(server.bendystraw_operations(ROOT).keys(), OPERATIONS.keys())
+
+    def test_an_edited_document_makes_the_registry_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = (ROOT / "runtime.js").read_text(encoding="utf-8")
+            (root / "runtime.js").write_text(source.replace("items { txHash timestamp }", "items { txHash timestamp caller }"))
+            self.assertNotEqual(registry.registry_json(root), registry.registry_json())
+            (root / "runtime.js").write_text(source.replace("query StickyCreate(", "query StickyCreate${x}("))
+            with self.assertRaisesRegex(ValueError, "plain template literal"):
+                registry.registry_json(root)
 
 
 if __name__ == "__main__":

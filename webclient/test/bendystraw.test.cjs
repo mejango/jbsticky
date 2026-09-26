@@ -35,17 +35,25 @@ const ORIGINS = [
   { chainId: 11155420, environment: 'testnet', name: 'OP Sepolia' },
 ];
 
-// A Bendystraw stand-in: answers by operation name and records every request.
+// serve.py's relay as a stand-in: resolves the operation id against the checked-in registry, so a document
+// missing from bendystraw-operations.json fails here as it would in production, then answers by operation name.
+const REGISTRY = JSON.parse(fs.readFileSync(path.join(__dirname, '../bendystraw-operations.json'), 'utf8'));
 function bendystraw(handlers) {
   const requests = [];
   const fetch = async (url, init) => {
     const body = JSON.parse(init.body);
-    const operation = /query (\w+)/.exec(body.query)[1];
+    assert.deepEqual(Object.keys(body).sort(), ['operation', 'variables'], 'the page sends only an operation id and variables');
+    const document = REGISTRY[body.operation];
+    assert.ok(document, `operation ${body.operation} is not in bendystraw-operations.json; run python3 webclient/bendystraw-registry.py`);
+    const operation = /query (\w+)/.exec(document)[1];
     requests.push({ url, operation, variables: body.variables });
     const handler = handlers[operation];
     if (!handler) throw new Error(`unexpected ${operation}`);
     const result = await handler(body.variables);
-    return { ok: true, status: 200, json: async () => result };
+    // The relay answers {data} or, for a Bendystraw error, a 502 with {error}.
+    return result.errors
+      ? { ok: false, status: 502, json: async () => ({ error: `Bendystraw: ${result.errors[0].message}` }) }
+      : { ok: true, status: 200, json: async () => ({ data: result.data }) };
   };
   return { fetch, requests };
 }
@@ -64,8 +72,9 @@ test('the index lists each chain\'s Sticky projects and the block Bendystraw has
       ]),
     } }),
   });
-  const index = await Runtime.stickyIndex('https://testnet.bendystraw.xyz', { 84532: DEPLOYER.toUpperCase().replace('0X', '0x'), 11155420: DEPLOYER }, { fetch });
-  assert.equal(requests[0].url, 'https://testnet.bendystraw.xyz/graphql');
+  const relay = 'https://sticky.center/api/bendystraw/testnet/query';
+  const index = await Runtime.stickyIndex(relay, { 84532: DEPLOYER.toUpperCase().replace('0X', '0x'), 11155420: DEPLOYER }, { fetch });
+  assert.equal(requests[0].url, relay, 'posted to the relay as given, never to Bendystraw itself');
   assert.deepEqual(requests[0].variables.owners, [DEPLOYER]);
   assert.deepEqual([...index.keys()], [84532, 11155420], 'a chain without a configured deployer is left out');
   assert.equal(index.get(84532).block, 500n);
@@ -285,7 +294,7 @@ test('a project\'s scans start at its creation block, from Bendystraw\'s creatin
   const c = startContext({ fetch, receipt: { blockNumber: '0x2d0f', logs: [deployLog(37)] } });
   assert.equal(await c.projectStartBlock(84532, 37n), '0x2d0f');
   assert.deepEqual(requests[0].variables.where, { chainId: 84532, projectId: 37, version: 6 });
-  assert.equal(requests[0].url, 'https://sticky.center/bendystraw/testnet/graphql', 'through the same-origin relay');
+  assert.equal(requests[0].url, 'https://sticky.center/api/bendystraw/testnet/query', 'through the same-origin relay');
   await c.projectStartBlock(84532, 37n);
   assert.equal(requests.length, 1, 'kept for the session');
   assert.deepEqual(c.rpc, ['eth_getTransactionReceipt']);

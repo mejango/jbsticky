@@ -197,9 +197,21 @@ views. Launches past Bendystraw's indexed block are found by a short `DeployStic
 scan. A project's creation block comes from Bendystraw's creating transaction, checked
 against its receipt. Bendystraw does not index StickyHook positions, tranches or
 streaks, so project pages still scan the hook, from that block. Any Bendystraw error
-falls back to chain scans. The page reaches Bendystraw through `serve.py` at
-`/bendystraw/<production|testnet>/graphql`, because Bendystraw's CORS list does not
-include this site; identical queries share one answer for 15 seconds.
+falls back to chain scans.
+
+The page reaches Bendystraw only through `serve.py`, locally as in production, the way
+juicebox.money and revnet.money do: it posts `{"operation": "<sha256 of the document>",
+"variables": {...}}` to `/api/bendystraw/<mainnet|testnet>/query` and gets back
+`{"data": ...}` or `{"error": "..."}`. The relay forwards only the documents in
+`bendystraw-operations.json` (`{sha256: document}`), with variables that fit their
+declared types, and answers anything else with a 400. Identical requests share one
+answer for 15 seconds. After adding or editing a query in `runtime.js`, regenerate the
+registry and commit it:
+
+```sh
+python3 bendystraw-registry.py          # rewrite bendystraw-operations.json
+python3 bendystraw-registry.py --check  # CI: fails when the registry is stale
+```
 
 The 100% cash out tax permanently makes unsticking return zero underlying tokens.
 The auto-stick adapter quotes issuance during execution and rejects zero-token
