@@ -95,13 +95,13 @@
         if (wallets.length) {
           nodes.push(element("div", { class: "wallet-tiles" }, wallets.map((option) => {
             const icon = safeIcon(option.icon);
-            // The visible name is the button's accessible name; the mark is decorative.
+            // Icon-only tiles, as in Homerun: the name is the accessible name and the tooltip; the mark is decorative.
             return element("button", {
-              type: "button", class: "wallet-tile", onClick: () => void controller.choose(option.id),
+              type: "button", class: "wallet-tile", "aria-label": option.name, title: option.name,
+              onClick: () => void controller.choose(option.id),
             }, [
               icon ? element("img", { class: "wallet-mark", src: icon, alt: "" })
-                : element("span", { class: "wallet-mark", "aria-hidden": "true", text: option.name.slice(0, 1) }),
-              element("span", { class: "wallet-name", text: option.name }),
+                : element("span", { class: "wallet-mark", "aria-hidden": "true", text: option.name.slice(0, 1).toUpperCase() }),
             ]);
           })));
         } else {

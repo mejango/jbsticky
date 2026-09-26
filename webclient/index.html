@@ -552,31 +552,34 @@
   /* The sign-in chooser. The --jb-connect-* tokens are what Signa's framed sign-in themes itself from. */
   dialog.wallet-dialog {
     --jb-connect-bg: #f8fcfd; --jb-connect-fg: #1c2d33; --jb-connect-muted: #57727c; --jb-connect-line: #d8e7eb;
-    --jb-connect-accent: #0e7c91; --jb-connect-accent-fg: #ffffff; --jb-connect-radius: 8px; --jb-connect-pad: 20px;
-    max-width: 440px; overscroll-behavior: contain;
+    --jb-connect-accent: #0e7c91; --jb-connect-accent-fg: #ffffff; --jb-connect-radius: 8px; --jb-connect-pad: 32px;
+    max-width: 440px; padding: 24px var(--jb-connect-pad); overscroll-behavior: contain;
   }
-  .wallet-dialog h2 { font-size: 22px; line-height: 1.2; margin: 4px 36px 16px 0; }
+  /* Homerun's sign-in layout: title and close on one row, a compact passkey button, a small divider,
+     one row of 44px icon tiles. The pad is also the inset Signa gives its framed content, whose lightning mark fills that inset. */
+  .wallet-dialog .dlg-x { top: calc(24px - 6px); right: calc(var(--jb-connect-pad) - 12px); padding: 6px 8px; font-size: 18px; }
+  .wallet-dialog h2 { font: 700 24px/1.1 "Agrandir", "Beatrice", sans-serif; margin: 0 36px 20px 0; }
   .wallet-dialog h2:focus { outline: none; }
   .wallet-dialog:has(.wallet-frame) { padding-bottom: 0; }
   button.wallet-primary { display: inline-block; margin: 0; min-height: 44px; padding: 10px 20px; }
-  .wallet-divider { margin: 16px 0 8px; color: var(--muted); font-size: 13px; }
-  .wallet-tiles { display: grid; gap: 8px; }
+  .wallet-divider { margin: 12px 0 10px; color: var(--muted); font-size: 13px; }
+  .wallet-tiles { display: flex; gap: 10px; padding: 4px; margin: -4px; overflow-x: auto; }
   button.wallet-tile {
-    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 8px 12px; margin: 0;
+    display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; padding: 8px; margin: 0;
     background: #fdffff; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
-    font: inherit; font-weight: 600; letter-spacing: 0; text-align: left;
+    font: 700 15px/1 "Beatrice", sans-serif; letter-spacing: 0;
   }
   button.wallet-tile:hover { border-color: var(--ink); }
-  .wallet-mark { flex: none; display: grid; place-items: center; width: 22px; height: 22px; object-fit: contain; font-size: 13px; font-weight: 700; }
-  .wallet-name { min-width: 0; overflow-wrap: anywhere; }
+  .wallet-mark { display: grid; place-items: center; width: 24px; height: 24px; object-fit: contain; }
   .wallet-note, .wallet-status { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
   .wallet-error { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid var(--err); color: var(--err); overflow-wrap: anywhere; font-size: 13px; }
   .wallet-frame {
-    display: block; width: calc(100% + 40px); height: 14rem; margin: 0 -20px; border: 1px solid var(--line);
-    border-width: 1px 0 0; background: var(--card); transition: height .2s ease;
+    display: block; width: calc(100% + 2 * var(--jb-connect-pad)); height: 14rem; margin: 0 calc(-1 * var(--jb-connect-pad));
+    border: 1px solid var(--line); border-width: 1px 0 0; background: var(--card); transition: height .2s ease;
   }
   @media (prefers-reduced-motion: reduce) { .wallet-frame { transition: none; } }
   .wallet-viewas { display: flex; gap: 8px; align-items: center; margin-top: 16px; font-size: 13px; }
+  .wallet-viewas .text-button { font-size: 13px; }
   .wallet-viewas input { flex: 1; min-width: 0; margin: 0; }
   .wallet-viewas button.ghost { margin: 0; flex: none; }
   .hide { display: none; }
@@ -1111,17 +1114,17 @@
   <span id="tx-status-message"></span>
 </div>
 <div id="address-tooltip" class="address-tooltip hide" role="tooltip"></div>
-<script src="config.js?v=131"></script>
-<script src="runtime.js?v=131"></script>
-<script src="calldata.js?v=131"></script>
-<script src="tx-safe.js?v=131"></script>
-<script src="tx-engine.js?v=131"></script>
-<script src="relayr.js?v=131"></script>
-<script src="launch-plan.js?v=131"></script>
-<script src="center-intents.js?v=131"></script>
-<script src="launch-session.js?v=131"></script>
-<script src="bridge.js?v=131"></script>
-<script src="wallet-chooser.js?v=131"></script>
-<script src="app.js?v=131"></script>
+<script src="config.js?v=132"></script>
+<script src="runtime.js?v=132"></script>
+<script src="calldata.js?v=132"></script>
+<script src="tx-safe.js?v=132"></script>
+<script src="tx-engine.js?v=132"></script>
+<script src="relayr.js?v=132"></script>
+<script src="launch-plan.js?v=132"></script>
+<script src="center-intents.js?v=132"></script>
+<script src="launch-session.js?v=132"></script>
+<script src="bridge.js?v=132"></script>
+<script src="wallet-chooser.js?v=132"></script>
+<script src="app.js?v=132"></script>
 </body>
 </html>

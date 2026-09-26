@@ -72,7 +72,7 @@ test('the device passkey label follows Homerun', () => {
   assert.equal(Chooser.deviceLabel('Mozilla/5.0 (X11; Linux x86_64)'), 'Device');
 });
 
-test('Signa comes first as the primary action, then every browser wallet as a named tile', () => {
+test('Signa comes first as the primary action, then every browser wallet as an icon tile named for assistive tech', () => {
   const controller = mockController([signa, rabby, sneaky]);
   const h = harness(controller);
   h.chooser.open();
@@ -82,9 +82,11 @@ test('Signa comes first as the primary action, then every browser wallet as a na
   assert.equal(primary.tagName, 'BUTTON');
   assert.equal(primary.textContent, 'Touch ID');
   assert.equal(divider.textContent, 'or connect a wallet');
-  // Every wallet shows its name; that visible text is the button's accessible name.
-  assert.deepEqual(tiles.children.map((tile) => tile.children[1].textContent), ['Rabby', 'Sneaky']);
-  assert.ok(tiles.children.every((tile) => tile.tagName === 'BUTTON' && tile.getAttribute('aria-label') === null));
+  // Homerun's icon-only tiles: the wallet name is the accessible name and the tooltip, with no visible text.
+  assert.deepEqual(tiles.children.map((tile) => tile.getAttribute('aria-label')), ['Rabby', 'Sneaky']);
+  assert.deepEqual(tiles.children.map((tile) => tile.getAttribute('title')), ['Rabby', 'Sneaky']);
+  assert.ok(tiles.children.every((tile) => tile.tagName === 'BUTTON' && tile.children.length === 1));
+  assert.equal(tiles.children[1].children[0].textContent, 'S');
   assert.equal(tiles.children[0].children[0].getAttribute('src'), rabby.icon);
   assert.equal(tiles.children[0].children[0].getAttribute('alt'), '');
   // Only data: images render; a remote icon would leak the visit to its host.
